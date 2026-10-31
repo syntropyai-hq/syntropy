@@ -19,8 +19,8 @@
 //!   never renamed or reused for another module. [`Registry::check`] holds every registered
 //!   family to the checked-in list, and `tests/family_tags.rs` pins the list itself.
 //!
-//! No family module is registered yet: `llama` and `qwen_moe` come with COMP-E16-T03 and
-//! COMP-E16-T04. Certification gating of [`families()`] is COMP-E16-T02.
+//! [`llama`] is registered (COMP-E16-T03); `qwen_moe` comes with COMP-E16-T04. Certification
+//! gating of [`families()`] is COMP-E16-T02.
 
 use std::fmt;
 
@@ -32,6 +32,7 @@ use syntropy_manifest::tokenizer::{TokenizerSources, TokenizerSpec, TokenizerSpe
 use crate::classify::Classification;
 use crate::ir::OpSet;
 
+pub mod llama;
 mod meta;
 pub mod tags;
 
@@ -359,9 +360,12 @@ impl Registry {
     }
 }
 
-/// The families this build registers. None yet: `llama` and `qwen_moe` come with
-/// COMP-E16-T03 and COMP-E16-T04.
-pub static REGISTRY: Registry = Registry::new(&[]);
+/// The families this build registers: `llama` (COMP-E16-T03). `qwen_moe` comes with
+/// COMP-E16-T04.
+pub static REGISTRY: Registry = Registry::new(&[Registration {
+    module: llama::MODULE,
+    family: &llama::LLAMA,
+}]);
 
 /// The registry this build serves (RFC-0043 §1 `graph::families()`).
 #[must_use]

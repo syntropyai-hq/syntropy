@@ -215,6 +215,24 @@ domain_codes! {
     }
 }
 
+domain_codes! {
+    /// `Domain::Tier`, 0x0700–0x07FF: RFC-0020 §15's code n is 0x0700 + n (RFC-0020 §15, note of
+    /// 2026-10-31).
+    tier: Tier {
+        LEDGER_EXCEEDED = 0x0701, ["LedgerExceeded"], Capacity;
+        VRAM_SHORT = 0x0702, ["VramShort"], Capacity;
+        VRAM_EC_REDUCED = 0x0703, ["VramEcReduced"], Drift;
+        HOST_RESERVE = 0x0704, ["HostReserve"], Capacity;
+        PIN_DEGRADED = 0x0705, ["PinDegraded"], Drift;
+        REGISTER_UNSUPPORTED = 0x0706, ["RegisterUnsupported"], Unsupported;
+        VMM_UNSUPPORTED = 0x0707, ["VmmUnsupported"], Unsupported;
+        STALE_HANDLE = 0x0708, ["StaleHandle"], Internal;
+        PRESSURE_EXHAUSTED = 0x0709, ["PressureExhausted"], Drift;
+        NUMA_BIND = 0x070A, ["NumaBind"], Transient;
+        VRAM_BUDGET_LOST = 0x070B, ["VramBudgetLost"], Drift;
+    }
+}
+
 /// Every published code, by domain and then by number.
 pub const REGISTRY: &[&[CodeInfo]] = &[
     cluster::TABLE,
@@ -224,6 +242,7 @@ pub const REGISTRY: &[&[CodeInfo]] = &[
     security::TABLE,
     kernels::TABLE,
     exec::TABLE,
+    tier::TABLE,
 ];
 
 /// Numbers a domain's table holds back. Never assigned (RFC-0034 §15: 0x0509–0x050B, because

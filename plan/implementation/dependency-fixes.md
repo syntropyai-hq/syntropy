@@ -1507,6 +1507,15 @@ COMP-E10-T07 (M0a) builds the census. Its criterion asked for "golden census tes
 | COMP-E16-T03 → COMP-E10-T07 | COMP-E16-T03 | R9 | "golden census on recorded headers" runs the `llama` family through COMP-E10-T07's builder |
 | COMP-E16-T04 → COMP-E10-T07 | COMP-E16-T04 | R9 | "on the `qwen_moe` checkpoint, the golden census … run[s] on its recorded safetensors headers" through the same builder; the edge was only transitive, through COMP-E16-T03 |
 
+## COMP-E16-T03's conformance checks re-homed (2026-10-31)
+
+COMP-E16-T03 (the `llama` family) required RFC-0060 §7.2 checks 1–3 on the `nano` and `micro` fixtures and on the nightly checkpoint, but its row reached none of the tasks those checks need. The fixture generators (QUAL-E7-T01, QUAL-E7-T04) and the conformance runner (QUAL-E6-T06) depend on COMP-E16-T03, so edges to them would make a cycle. The checks move to the runner, which already reaches the census builder, the KV byte counters and the parity driver. COMP-E16-T03 keeps the golden census and the KV dtype rule, which its own module shows. Review of #2037 (2026-10-31).
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| RFC-0060 §7.2 checks 1–2 on the real `llama` checkpoint's (Qwen3-0.6B) recorded headers, and check 3 on its weights, move to QUAL-E6-T06 | COMP-E16-T03, QUAL-E6-T06 | R9 | check 1's groups and byte total come from the census builder (COMP-E10-T07), check 2 needs the KV byte counters (TIER-E6-T02), and check 3 needs the parity driver (QUAL-E5-T06) and the providers' kernels. QUAL-E6-T06 already depends on all of them. QUAL-E6-T06 named the real-checkpoint checks for `qwen_moe` only, so the `llama` leg had no owner |
+| COMP-E16-T03's checks 1–3 on the `nano` and `micro` fixtures are left to QUAL-E6-T06 and QUAL-E6-T22, which already require them of both M0 families | COMP-E16-T03 | R9 | the fixtures come from QUAL-E7-T01 and QUAL-E7-T04, which depend on COMP-E16-T03's `FamilySpec` |
+
 ## COMP-E4-T02's arena-test leg moves to the task that builds the arena tests (2026-10-31)
 
 COMP-E4-T02 (M0a) asked that "TIER's arena tests pass on a CUDA device". No arena-construction tests exist in `syntropy-tier` until TIER-E1-T07 builds `Vram` arenas through `KernelProvider::alloc`, and TIER-E1-T07 already depends on COMP-E4-T02, both M0a. `tier` cannot use `kernels-cuda` either, since both are layer 2 (RFC-0001 §4.2 rule 2).

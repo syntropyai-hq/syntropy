@@ -10,7 +10,7 @@ use syntropy_core::error::api::{self, ApiError, ApiMapping, NativeError, RetryAf
 use syntropy_core::error::codes::{self, CodeInfo};
 use syntropy_core::{Domain, ErrorClass, ErrorCode};
 
-use Domain::{Cluster, Dist, Exec, Kernels, Net, Recovery, Security};
+use Domain::{Cluster, Dist, Exec, Kernels, Net, Recovery, Security, Tier};
 use ErrorClass::*;
 
 /// Every code as its RFC's table writes it. A renumbered, renamed, reclassed, removed or
@@ -152,6 +152,18 @@ const PINNED: &[(Domain, u16, &[&str], Option<ErrorClass>)] = &[
     (Exec, 0x0601, &["RingClosed"], Some(Internal)),
     (Exec, 0x0602, &["StepStalled"], Some(Internal)),
     (Exec, 0x0603, &["PoolBarrierMissed"], Some(Internal)),
+    // RFC-0020 §15, note of 2026-10-31
+    (Tier, 0x0701, &["LedgerExceeded"], Some(Capacity)),
+    (Tier, 0x0702, &["VramShort"], Some(Capacity)),
+    (Tier, 0x0703, &["VramEcReduced"], Some(Drift)),
+    (Tier, 0x0704, &["HostReserve"], Some(Capacity)),
+    (Tier, 0x0705, &["PinDegraded"], Some(Drift)),
+    (Tier, 0x0706, &["RegisterUnsupported"], Some(Unsupported)),
+    (Tier, 0x0707, &["VmmUnsupported"], Some(Unsupported)),
+    (Tier, 0x0708, &["StaleHandle"], Some(Internal)),
+    (Tier, 0x0709, &["PressureExhausted"], Some(Drift)),
+    (Tier, 0x070A, &["NumaBind"], Some(Transient)),
+    (Tier, 0x070B, &["VramBudgetLost"], Some(Drift)),
 ];
 
 /// A 503 `instance_unavailable` whose `Retry-After` the row does not fix: RFC-0050 §12.1's
@@ -321,6 +333,11 @@ const PINNED_EXEMPT: &[(Domain, u16)] = &[
     (Kernels, 0x000C),
     (Kernels, 0x000D),
     (Kernels, 0x000F),
+    (Tier, 0x0701),
+    (Tier, 0x0702),
+    (Tier, 0x0704),
+    (Tier, 0x0706),
+    (Tier, 0x0707),
 ];
 
 /// The whole-class rows of RFC-0050 §12.1 (and §12.2 for `Cancelled`), transcribed; `None`
@@ -351,7 +368,7 @@ fn is_note(mapping: ApiMapping) -> bool {
     matches!(mapping, ApiMapping::NeverSurfaces | ApiMapping::NoResponse)
 }
 
-const DOMAINS: [Domain; 7] = Domain::ALL;
+const DOMAINS: [Domain; 8] = Domain::ALL;
 
 /// Every `ErrorClass` of RFC-0001 §5.12.
 const CLASSES: [ErrorClass; 13] = [
@@ -432,6 +449,7 @@ fn every_code_is_in_its_domains_range() {
     assert_eq!(Security.range(), 0x0500..=0x05FF);
     assert_eq!(Kernels.range(), 0x0001..=0x00FF);
     assert_eq!(Exec.range(), 0x0600..=0x06FF);
+    assert_eq!(Tier.range(), 0x0700..=0x07FF);
     for info in registry()
         .into_iter()
         .map(|i| i.code)
@@ -461,7 +479,7 @@ fn registry_is_in_domain_then_number_order() {
 
 #[test]
 fn constants_name_their_codes() {
-    use codes::{cluster, dist, exec, kernels, net, recovery, security};
+    use codes::{cluster, dist, exec, kernels, net, recovery, security, tier};
     assert_eq!(
         cluster::IDENTITY_HOST_MISMATCH,
         ErrorCode::new(Cluster, 0x0101)
@@ -488,6 +506,9 @@ fn constants_name_their_codes() {
     assert_eq!(kernels::OP_UNSUPPORTED, ErrorCode::new(Kernels, 1));
     assert_eq!(kernels::MANIFEST_INVALID, ErrorCode::new(Kernels, 17));
     assert_eq!(exec::POOL_BARRIER_MISSED, ErrorCode::new(Exec, 0x0603));
+    // RFC-0020 §15's code n is 0x0700 + n.
+    assert_eq!(tier::LEDGER_EXCEEDED, ErrorCode::new(Tier, 0x0701));
+    assert_eq!(tier::VRAM_BUDGET_LOST, ErrorCode::new(Tier, 0x070B));
 }
 
 #[test]
@@ -568,9 +589,9 @@ fn every_code_maps_to_an_rfc_0050_shape_or_is_exempt() {
     }
     assert_eq!(api::for_code(ErrorCode::new(Security, 0x0509)), None);
     // 13 codes by table rows plus `DuplicateCommand` and `IngressLost`; 26 exempt in the
-    // distributed domains and 10 in `Kernels`; the rest by class, 7 of them `Kernels` codes
-    // and 3 `Exec` codes.
-    assert_eq!((by_row, exempt.len(), by_class), (15, 36, 43));
+    // distributed domains, 10 in `Kernels` and 5 in `Tier`; the rest by class, 7 of them
+    // `Kernels` codes, 3 `Exec` codes and 6 `Tier` codes.
+    assert_eq!((by_row, exempt.len(), by_class), (15, 41, 49));
 }
 
 #[test]
@@ -596,6 +617,7 @@ fn code_table_rfc(domain: Domain) -> &'static str {
         Security => "RFC-0034-security-and-trust.md",
         Kernels => "RFC-0040-kernel-providers-and-backends.md",
         Exec => "RFC-0012-execution-scheduler.md",
+        Tier => "RFC-0020-tier-manager-and-residency.md",
         other => panic!("{other:?} is a domain this test predates"),
     }
 }
