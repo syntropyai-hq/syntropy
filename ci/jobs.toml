@@ -102,6 +102,26 @@ paths = [
     "xtask/src/toolchains.rs",
 ]
 
+# The hosted Windows and macOS runners carry the pinned toolchains, and print them (RFC-0062 §4.1
+# and §4.2; QUAL-E16-T30). Only the pins and the steps that check them start these jobs.
+[job.toolchains-windows]
+runner = "hosted"
+when = "direct"
+paths = [
+    "ci/toolchains.toml",
+    "xtask/src/toolchains.rs",
+    "xtask/src/toolchains/**",
+]
+
+[job.toolchains-macos]
+runner = "hosted"
+when = "direct"
+paths = [
+    "ci/toolchains.toml",
+    "xtask/src/toolchains.rs",
+    "xtask/src/toolchains/**",
+]
+
 # Op conformance, parity smoke and the `pr-quick` bench on R-ADA (RFC-0062 §2.3). The paths are
 # RFC-0062 §2.2's, from ADR-0019 §9 and ADR-0020, and the tolerance tables (note 2026-10-23).
 # QUAL-E2-T08 adds the other Tier 1 rigs' jobs with their own rules.

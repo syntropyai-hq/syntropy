@@ -5,14 +5,17 @@
 //!
 //! `ci/toolchains.toml` repeats the pins of the Linux build image, `ci/images/cuda-13/Dockerfile`.
 //! This step fails unless:
-//! - `ci/toolchains.toml` parses with no unknown key, every checksum is 64 lowercase hex digits,
-//!   every pin is either set or marked `verified = false` with no value, and the BuildKit image
-//!   is pinned by digest;
+//! - `ci/toolchains.toml` parses with no unknown key and no missing pin (so a `verified = false`
+//!   placeholder does not parse), every checksum is 64 lowercase hex digits, and the BuildKit
+//!   image is pinned by digest;
 //! - each Linux pin appears in the Dockerfile: the base image, the syntax frontend, the archive
 //!   snapshot, the epoch, the compiler version, the CMake version and checksum, and the CUDA
 //!   release and each component's checksum;
 //! - `ci/arch-sets.toml` parses, and its `pr` profile lists `sm_89` (R-ADA, the M0 rig) and no
 //!   PTX.
+//!
+//! `cargo xtask ci toolchains-linux` builds the image and prints its tools here; the Windows and
+//! macOS jobs, which check the hosted runners' tools, are in [`hosted`] (QUAL-E16-T30).
 
 use std::fs;
 use std::path::Path;
@@ -21,6 +24,10 @@ use std::process::Command;
 use serde::Deserialize;
 
 use crate::run::Context;
+
+mod hosted;
+
+pub use hosted::{macos_step, windows_step};
 
 /// The pins file, relative to the workspace root.
 pub const TOOLCHAINS: &str = "ci/toolchains.toml";
@@ -91,23 +98,48 @@ struct Component {
 struct Windows {
     cmake: Cmake,
     cuda: Cuda,
-    msvc: Unpinned,
+    msvc: Msvc,
+}
+
+/// The MSVC toolchain of the hosted Windows image.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Msvc {
+    /// Visual Studio's servicing line, `<major>.<minor>`: the `installationVersion`'s first two
+    /// parts must equal it. The full build differs between the images a label serves during a
+    /// rollout, while the toolset and `cl` below stay exact (RFC-0062 §4.2, note 2026-10-31).
+    visual_studio: String,
+    /// The default MSVC toolset, `Microsoft.VCToolsVersion.default.txt`.
+    toolset: String,
+    /// The version in `cl`'s banner.
+    cl: String,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Macos {
     cmake: Cmake,
-    xcode: Unpinned,
-    metal: Unpinned,
+    xcode: Xcode,
+    metal: Metal,
 }
 
-/// A pin that only the hosted runner's report can fill in.
+/// The default Xcode of the hosted macOS image.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Unpinned {
-    verified: bool,
-    version: Option<String>,
+struct Xcode {
+    /// As `xcodebuild -version` and the image report give it.
+    version: String,
+    build: String,
+    /// What follows `Apple clang version` in `xcrun clang --version`.
+    clang: String,
+}
+
+/// The Metal compiler, a component of its own from Xcode 26.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Metal {
+    /// What follows `Apple metal version` in `xcrun -sdk macosx metal --version`.
+    version: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -132,6 +164,15 @@ struct Profile {
 
 fn is_sha256(text: &str) -> bool {
     text.len() == 64 && text.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+/// Whether `text` is `<major>.<minor>`, two runs of digits.
+fn is_servicing_line(text: &str) -> bool {
+    text.split_once('.').is_some_and(|(major, minor)| {
+        [major, minor]
+            .iter()
+            .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
+    })
 }
 
 fn is_arch(text: &str, prefix: &str) -> bool {
@@ -177,15 +218,24 @@ pub fn check(toolchains: &str, dockerfile: &str, arch_sets: &str) -> Vec<String>
                 }
             }
             for (name, pin) in [
-                ("windows.msvc", &t.windows.msvc),
-                ("macos.xcode", &t.macos.xcode),
-                ("macos.metal", &t.macos.metal),
+                ("windows.msvc.visual_studio", &t.windows.msvc.visual_studio),
+                ("windows.msvc.toolset", &t.windows.msvc.toolset),
+                ("windows.msvc.cl", &t.windows.msvc.cl),
+                ("macos.xcode.version", &t.macos.xcode.version),
+                ("macos.xcode.build", &t.macos.xcode.build),
+                ("macos.xcode.clang", &t.macos.xcode.clang),
+                ("macos.metal.version", &t.macos.metal.version),
             ] {
-                if pin.verified == pin.version.is_none() {
-                    problems.push(format!(
-                        "{TOOLCHAINS}: `{name}` needs a `version` when verified, and none when not"
-                    ));
+                if pin.trim().is_empty() {
+                    problems.push(format!("{TOOLCHAINS}: `{name}` is empty"));
                 }
+            }
+            if !is_servicing_line(&t.windows.msvc.visual_studio) {
+                problems.push(format!(
+                    "{TOOLCHAINS}: `windows.msvc.visual_studio` is `{}`, not a servicing line \
+                     `<major>.<minor>` such as `18.11`",
+                    t.windows.msvc.visual_studio
+                ));
             }
             let i = &t.linux.image;
             if !i
@@ -669,17 +719,44 @@ ldd (Ubuntu GLIBC 2.35-0ubuntu3.15) 2.35
     }
 
     #[test]
-    fn an_unverified_pin_with_a_value_is_refused() {
+    fn an_unverified_or_empty_pin_is_refused() {
         let (t, d, a) = real();
-        let bad = t.replace(
-            "[windows.msvc]\nverified = false",
-            "[windows.msvc]\nverified = false\nversion = \"14\"",
-        );
+        let metal = t
+            .lines()
+            .find(|l| l.starts_with("version = \"32023"))
+            .expect("the metal pin");
+        // QUAL-E16-T30: no pin may be a `verified = false` placeholder any more.
+        let unverified = t.replace(metal, "verified = false");
+        assert_ne!(unverified, t);
+        assert!(!check(&unverified, &d, &a).is_empty());
+        let cl = t
+            .lines()
+            .find(|l| l.starts_with("cl = "))
+            .expect("the cl pin");
+        let empty = t.replace(cl, "cl = \" \"");
         assert!(
-            check(&bad, &d, &a)
+            check(&empty, &d, &a)
                 .iter()
-                .any(|p| p.contains("windows.msvc"))
+                .any(|p| p.contains("windows.msvc.cl"))
         );
+    }
+
+    #[test]
+    fn the_visual_studio_pin_is_a_servicing_line() {
+        let (t, d, a) = real();
+        let pin = t
+            .lines()
+            .find(|l| l.starts_with("visual_studio = "))
+            .expect("the pin");
+        for bad in ["18.11.12328.437", "18", "18.x", ".11"] {
+            let file = t.replace(pin, &format!("visual_studio = \"{bad}\""));
+            assert!(
+                check(&file, &d, &a)
+                    .iter()
+                    .any(|p| p.contains("servicing line")),
+                "{bad}"
+            );
+        }
     }
 
     #[test]

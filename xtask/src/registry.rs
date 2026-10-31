@@ -721,11 +721,38 @@ pub const JOBS: &[Entry] = &[
                 run: toolchains::linux_step,
             },
         }],
-        pending: &[Pending {
-            check: "the Windows and macOS version-print steps, and pins for MSVC, Xcode and \
-                        the Metal compiler",
-            task: "QUAL-E16-T30",
+        pending: &[],
+    },
+    Entry {
+        name: "toolchains-windows",
+        summary: "the hosted Windows runner carries the pinned nvcc, CMake and MSVC toolchain",
+        defined_in: "RFC-0062 §4.1 and §4.2",
+        params: &[],
+        steps: &[Step {
+            name: "toolchains-windows",
+            action: Action::Builtin {
+                shown: "fetch the pinned nvcc and CMake archives and check their SHA-256; print \
+                        nvcc, CMake, Visual Studio, the MSVC toolset and cl, each against its pin",
+                run: toolchains::windows_step,
+            },
         }],
+        pending: &[],
+    },
+    Entry {
+        name: "toolchains-macos",
+        summary: "the hosted macOS runner carries the pinned CMake, Xcode, Apple clang and Metal \
+                  compiler",
+        defined_in: "RFC-0062 §4.1 and §4.2",
+        params: &[],
+        steps: &[Step {
+            name: "toolchains-macos",
+            action: Action::Builtin {
+                shown: "fetch the pinned CMake archive and check its SHA-256; print CMake, Xcode, \
+                        Apple clang and the Metal compiler, each against its pin",
+                run: toolchains::macos_step,
+            },
+        }],
+        pending: &[],
     },
     Entry {
         name: "repo-settings",

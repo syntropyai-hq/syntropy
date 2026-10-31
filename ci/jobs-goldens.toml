@@ -20,7 +20,7 @@
 # After a change to `ci/jobs.toml`: re-check each golden, add one for each new rule or pattern,
 # and set `jobs_toml` to the digest `lint` prints.
 
-jobs_toml = "fnv1a:9fb64c281610b6db"
+jobs_toml = "fnv1a:fec496af00cc6773"
 
 [[golden]]
 name = "plan only"
@@ -570,7 +570,7 @@ planned = ["hosted-parity-nano", "hw-cuda-ada"]
 name = "toolchain pins"
 source = "constructed: the pins file alone, as a CUDA bump edits it (QUAL-E16-T24)"
 paths = ["ci/toolchains.toml"]
-jobs = ["build", "hosted-test", "lint", "toolchains-linux"]
+jobs = ["build", "hosted-test", "lint", "toolchains-linux", "toolchains-macos", "toolchains-windows"]
 hw_required = []
 planned = ["hosted-parity-nano"]
 
@@ -578,7 +578,15 @@ planned = ["hosted-parity-nano"]
 name = "toolchain step"
 source = "constructed: the step that builds and checks the image alone (QUAL-E16-T24)"
 paths = ["xtask/src/toolchains.rs"]
-jobs = ["build", "hosted-l3", "hosted-test", "lint", "toolchains-linux"]
+jobs = ["build", "hosted-l3", "hosted-test", "lint", "toolchains-linux", "toolchains-macos", "toolchains-windows"]
+hw_required = []
+planned = ["hosted-parity-nano"]
+
+[[golden]]
+name = "hosted toolchain steps"
+source = "constructed: the Windows and macOS version-print steps alone (QUAL-E16-T30)"
+paths = ["xtask/src/toolchains/hosted.rs"]
+jobs = ["build", "hosted-l3", "hosted-test", "lint", "toolchains-macos", "toolchains-windows"]
 hw_required = []
 planned = ["hosted-parity-nano"]
 
