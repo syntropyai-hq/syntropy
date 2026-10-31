@@ -113,27 +113,20 @@ impl SystemStreams {
     /// device's context in between (a registration dropped there, a second device opened) gets
     /// its context back as it left it, and the call still runs in this device's.
     fn in_ctx(&self, f: impl FnOnce() -> Status) -> Result<Status, StreamFault> {
-        let mut previous: CUcontext = std::ptr::null_mut();
-        // SAFETY: writes one handle through a pointer to a live local.
-        let s = unsafe { (self.calls.get_current)(&raw mut previous) };
-        self.check("cuCtxGetCurrent", s)?;
-        if previous == self.ctx {
-            return Ok(f());
-        }
-        // SAFETY: `ctx` is a primary context the device keeps retained while this lives; making
-        // it current changes only this thread's current context.
-        let s = unsafe { (self.calls.set_current)(self.ctx) };
-        self.check("cuCtxSetCurrent", s)?;
-        let status = f();
-        // SAFETY: `previous` was current on this thread a moment ago, or null, which leaves no
-        // context current.
-        let s = unsafe { (self.calls.set_current)(previous) };
-        // When the call failed too, its fault is the one to report: a sticky error fails both,
-        // and the call names what the caller asked for.
-        if status == SUCCESS {
-            self.check("cuCtxSetCurrent", s)?;
-        }
-        Ok(status)
+        let get = |previous: &mut CUcontext| {
+            // SAFETY: writes one handle through a pointer to a live local.
+            unsafe { (self.calls.get_current)(previous) }
+        };
+        let set = |ctx: CUcontext| {
+            // SAFETY: `ctx` is this device's primary context, which the device keeps retained
+            // while this lives, or the context that was current on this thread a moment ago, or
+            // null, which leaves no context current. Only this thread's current context changes.
+            unsafe { (self.calls.set_current)(ctx) }
+        };
+        switched(self.ctx, get, set, f).map_err(|(call, status)| {
+            self.check(call, status)
+                .expect_err("`switched` reports only failed statuses")
+        })
     }
 
     /// `f`'s status, run as [`in_ctx`](Self::in_ctx) runs it, as a result for `call`.
@@ -156,6 +149,39 @@ impl SystemStreams {
                 .map_or_else(|| format!("CUDA error {status}"), |f| f.error),
         })
     }
+}
+
+/// [`SystemStreams::in_ctx`]'s context switch over the driver's `cuCtxGetCurrent` (`get`) and
+/// `cuCtxSetCurrent` (`set`): runs `f` with `ctx` current and puts back the previous context.
+/// Returns `f`'s status, or the failed context call and its status. A failed restore is
+/// reported unless `f` itself really failed, in which case `f`'s fault is the one the caller
+/// sees: a sticky error fails both, and `f` names what the caller asked for. `NOT_READY` is not
+/// a failure: it is `cuEventQuery`'s answer for unfinished work, so a poll still reports a
+/// failed restore.
+pub(super) fn switched(
+    ctx: CUcontext,
+    get: impl FnOnce(&mut CUcontext) -> Status,
+    mut set: impl FnMut(CUcontext) -> Status,
+    f: impl FnOnce() -> Status,
+) -> Result<Status, (&'static str, Status)> {
+    let mut previous: CUcontext = std::ptr::null_mut();
+    let s = get(&mut previous);
+    if s != SUCCESS {
+        return Err(("cuCtxGetCurrent", s));
+    }
+    if previous == ctx {
+        return Ok(f());
+    }
+    let s = set(ctx);
+    if s != SUCCESS {
+        return Err(("cuCtxSetCurrent", s));
+    }
+    let status = f();
+    let s = set(previous);
+    if s != SUCCESS && (status == SUCCESS || status == super::NOT_READY) {
+        return Err(("cuCtxSetCurrent", s));
+    }
+    Ok(status)
 }
 
 impl StreamApi for SystemStreams {

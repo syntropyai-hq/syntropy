@@ -491,3 +491,56 @@ fn an_empty_copy_makes_no_call() {
 }
 
 mod gpu;
+
+/// The context switch every system stream call runs in. A poll of unfinished work
+/// (`NOT_READY`) whose restore fails reports the restore, so the thread is never left in this
+/// device's context unannounced; so does a successful call. A call that really failed reports
+/// its own fault over the restore's. When the device's context is already current, nothing is
+/// switched.
+#[test]
+fn a_failed_restore_surfaces_unless_the_call_itself_failed() {
+    use super::system::switched;
+    use cudarc::driver::sys::CUcontext;
+    const OTHER: usize = 0x2000;
+    const DEVICE: usize = 0x1000;
+    const FAILED: u32 = 201; // CUDA_ERROR_INVALID_CONTEXT
+    let ctx = |a: usize| -> CUcontext { std::ptr::without_provenance_mut(a) };
+    // Runs `f` with `OTHER` current, and the restore answering `restore`; returns the result
+    // and every context `set` was asked to make current.
+    let run = |current: usize, restore: u32, call: u32| {
+        let mut sets = Vec::new();
+        let r = switched(
+            ctx(DEVICE),
+            |p: &mut CUcontext| {
+                *p = ctx(current);
+                0
+            },
+            |c: CUcontext| {
+                sets.push(c.addr());
+                if c.addr() == DEVICE { 0 } else { restore }
+            },
+            || call,
+        );
+        (r, sets)
+    };
+    assert_eq!(
+        run(OTHER, FAILED, NOT_READY),
+        (Err(("cuCtxSetCurrent", FAILED)), vec![DEVICE, OTHER]),
+        "a poll of unfinished work reports the failed restore"
+    );
+    assert_eq!(run(OTHER, FAILED, 0).0, Err(("cuCtxSetCurrent", FAILED)));
+    assert_eq!(
+        run(OTHER, FAILED, 700).0,
+        Ok(700),
+        "the call's own fault wins"
+    );
+    assert_eq!(
+        run(OTHER, 0, NOT_READY),
+        (Ok(NOT_READY), vec![DEVICE, OTHER])
+    );
+    assert_eq!(
+        run(DEVICE, FAILED, 0),
+        (Ok(0), vec![]),
+        "already current: no switch"
+    );
+}
