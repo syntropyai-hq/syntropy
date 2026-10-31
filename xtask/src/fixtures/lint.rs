@@ -7,6 +7,9 @@
 //! - every `nightly` fixture is ungated and under an OSI-approved licence, one of [`OSI`].
 //!   Llama-family checkpoints, gated ones and anything under a licence outside the list are
 //!   `lab` fixtures;
+//! - every `nightly` fixture is imported: it has its `blake3` and `bytes`. Only a `lab` fixture
+//!   may be recorded before its bytes are in a store, as a checkpoint's weights wait for the lab
+//!   store;
 //! - every fixture taken from the Hub names its repository, a full 40-hex commit as its
 //!   revision, and its file, so what was confirmed on the model card is what is fetched;
 //! - every fixture quantised from original weights (it has a `quant`) records the original
@@ -45,6 +48,11 @@ fn fixture_problems(f: &Fixture) -> Vec<String> {
         if f.gated {
             out.push(format!(
                 "{at} is gated, so it is a `lab` fixture, not `nightly`"
+            ));
+        }
+        if f.blake3.is_empty() || f.bytes == 0 {
+            out.push(format!(
+                "{at} is `nightly` but not imported: it has no `blake3` or `bytes`"
             ));
         }
         if !OSI.contains(&f.licence.as_str()) {
@@ -123,11 +131,27 @@ mod tests {
 
     const REV: &str = "c1899de289a04d12100db370d81485cdf75e47ca";
 
+    /// An imported entry: it has a `blake3` and `bytes`.
     fn entry(extra: &str) -> String {
         format!(
-            "[[fixture]]\nname = \"m\"\nsource = {{ hub = \"org/model\", revision = \"{REV}\", \
-             file = \"model.safetensors\" }}\nlicence = \"apache-2.0\"\ngated = false\n{extra}\n"
+            "[[fixture]]\nname = \"m\"\nblake3 = \"{}\"\nbytes = 7\nsource = {{ hub = \"org/model\", \
+             revision = \"{REV}\", file = \"model.safetensors\" }}\nlicence = \"apache-2.0\"\n\
+             gated = false\n{extra}\n",
+            "ab".repeat(32)
         )
+    }
+
+    #[test]
+    fn an_unimported_nightly_fixture_fails_and_an_unimported_lab_one_passes() {
+        let unimported = entry("tier = \"nightly\"").replace(
+            &format!("blake3 = \"{}\"\nbytes = 7\n", "ab".repeat(32)),
+            "",
+        );
+        let problems = check(&unimported);
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(problems[0].contains("not imported"), "{problems:?}");
+        let lab = unimported.replace("tier = \"nightly\"", "tier = \"lab\"");
+        assert_eq!(check(&lab), Vec::<String>::new());
     }
 
     #[test]

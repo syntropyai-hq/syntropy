@@ -344,8 +344,19 @@ fn import_then_fetch_then_verify_end_to_end() {
     run(Action::Fetch, &only, &dir, &mut out).unwrap();
     run(Action::Verify, &only, &dir, &mut out).unwrap();
     assert!(dir.join("cache").join(hex(b"weights")).is_file());
-    // `other` was never imported, so it has no hash: the whole-manifest verify passes over it and
-    // says so (QUAL-E7-T06), and naming it is still an error, so no run uses an empty hash.
+    // `other` is a `nightly` fixture that was never imported, so it has no hash: the
+    // whole-manifest verify fails on it, as the `fixtures` lint does (QUAL-E7-T06).
+    assert!(run(Action::Verify, &base, &dir, &mut out).is_err());
+    // As a `lab` fixture it waits for the lab store: the whole-manifest verify passes over it and
+    // says so, and naming it is still an error, so no run uses an empty hash.
+    let text = fs::read_to_string(&manifest_path).unwrap();
+    let lab = text.replacen(
+        "licence = \"mit\"\ngated   = false\ntier    = \"nightly\"",
+        "licence = \"mit\"\ngated   = false\ntier    = \"lab\"",
+        1,
+    );
+    assert_ne!(lab, text);
+    fs::write(&manifest_path, lab).unwrap();
     let mut log = Vec::new();
     run(Action::Verify, &base, &dir, &mut log).unwrap();
     let log = String::from_utf8(log).unwrap();

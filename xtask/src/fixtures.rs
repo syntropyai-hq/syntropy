@@ -141,16 +141,17 @@ pub fn run(
     Ok(())
 }
 
-/// Whether `fetch` or `verify` over the whole manifest passes over `f`: a fixture recorded but not
-/// yet imported has no `blake3`, such as a checkpoint's weights that wait for the lab store
-/// (QUAL-E7-T06). Named with `--name`, such a fixture is still an error, so a run never uses an
-/// empty hash.
+/// Whether `fetch` or `verify` over the whole manifest passes over `f`: a `lab` fixture recorded but
+/// not yet imported has no `blake3`, such as a checkpoint's weights that wait for the lab store
+/// (QUAL-E7-T06). A `nightly` fixture is never skipped: the `fixtures` lint step requires it to be
+/// imported, and a run over the manifest fails on one that is not. Named with `--name`, an
+/// un-imported fixture is an error, so a run never uses an empty hash.
 fn skip_unimported(
     f: &manifest::Fixture,
     args: &Args,
     out: &mut dyn Write,
 ) -> Result<bool, String> {
-    if f.blake3.is_empty() && args.name.is_none() {
+    if f.tier == manifest::Tier::Lab && f.blake3.is_empty() && args.name.is_none() {
         writeln!(out, "{}: not imported yet, skipped", f.name).map_err(io_err)?;
         Ok(true)
     } else {
