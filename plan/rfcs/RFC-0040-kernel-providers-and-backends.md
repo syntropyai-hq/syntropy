@@ -1038,6 +1038,13 @@ ADR-0002 gives the ggml provider two jobs: coverage on every backend ggml suppor
 
 Ops with no ggml mapping must have a native CPU implementation; the CPU provider is the universal fallback (§11.2).
 
+*Note, 2026-10-31 (COMP-E7-T02): the mapping layer on the CPU backend, as built.* `crates/kernels-ggml/src/mapping.rs` holds it: `query`, `prepare` and `launch` over template graphs, which the provider's shell will call.
+- **Mapped:** `Gemv`, `Gemm` and `Logits` (`mul_mat`); `GateUpAct` with SiLU (`mul_mat` over a fused weight, gate rows first, then `swiglu`); `RmsNorm` (`rms_norm`, then `mul` by the gain, with `eps` from `OpArgs::statics`); `Act(Silu)`, `Add`, `Mul`; `RowGather` (`get_rows`, each index checked against the table first, because ggml does not bound it); `Convert` between F32, F16 and BF16 (`cpy`). Matrix-product weights are F32, BF16 or the GGUF types `Q4_0`, `Q4_1`, `Q5_0`, `Q5_1`, `Q8_0` and `Q2_K`–`Q6_K`; `query` reports the activation quantisation ggml applies, read from ggml's CPU type traits. F16 weights are not mapped, because ggml rounds their activations to F16, which `ActQuant` cannot state.
+- **Not mapped yet:** `Rope`, `AttnDecode`/`AttnPrefill`, `MoeRoute`, `MoeGrouped` and the GELU forms of `Act` and `GateUpAct`. Their operands, and the GELU form, come with `kernels::reference` (COMP-E1-T03); their mappings are COMP-E7-T19.
+- **Memory.** Intermediate tensors and the work buffer of ggml's compute plan sit in the `OpArgs` workspace, which `OpCaps::workspace` declares (§5.3). Each template has its own one-thread ggml threadpool, so a launch allocates nothing.
+- **Rows.** A launch reads `rows_active` from the step descriptor and sets the row extent of each tensor to it, so only the active rows are computed (§3.2).
+- **`NDEBUG`.** The core's ggml build now defines it, as ggml's own release builds do. Without it, a C `assert` in `rms_norm` aborts the process on a row holding a NaN or an infinity, which must propagate instead. `GGML_ASSERT` stays on.
+
 #### 8.3 Buffer interop
 
 ggml never decides what is resident (ADR-0002 item 4). How Syntropy memory reaches ggml, per backend (capability facts from `backends-and-portability.md` §1.3.1):

@@ -151,7 +151,11 @@ fn configured(root: &Path, out: &Path, arch: &str, cxx: bool) -> cc::Build {
         .include(root.join("src/ggml-cpu"))
         .include(out)
         .define("GGML_SCHED_MAX_COPIES", "4")
-        .define("GGML_USE_CPU", None);
+        .define("GGML_USE_CPU", None)
+        // As ggml's own release builds: C `assert`s off. They would abort the process on data,
+        // such as `rms_norm`'s on a row holding a NaN or an infinity, which must propagate
+        // instead (COMP-E7-T02). `GGML_ASSERT`, ggml's check of its own invariants, stays on.
+        .define("NDEBUG", None);
     let msvc = b.get_compiler().is_like_msvc();
     for flag in flags(arch, msvc, cxx) {
         b.flag(flag);

@@ -5,6 +5,18 @@ edition.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[dependencies]
+# The op mapping layer's template tensor lists.
+smallvec.workspace = true
+syntropy-core = { path = "../core" }
+# `OpKey`, `ShapeSig`, `OpArgs`, `OpCaps` and `PreparedOp`: what the mapping layer maps (RFC-0040
+# §8.2).
+syntropy-kernels = { path = "../kernels" }
+
+[dev-dependencies]
+# `CountingAlloc`, for the test that a launch allocates nothing (COMP-E7-T02).
+syntropy-testkit = { path = "../testkit" }
+
 [build-dependencies]
 # Builds the vendored ggml sources (`third_party/ggml/`) into one static library with Syntropy's
 # flags: the baseline ISA, no floating-point contraction, hidden symbols (ADR-0403 item 6).
