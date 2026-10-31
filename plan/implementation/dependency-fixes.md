@@ -1451,3 +1451,15 @@ An R9 pass over the QUAL rows. Each of these criteria runs in a job, reads a map
 | QUAL-E7-T04 → QUAL-E2-T02 | QUAL-E7-T04 | R9 | each micro fixture "runs through parity `smoke` on R-ADA inside the PR† budget (QUAL-E2-T02)". The `hw-cuda-ada` job that runs parity `smoke` on R-ADA, with its 20-minute limit, is QUAL-E2-T02's (M0a) |
 | QUAL-E12-T13 → QUAL-E13-T01 | QUAL-E12-T13 | R9 | "the SC table lists all SC rows with a scenario mapping (QUAL-E13-T01)": the mapping is `bench/sc-map.toml`, which QUAL-E13-T01 (M0b) builds |
 | QUAL-E6-T10 → COMP-E16-T14 | QUAL-E6-T10 | R9 | the PR runs reach check 9 "through COMP-E16-T14's code-hash rule", and "after a module change, the family has no certificate until a pass" is that rule: the oracle reruns on every change to a family's code hash and issues `FamilyCert` only on a pass. COMP-E16-T14 is M0a and depends on neither row |
+
+## The shims, harnesses, probes and kernels PROD, PLC, DIST and TIER rows' criteria use (2026-10-31)
+
+The R9 pass over the remaining areas. Each criterion below uses a harness, a probe, a pinned input or a kernel that another task builds, and the row did not reach that task.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| PROD-E11-T02 → QUAL-E3-T13 | PROD-E11-T02 | R9 | "the daemon process creates no GPU context (QUAL-E3-T13's driver shim)"; COMP-E9-T06 has the same edge for its census |
+| PROD-E10-T06 → PROD-E11-T05 | PROD-E10-T06 | R9 | `setup` checks NVIDIA's archives "against the pinned hashes (PROD-E11-T05)" and "refuses an archive whose hash differs"; the release pipeline pins those hashes into `module.toml` in PROD-E11-T05; both are M1a |
+| PLC-E9-T23 → PLC-E9-T09 | PLC-E9-T23 | R9 | "sampled output passes PLC-E9-T09's harness" with a project-synthetic draft head (M3 → M1a) |
+| DIST-E6-T03 → PLC-E2-T11 | DIST-E6-T03 | R9 | "plugging a cable produces exactly one `InterfacesChanged` and new probes (PLC-E2-T11) within 3 s"; the L1 link probes are PLC-E2-T11's; both are M2 |
+| TIER-E9-T04 → COMP-E5-T02 | TIER-E9-T04 | R9 | "on the CUDA rig with a Q4_K pack and an i-quant pack, the fitted split's layer time is within 5% of the best fixed split"; CUDA i-quant GEMV is COMP-E5-T02's, and the row reached no CUDA kernel beyond `Timestamp`; both are M1a |
