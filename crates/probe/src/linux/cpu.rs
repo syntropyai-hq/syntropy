@@ -5,11 +5,12 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use syntropy_core::budget::NodeMem;
 use syntropy_core::resource::{CpuArch, CpuSet, CpuTopology};
 use syntropy_core::units::Bytes;
 
 use super::isa::{self, Detector, Isa, IsaSource};
-use super::mem::MemFacts;
+use super::mem::{self, MemFacts};
 use super::{at, list_opt, parse, read, read_opt};
 use crate::error::EnumError;
 use crate::fs::HostFs;
@@ -36,6 +37,8 @@ pub(super) struct Domain {
     pub cpus: Vec<u32>,
     pub mem_total: u64,
     pub mem_free: u64,
+    /// The reclaimable memory RFC-0020 §5's per-NUMA cap reads; `None` for a memoryless node.
+    pub node_mem: Option<NodeMem>,
 }
 
 pub(super) fn facts(fs: &dyn HostFs, source: IsaSource) -> Result<CpuFacts, EnumError> {
@@ -192,19 +195,27 @@ pub(super) fn domains(
             .ok_or_else(|| EnumError::malformed(&mi_path, "no MemTotal"))?;
         let mem_free = at(&mi_path, parse::meminfo_kb(&mi, "MemFree"))?
             .ok_or_else(|| EnumError::malformed(&mi_path, "no MemFree"))?;
+        let node_mem = if mem_total > 0 {
+            Some(mem::node_mem(&mi_path, &mi)?)
+        } else {
+            None
+        };
         out.push(Domain {
             numa,
             cpus,
             mem_total,
             mem_free,
+            node_mem,
         });
     }
     if out.is_empty() {
+        const MEMINFO: &str = "proc/meminfo";
         out.push(Domain {
             numa: 0,
             cpus: online.to_vec(),
             mem_total: mem.total,
             mem_free: mem.free,
+            node_mem: Some(mem::node_mem(MEMINFO, &read(fs, MEMINFO)?)?),
         });
     }
     out.sort_by_key(|d| d.numa);
