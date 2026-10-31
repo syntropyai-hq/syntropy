@@ -353,15 +353,6 @@ COMP-E1-T03 asked for the reference semantics of 23 M0 ops in one change, and 15
 | COMP-E5-T26 → COMP-E1-T17, added beside COMP-E1-T03 | COMP-E5-T26 | R9 | its CUDA `Act` is checked against the reference `Act`; its `RmsNorm`, `Add`, `Mul`, `RowGather` and `Convert` stay with COMP-E1-T03 |
 | COMP-E3-T03, COMP-E3-T07, COMP-E3-T22, COMP-E5-T01 and COMP-E13-T13 keep COMP-E1-T03 alone | — | R9 | their criteria use `Gemv`, `Gemm`, `GateUpAct`, `Logits`, `RowGather`, `Add`, `Mul` and `Convert`, or the bit-exact-class ops, all in COMP-E1-T03 |
 
-## COMP-E16-T04: conformance checks re-homed (2026-10-31)
-
-COMP-E16-T04 (the `qwen_moe` family) required "as T03 on the Qwen-MoE fixtures" and RFC-0060 §7.2 checks 1–2 on Qwen3-30B-A3B's recorded headers. Its row reaches neither: the `nano` and `micro` fixtures come from QUAL-E7-T01 and QUAL-E7-T04, which depend on COMP-E16-T04's `FamilySpec`, and check 2 needs the KV byte counters (TIER-E6-T02). The moves are the same as COMP-E16-T03's above. COMP-E16-T04 keeps the golden census on the recorded headers and the KV dtype per source, which its own module shows. Implementation of COMP-E16-T04 (2026-10-31).
-
-| Change | Tasks | Rule | Reason |
-|---|---|---|---|
-| RFC-0060 §7.2 checks 1–2 on the real `qwen_moe` checkpoint's (Qwen3-30B-A3B) recorded headers move to QUAL-E6-T06, which already owned check 3 on that checkpoint | COMP-E16-T04, QUAL-E6-T06 | R9 | check 2 needs the KV byte counters (TIER-E6-T02), which no edge of COMP-E16-T04 reaches; QUAL-E6-T06 depends on them, on the census builder (COMP-E10-T07) and on COMP-E16-T04 |
-| COMP-E16-T04's checks on the `nano` and `micro` fixtures ("as T03 on the Qwen-MoE fixtures") are left to QUAL-E6-T06 and QUAL-E6-T22, which already require them of both M0 families | COMP-E16-T04 | R9 | the fixtures come from QUAL-E7-T01 and QUAL-E7-T04, which depend on COMP-E16-T04's `FamilySpec`, so an edge to them would make a cycle |
-
 ## COMP-E17-T03: RFC-0060 corpus leg moves to the corpus import (2026-10-31)
 
 COMP-E17-T03 (M0a) asked for token-exact GGUF conversions "on the tokenizer corpus", which is RFC-0060's corpus. QUAL-E5-T22 publishes that corpus and its token streams, and it depends on COMP-E17-T03, so an edge from COMP-E17-T03 would make a cycle. COMP-E17-T03 keeps the check on a project-written corpus in its own crate, run on the publisher's GGUF files of both M0 nightly checkpoints. The rerun on the published corpus goes with the import. The `llama` family's M0 checkpoint is Qwen3-0.6B (RFC-0060 §12.2), and Llama-3.2-1B is lab-only, so the criterion's "M0 families" needs no gated file. Review of #2054.
