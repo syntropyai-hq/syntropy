@@ -16,6 +16,8 @@
 //!   [`Ingress`] on the node shares, so no two mint the same ID.
 //! - [`Ingress`]: one runner's `local_sequences` producer and `local_tokens` consumer, the live
 //!   sequences and their [`Transcript`]s (RFC-0001 §6.1 step 5).
+//! - [`TailChannels`]: whether ingress asks the tail for the chosen tokens' logprobs alone, or
+//!   for one alternative that [`answer_logprobs`] drops (RFC-0050 §3.1).
 //! - [`Generation`]: one request, from `SequenceOpen` (stage 9) through the stream (stage 10) to
 //!   `Release` (stage 11).
 //!
@@ -47,11 +49,13 @@
 
 mod generation;
 mod ingress;
+mod logprobs;
 mod stages;
 pub mod types;
 
 pub use generation::{ClientWatch, Generation, Outcome, Progress};
 pub use ingress::{Ingress, SequenceIdMinter, Transcript};
+pub use logprobs::{TailChannels, answer_logprobs};
 pub use stages::{
     ClientGone, Detokenize, EventSink, ModelInfo, Route, Stages, StopMatch, StopStep,
 };

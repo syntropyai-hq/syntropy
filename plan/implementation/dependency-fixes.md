@@ -1398,6 +1398,18 @@ R-ADA (QUAL-E15-T02), the other M0 rigs (QUAL-E15-T17), the agent pool's first d
 | COMP-E17-T14's run on gated or Llama-family files, with the lab credential, moves to QUAL-E7-T15; QUAL-E7-T15 → QUAL-E7-T06, COMP-E17-T14 | COMP-E17-T14, QUAL-E7-T15 | R9 | of QUAL-E7-T06's dependents, only COMP-E17-T14 read through the lab credential. The others use the checkpoints T06 imports, or run on the lab, which reaches T15 another way. T15 now imports the gated checkpoints T06 records and runs COMP-E17-T14's test on them |
 | QUAL-E5-T22 → QUAL-E7-T15 | QUAL-E5-T22 | R9 | the `smoke` tier keeps a `stress` item from a gated or lab-only tokenizer under that fixture's access rule, and those tokenizers come from QUAL-E7-T15's lab store now that QUAL-E7-T06 imports only ungated checkpoints. Review of #2009 (2026-10-31) |
 
+
+## The reference ops the CPU kernel tasks are checked against (2026-10-31)
+
+Op conformance compares a kernel with `kernels::reference` and with the reference dequantisers (RFC-0042 §6.4). Four COMP-E3 rows whose criteria call for conformance reached no task that builds the references they need. COMP-E3-T03's pre-flight (#201) found the gap: no reference GEMV or dequantiser existed to test its kernels against. Every other COMP-E3 row that names conformance reaches its references through these edges or its own cell.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| COMP-E3-T03 → COMP-E13-T02, COMP-E1-T03 | COMP-E3-T03 | R9 | its criterion is op conformance for Q4_K, Q8_0, Q4_0, BF16 and F16 at every level, which needs the reference dequantisers for those five schemes and the reference `Gemv`. QUAL-E4-T04 (the runner) is not added: the criterion assigns the conformance run to QUAL-E4-T06, which already depends on COMP-E3-T03 and on the runner, as COMP-E3-T08, COMP-E3-T21 and COMP-E3-T22 do. COMP-E3-T04, T05, T06 and T09 now reach the references through COMP-E3-T03 |
+| COMP-E3-T04 → COMP-E13-T10 | COMP-E3-T04 | R9 | "repacked kernels pass conformance" covers the remaining GGUF types, whose reference dequantisers are COMP-E13-T10's; COMP-E13-T02 covers only the five M0 schemes |
+| COMP-E3-T07 → COMP-E1-T03 | COMP-E3-T07 | R9 | "on an SME2 rig, conformance passes" for the outer-product GEMM tiles, which are checked against the reference `Gemm`; the row depended only on COMP-E3-T01 |
+| COMP-E3-T11 → COMP-E13-T10 | COMP-E3-T11 | R9 | conformance for every M1 scheme includes MXFP4 run as doubled INT8 over the transcribed GGUF `MXFP4` type, whose reference dequantiser is COMP-E13-T10's; COMP-E13-T04's widening tables cover the other schemes |
+
 ## The `qwen_moe` weights wait for the lab store (2026-10-31)
 
 QUAL-E7-T06 confirmed Qwen/Qwen3-30B-A3B as the `qwen_moe` checkpoint. It is the smallest Qwen3-MoE checkpoint its publisher releases, and its 16 BF16 shards come to 61.08 GB [measured: the Hub's sizes]. Import copies each file into the store, so the importing host needs about twice that free, and the host that ran QUAL-E7-T06 did not have it. Every file of the checkpoint is recorded in `fixtures.toml` with its Hub hash; the configuration, tokenizer and shard index are imported, and the shards wait for the lab store.
