@@ -313,7 +313,8 @@ fn drain(mut channel: Channel) {
 /// credit would be.
 fn udp_echo(udp: UdpSocket) {
     let mut buf = vec![0u8; 65536];
-    let credit = [0u8; 64];
+    // The credit stand-in starts with 2, so the probe never takes it for the echo.
+    let credit = [2u8; 64];
     while let Ok((len, from)) = udp.recv_from(&mut buf) {
         if buf[0] == 1 {
             let _ = udp.send_to(&credit, from);
@@ -505,6 +506,10 @@ fn probe(
 struct Series {
     samples: Vec<u64>,
     lost: usize,
+    /// The first send error other than `WouldBlock`, if any: a channel that faulted says so.
+    error: Option<SendError>,
+    /// A channel's data frames sent again, at the end of its series.
+    retransmits: Option<u64>,
 }
 
 impl Series {
@@ -535,7 +540,7 @@ fn udp_series(
         // The echo is the datagram of the payload's size; a credit before it is skipped.
         while answered {
             match udp.recv_from(&mut buf) {
-                Ok((len, _)) if len == size => break,
+                Ok((len, _)) if len == size && buf[0] != 2 => break,
                 Ok(_) => {}
                 Err(_) => answered = false,
             }
@@ -575,7 +580,10 @@ fn channel_series(mut channel: Channel, pool: &BufferPool, size: u32, options: &
                 Err(SendError::WouldBlock) if Instant::now() < deadline => {
                     std::thread::sleep(Duration::from_micros(100));
                 }
-                Err(_) => break false,
+                Err(error) => {
+                    series.error.get_or_insert(error);
+                    break false;
+                }
             }
         };
         let mut answered = false;
@@ -597,6 +605,7 @@ fn channel_series(mut channel: Channel, pool: &BufferPool, size: u32, options: &
         while channel.completed().is_some() {}
         std::thread::sleep(options.period);
     }
+    series.retransmits = Some(channel.stats().retransmits);
     series
 }
 
@@ -621,4 +630,10 @@ fn report(label: &str, series: &Series) {
         rank(90),
         rank(99)
     );
+    if let Some(error) = series.error {
+        println!("  {label}: the first send error was \"{error}\"");
+    }
+    if let Some(retransmits) = series.retransmits.filter(|count| *count > 0) {
+        println!("  {label}: {retransmits} data frames sent again");
+    }
 }
