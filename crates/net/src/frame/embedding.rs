@@ -37,6 +37,9 @@ use super::header::{self, ALIGN, Flags, Frame, FrameSpec, FrameType, HEADER_LEN}
 pub mod capability {
     /// Bit 14: the peer reads `EmbeddingResult` frames (RFC-0031 §6.14, RFC-0050 amendment A5).
     pub const EMBEDDING: u64 = 1 << 14;
+    /// Bit 16: the peer reads a `Token` entry's `logprob_k = 0x80`, the chosen tokens' logprobs
+    /// with no alternatives (RFC-0031 §6.5, OQ-NET-35).
+    pub const CHOSEN_LOGPROBS: u64 = 1 << 16;
 }
 
 /// The extension's fields, before its padding.
