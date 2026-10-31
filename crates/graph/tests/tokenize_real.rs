@@ -84,7 +84,9 @@ fn a_real_gguf_tokenizer_matches_its_source() {
     let mut converted = Tokenizer::from_bytes(spec.model()).expect("the conversion loads");
     let mut source = Tokenizer::from_bytes(&source_bytes).expect("the source loads");
     let mut corpus = corpus();
-    if let Ok(extra) = std::env::var(EXTRA_VAR) {
+    if let Ok(extra) = std::env::var(EXTRA_VAR)
+        && !extra.is_empty()
+    {
         let text = std::fs::read_to_string(&extra).expect("the extra corpus reads as UTF-8");
         corpus.extend(
             text.split("\n\n")
