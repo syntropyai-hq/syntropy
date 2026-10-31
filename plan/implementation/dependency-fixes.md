@@ -1531,3 +1531,11 @@ COMP-E4-T02 (M0a) asked that "TIER's arena tests pass on a CUDA device". No aren
 | Change | Tasks | Rule | Reason |
 |---|---|---|---|
 | COMP-E4-T02's criterion keeps the provider-level arena build on a CUDA device; "TIER's arena tests pass on a CUDA device" moves to TIER-E1-T07, and COMP-E4-T21's R-ADA re-run names each leg's task | COMP-E4-T02, TIER-E1-T07, COMP-E4-T21 | R9 | the tests a criterion runs must exist when the task closes; the existing edge TIER-E1-T07 → COMP-E4-T02 keeps the graph acyclic and within M0a. Proposed, for the maintainers to confirm |
+
+## COMP-E17-T13's literal-content criterion covers every added token (2026-10-31)
+
+COMP-E17-T04 resolves a `ChatFormat` marker to `Marker::Special(id)` when its text is any added token of the tokenizer, whether or not `tokenizer.json` marks it `special` (RFC-0043 §8.4 note). The Qwen3 repositories ship `<tool_call>`, `</tool_call>`, `<think>` and `</think>` as added but not special. The engine's special-token switch skips only tokens marked `special`, so with T13's criterion as written, a content span holding `<tool_call>` would still encode to its ID and forge a call. RFC-0043 §8.7 step 3 now says the same (review of #2047).
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| COMP-E17-T13's criterion and fuzz target widen from "every special token" to every added token, special or not | COMP-E17-T13 | R9 | the markers its injection cases cover are COMP-E17-T04's, which T13 already depends on; both are M0a, so the graph does not change. Proposed, for the maintainers to confirm |
