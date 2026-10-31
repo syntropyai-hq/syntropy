@@ -9,9 +9,10 @@
 //! and side data computed from value liveness ([`boundary`], RFC-0043 §6.1), the reference
 //! interpreter's contract with its driver ([`reference`](mod@reference), RFC-0060 §4.1), the
 //! family trait, its metadata view, the static registry and the frozen tag list ([`families`],
-//! RFC-0043 §5.1), and the census classification engine ([`classify`], RFC-0043 §4). The other
-//! blocks, the family modules, segments, sharding, tokenizers and the interpreter itself come
-//! with later tasks.
+//! RFC-0043 §5.1), the `llama` family module ([`families::llama`], RFC-0043 §5.5), the fixture
+//! spec a family supplies ([`spec`], RFC-0043 §9.1), and the census classification engine
+//! ([`classify`], RFC-0043 §4). The other blocks and family modules, segments, sharding,
+//! tokenizers and the interpreter itself come with later tasks.
 //!
 //! From `manifest`, the families use `HyperParams`, `TensorClass` and the metadata readers.
 //! The census groups are not in `manifest` yet, so the facts [`ir::validate()`] needs are
@@ -25,3 +26,4 @@ pub mod classify;
 pub mod families;
 pub mod ir;
 pub mod reference;
+pub mod spec;
