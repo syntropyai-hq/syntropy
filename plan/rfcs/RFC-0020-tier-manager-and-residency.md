@@ -939,6 +939,22 @@ Domain `Tier`. Codes are never reused (RFC-0001 §10.4).
 
 A runner never reads model bytes from a slot whose state is not `Resident`, so none of these failures can produce wrong output: they cost time, or they stop the runner.
 
+*Note 2026-10-31 (TIER-E1-T02): the `Tier` domain.* The codes above are codes of `Domain::Tier`, 0x0700–0x07FF, the next free range after `Exec`'s (RFC-0012 §13). Code n of the table above is 0x0700 + n, so each keeps its published number. `core::error::codes::tier` lists them under the names below, which follow the other domains' CamelCase form. Codes are never reused (RFC-0001 §10.4). How they reach an API client is RFC-0050 §12.1's note of the same date.
+
+| Code | Name | Class | Above as |
+|---|---|---|---|
+| 0x0701 | `LedgerExceeded` | `Capacity` | TIER_LEDGER_EXCEEDED (1) |
+| 0x0702 | `VramShort` | `Capacity` | TIER_VRAM_SHORT (2) |
+| 0x0703 | `VramEcReduced` | `Drift` | TIER_VRAM_EC_REDUCED (3) |
+| 0x0704 | `HostReserve` | `Capacity` | TIER_HOST_RESERVE (4) |
+| 0x0705 | `PinDegraded` | `Drift` | TIER_PIN_DEGRADED (5) |
+| 0x0706 | `RegisterUnsupported` | `Unsupported` | TIER_REGISTER_UNSUPPORTED (6) |
+| 0x0707 | `VmmUnsupported` | `Unsupported` | TIER_VMM_UNSUPPORTED (7) |
+| 0x0708 | `StaleHandle` | `Internal` | TIER_STALE_HANDLE (8) |
+| 0x0709 | `PressureExhausted` | `Drift` | TIER_PRESSURE_EXHAUSTED (9) |
+| 0x070A | `NumaBind` | `Transient` | TIER_NUMA_BIND (10) |
+| 0x070B | `VramBudgetLost` | `Drift` | TIER_VRAM_BUDGET_LOST (11) |
+
 ### 16. Per-platform matrix
 
 | | Linux + NVIDIA | Linux + AMD (ROCm) | Windows + NVIDIA | WSL2 + NVIDIA | macOS (Apple silicon) | Strix Halo | GB10-class | Linux/Windows CPU-only | Android/iOS |
