@@ -1,5 +1,5 @@
 # ADR-0626: Linux alone gates merges during M0a; the macOS and Windows hosted jobs run as advisory, revisited at M0b's start
-- Status: Proposed
+- Status: Accepted (2026-10-31, accepted by devdaviddr)
 - Date: 2026-10-31
 - Deciders: maintainers (drafted by the quality and release engineering area)
 - Related: ADR-0020, ADR-0021 (decision 5), ADR-0610, ADR-0620 (decisions 1, 3), ADR-0625; RFC-0001 §16, §18.56; RFC-0062 §2.3, §2.4, §2.5 (note 2026-10-31); vision §5; QUAL-E1-T37
@@ -59,7 +59,7 @@ The maintainers' decision covers M0a, so this ADR ends at M0b's start and the ma
 - **Negative.**
   - A change that breaks the build or the tests on macOS or Windows can merge. Breakage can pile up until M0b, and whoever restores gating pays for it.
   - `main` can show red macOS or Windows checks, and a contributor may read that as a broken tree.
-  - RFC-0001 §16's first M0a deliverable, "The workspace builds on every Tier 1 OS", is then checked on every OS but enforced on Linux only, so M0a's exit does not need the macOS and Windows jobs green. On acceptance, §16 notes that, and so does vision §8, which `roadmap.py` derives from §16.
+  - RFC-0001 §16's first M0a deliverable, "The workspace builds on every Tier 1 OS", is then checked on every OS but enforced on Linux only, so M0a's exit does not need the macOS and Windows jobs green. §16 notes that, and so does vision §8, which `roadmap.py` derives from §16.
   - The runner minutes are spent as before.
 
 ## What would make us revisit
