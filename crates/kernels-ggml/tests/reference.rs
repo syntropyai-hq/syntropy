@@ -74,11 +74,14 @@ fn edge_scales_dequantise_as_ggml_does() {
         let h = d.to_le_bytes();
         let codes = |j: usize| (j * 37 + 11) as u8;
         same_bits(GgmlType::Q8_0, Raw::Q8_0, &block(GgmlType::Q8_0, &h, codes));
-        same_bits(
-            GgmlType::Q8_0,
-            Raw::Q8_0,
-            &block(GgmlType::Q8_0, &h, |j| (j * 8) as u8),
-        );
+        // Eight blocks hold all 256 codes, 32 at a time, after the two scale bytes.
+        for k in 0..8 {
+            let mut b = block(GgmlType::Q8_0, &h, |_| 0);
+            for (j, q) in b[2..].iter_mut().enumerate() {
+                *q = (k * 32 + j) as u8;
+            }
+            same_bits(GgmlType::Q8_0, Raw::Q8_0, &b);
+        }
         same_bits(GgmlType::Q4_0, Raw::Q4_0, &block(GgmlType::Q4_0, &h, codes));
         for &dmin in &EDGE_HALVES {
             let mut head = h.to_vec();
