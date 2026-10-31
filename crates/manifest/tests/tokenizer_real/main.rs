@@ -499,18 +499,32 @@ fn the_check_runs_end_to_end_on_a_synthetic_cache() {
     cp.expected.tokenizer_id = spec.id().to_string();
     assert_eq!(mismatches(&cp.expected, &spec), Vec::<String>::new());
 
-    let mut wrong = cp.expected.clone();
-    wrong.eos = Some(9);
-    wrong.end_of_turn = vec![11];
-    wrong.fim_middle = None;
-    wrong.add_bos = true;
-    let bad = mismatches(&wrong, &spec);
-    let fields: Vec<&str> = bad.iter().map(|l| l.split(':').next().unwrap()).collect();
-    assert_eq!(
-        fields,
-        ["eos", "end_of_turn", "fim_middle", "add_bos"],
-        "{bad:?}"
-    );
+    // Each expected field changed alone is reported, and only that field (the template's hash
+    // also changes the template source it implies).
+    type Change = fn(&mut Expected);
+    let changes: [(&[&str], Change); 12] = [
+        (&["bos"], |e| e.bos = Some(1)),
+        (&["eos"], |e| e.eos = Some(9)),
+        (&["end_of_turn"], |e| e.end_of_turn = vec![11]),
+        (&["pad"], |e| e.pad = Some(11)),
+        (&["unk"], |e| e.unk = Some(0)),
+        (&["fim_prefix"], |e| e.fim_prefix = None),
+        (&["fim_middle"], |e| e.fim_middle = None),
+        (&["fim_suffix"], |e| e.fim_suffix = Some(12)),
+        (&["add_bos"], |e| e.add_bos = true),
+        (&["add_eos"], |e| e.add_eos = true),
+        (&["chat_template_sha256", "template_source"], |e| {
+            e.chat_template_sha256 = None;
+        }),
+        (&["tokenizer_id"], |e| e.tokenizer_id = "0".repeat(64)),
+    ];
+    for (want, change) in changes {
+        let mut wrong = cp.expected.clone();
+        change(&mut wrong);
+        let bad = mismatches(&wrong, &spec);
+        let fields: Vec<&str> = bad.iter().map(|l| l.split(':').next().unwrap()).collect();
+        assert_eq!(fields, want, "{bad:?}");
+    }
 }
 
 /// A side file the cache does not hold, or the manifest does not name, is an error that names
