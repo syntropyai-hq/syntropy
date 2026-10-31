@@ -9,7 +9,8 @@
 //! the solver's tests fails on its own.
 //!
 //! `std` is not a package, so `cargo metadata` cannot see a dependency's own `std::fs` calls.
-//! The source scan covers the solver's own sources only.
+//! The source scan covers the solver's own sources only, paths written out and braced
+//! `use std::{…}` groups alike.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -160,6 +161,110 @@ fn sources(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
     }
 }
 
+/// `std` modules whose items do I/O, start processes or threads, or read the environment.
+const IO_MODULES: &[&str] = &["fs", "net", "process", "thread", "env"];
+
+/// The I/O uses in one source text, each as `line: what`. Comments after `//` are skipped. A
+/// path is found written out (`std::fs::File`) or inside a braced `use std::{…}` group, nested
+/// or across lines (`use std::{fs as f, time::{Instant}}`).
+fn io_uses(text: &str) -> Vec<String> {
+    let code: Vec<&str> = text
+        .lines()
+        .map(|line| line.split("//").next().unwrap_or_default())
+        .collect();
+    let mut found = Vec::new();
+    for (number, line) in code.iter().enumerate() {
+        for api in IO_APIS.iter().filter(|api| line.contains(*api)) {
+            found.push(format!("{}: {api}", number + 1));
+        }
+    }
+    let joined = code.join("\n");
+    let mut from = 0;
+    while let Some(at) = joined[from..].find("std::") {
+        let start = from + at + "std::".len();
+        from = start;
+        let rest = joined[start..].trim_start();
+        if !rest.starts_with('{') {
+            continue;
+        }
+        let open = joined.len() - rest.len();
+        let line = joined[..open].matches('\n').count() + 1;
+        for module in group_modules(&joined[open..]) {
+            found.push(format!("{line}: std::{{{module}}}"));
+        }
+    }
+    found
+}
+
+/// The I/O modules a braced group names at its top level, with `time` counted when the group
+/// takes `Instant` or `SystemTime` from it. `group` starts at the `{`.
+fn group_modules(group: &str) -> Vec<String> {
+    let mut depth = 0usize;
+    let mut end = group.len();
+    for (index, c) in group.char_indices() {
+        match c {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    end = index;
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let inner = &group[1..end];
+    let mut items = Vec::new();
+    let (mut depth, mut item_start) = (0usize, 0);
+    for (index, c) in inner.char_indices() {
+        match c {
+            '{' => depth += 1,
+            '}' => depth -= 1,
+            ',' if depth == 0 => {
+                items.push(&inner[item_start..index]);
+                item_start = index + 1;
+            }
+            _ => {}
+        }
+    }
+    items.push(&inner[item_start..]);
+    items
+        .into_iter()
+        .filter_map(|item| {
+            let item = item.trim();
+            let head = item
+                .split(|c: char| c == ':' || c == '{' || c.is_whitespace())
+                .next()
+                .unwrap_or_default();
+            let clock = head == "time" && (item.contains("Instant") || item.contains("SystemTime"));
+            (IO_MODULES.contains(&head) || clock)
+                .then(|| item.split_whitespace().collect::<Vec<_>>().join(" "))
+        })
+        .collect()
+}
+
+/// The scan finds each form an I/O use can take, and passes code that has none.
+#[test]
+fn the_scan_finds_io_in_every_form() {
+    let cases: &[(&str, usize)] = &[
+        ("use std::fs::File;", 1),
+        ("let _ = std::fs::metadata(path);", 1),
+        ("use std::{fs as _x};", 1),
+        ("use std::{collections::BTreeMap, net::TcpStream};", 1),
+        ("use std::{\n    fmt,\n    thread,\n};", 1),
+        ("use std::{process::Command, env};", 2),
+        ("use std::{time::{Duration, Instant}};", 1),
+        ("use std::{fmt, collections::{BTreeMap, BTreeSet}};", 0),
+        ("use std::{time::Duration};", 0),
+        ("// use std::{fs};", 0),
+    ];
+    for &(text, expected) in cases {
+        let found = io_uses(text);
+        assert_eq!(found.len(), expected, "{text:?}: {found:?}");
+    }
+}
+
 #[test]
 fn the_solver_sources_call_no_io_api() {
     let mut files = Vec::new();
@@ -171,11 +276,8 @@ fn the_solver_sources_call_no_io_api() {
     let mut found = Vec::new();
     for file in files {
         let text = std::fs::read_to_string(&file).expect("a source file");
-        for (number, line) in text.lines().enumerate() {
-            let code = line.split("//").next().unwrap_or_default();
-            for api in IO_APIS.iter().filter(|api| code.contains(*api)) {
-                found.push(format!("{}:{}: {api}", file.display(), number + 1));
-            }
+        for at in io_uses(&text) {
+            found.push(format!("{}:{at}", file.display()));
         }
     }
     assert!(
