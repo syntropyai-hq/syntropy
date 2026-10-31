@@ -235,6 +235,87 @@ fn a_matrix_runs_on_is_read_through_the_matrix() {
     assert_one("pr.yml", &other, "jobs.build.runs-on", "is computed");
 }
 
+/// `clean()` with its `runs-on` replaced, and `matrix` (if any) as the job's matrix.
+fn runs_on_job(matrix: &str, runs_on: &str) -> String {
+    let strategy = if matrix.is_empty() {
+        String::new()
+    } else {
+        format!("    strategy:\n      matrix:\n{matrix}")
+    };
+    clean().replace(
+        "    runs-on: ubuntu-24.04\n",
+        &format!("{strategy}    runs-on: {runs_on}\n"),
+    )
+}
+
+#[test]
+fn the_build_host_is_reached_only_through_its_gate() {
+    let gated = |a: &str, b: &str| format!("${{{{ ({BUILD_HOST_GATE}) && {a} || {b} }}}}");
+    // A literal, and through the matrix, with the gate's whitespace reflowed.
+    assert_clean(
+        "pr.yml",
+        &runs_on_job("", &gated("'syntropy-build'", "'ubuntu-24.04'")),
+    );
+    let matrix = "        include:\n          - runner: ubuntu-24.04\n            \
+                  build-host: syntropy-build\n          - runner: macos-26\n            \
+                  build-host: macos-26\n";
+    let reflowed = gated("matrix.build-host", "matrix.runner").replace(" && ", "\n      &&  ");
+    assert_clean("pr.yml", &runs_on_job(matrix, &format!("\"{reflowed}\"")));
+
+    // The label outside the gate: plain, in a list, through a plain matrix reference, or as the
+    // fallback.
+    for runs_on in ["syntropy-build", "[Syntropy-Build]"] {
+        assert_one(
+            "pr.yml",
+            &runs_on_job("", runs_on),
+            "jobs.build.runs-on",
+            "build-host label",
+        );
+    }
+    assert_one(
+        "pr.yml",
+        &runs_on_job("        os: [syntropy-build]\n", "${{ matrix.os }}"),
+        "jobs.build.runs-on",
+        "build-host label",
+    );
+    assert_one(
+        "pr.yml",
+        &runs_on_job("", &gated("'ubuntu-24.04'", "'syntropy-build'")),
+        "jobs.build.runs-on",
+        "build-host label",
+    );
+
+    // Any other gate is a computed label, so a fork's PR cannot be let through.
+    for gate in [
+        "vars.SYNTROPY_BUILD_HOST == 'on'",
+        "github.event.pull_request.head.repo.full_name == github.repository",
+        "(vars.SYNTROPY_BUILD_HOST == 'on' || github.event.pull_request.head.repo.full_name == github.repository)",
+        "(vars.SYNTROPY_BUILD_HOST == 'on' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository))",
+    ] {
+        let runs_on = format!("${{{{ {gate} && 'syntropy-build' || 'ubuntu-24.04' }}}}");
+        assert_one(
+            "pr.yml",
+            &runs_on_job("", &runs_on),
+            "jobs.build.runs-on",
+            "is computed",
+        );
+    }
+    // Operands that cannot be read, and lab labels in either operand.
+    assert_one(
+        "pr.yml",
+        &runs_on_job("", &gated("inputs.runner", "'ubuntu-24.04'")),
+        "jobs.build.runs-on",
+        "neither a quoted label",
+    );
+    let lab = runs_on_job("", &gated("'syntropy-build'", "'self-hosted'"));
+    assert!(
+        found("pr.yml", &lab)
+            .iter()
+            .any(|(_, m)| m.contains("lab label `self-hosted`")),
+        "{lab}"
+    );
+}
+
 /// A job on `pull_request` that checks out the PR and also reads a secret.
 fn pr_checkout_job(extra_job: &str, step: &str) -> String {
     format!(

@@ -1420,3 +1420,56 @@ QUAL-E7-T06 confirmed Qwen/Qwen3-30B-A3B as the `qwen_moe` checkpoint. It is the
 | COMP-E16-T13 → QUAL-E7-T15 | COMP-E16-T13 | R9 | its `qwen_moe` golden set comes from the checkpoint's weights, which are in the lab store. The other tasks that run those weights (QUAL-E5-T06, QUAL-E5-T10, COMP-E5-T24, TIER-E8-T18, QUAL-E7-T09) already reach QUAL-E7-T15 |
 | COMP-E16-T04's check 3 (single-device parity) on the real `qwen_moe` checkpoint moves to QUAL-E6-T06; COMP-E16-T04 keeps the census and checks 1–2 on the checkpoint's recorded safetensors headers, and everything on the Qwen-MoE fixtures | COMP-E16-T04, QUAL-E6-T06 | R9 | check 3 runs the checkpoint's weights, which wait for the lab store (QUAL-E7-T15). The family conformance runner QUAL-E6-T06 already reaches QUAL-E7-T15, and the headers give the census and checks 1–2 without the weights, so the `qwen_moe` family module does not wait for the store. Review of #2013 (2026-10-31) |
 
+## The reference ops the GPU kernel tasks are checked against (2026-10-31)
+
+The same gap as the CPU kernel tasks above, in the CUDA, Metal, HIP and Vulkan rows. Op conformance compares a kernel with `kernels::reference` and with the reference dequantisers (RFC-0042 §6.4), but these rows reached no task that builds the references their criteria name. COMP-E5-T09 and COMP-E5-T10 now reach COMP-E1-T03 and COMP-E13-T02 through COMP-E5-T01. As for COMP-E3-T03, no edge to a conformance run is added: where a criterion names one (QUAL-E4-T06, QUAL-E4-T07 through its Metal part QUAL-E4-T16, QUAL-E4-T11, or COMP-E4-T21 on the rigs), that task already depends on the kernel row.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| COMP-E5-T01 → COMP-E1-T03, COMP-E13-T02 | COMP-E5-T01 | R9 | "the op-conformance tests pass at rows 1–16" for GEMV over Q4_K, Q8_0, Q4_0, BF16 and F16, `GateUpAct` and `Logits`, which needs the reference `Gemv`, `GateUpAct` and `Logits` and the reference dequantisers for the five M0 schemes. The row depended only on COMP-E4-T05 and COMP-E13-T03 |
+| COMP-E5-T02 → COMP-E13-T10 | COMP-E5-T02 | R9 | "conformance per type" for the remaining GGUF types, whose reference dequantisers are COMP-E13-T10's, as for COMP-E3-T04 |
+| COMP-E5-T04 → COMP-E1-T03 | COMP-E5-T04 | R9 | conformance of `MoeRoute`, `MoeGrouped` and `MoeCombine` at the `qwen_moe` shapes; their reference semantics are COMP-E1-T03's, and COMP-E1-T06 (the row's path to `kernels`) builds only the contract types and `assign` |
+| COMP-E5-T05 → COMP-E1-T03 | COMP-E5-T05 | R9 | conformance of `AttnDecode` and `KvWrite` for `Gqa` at the listed contexts, against COMP-E1-T03's reference |
+| COMP-E4-T06 → COMP-E1-T03 | COMP-E4-T06 | R9 | "`TapGather` passes conformance", and the reference `TapGather` is COMP-E1-T03's |
+| COMP-E5-T16 → COMP-E1-T04 | COMP-E5-T16 | R9 | conformance of `SlidingGqa` with sinks and `Mla` decode, whose reference semantics are M1 ops (COMP-E1-T04); the row reached only COMP-E5-T05 |
+| COMP-E6-T05 → COMP-E13-T10 | COMP-E6-T05 | R9 | the Metal GEMV covers "the remaining GGUF types" under "conformance on R-MACF and R-ULTRA"; the row reached COMP-E13-T04's widening tables but not the GGUF dequantisers |
+| COMP-E8-T03 → COMP-E1-T04, COMP-E13-T04, COMP-E13-T10 | COMP-E8-T03 | R9 | "conformance on R-AMD for the M1 roster's ops" needs the M1 reference ops; the row reached only the M0 ones, through COMP-E5-T01. RFC-0040 §11.2 counts coverage per dtype class, and the M1 roster ships FP8 (DeepSeek-V3-class) and MXFP4 (gpt-oss-class) checkpoints; the row names FP8 on RDNA4. Their references are COMP-E13-T04's widening and COMP-E13-T10's GGUF `MXFP4` dequantiser. Raised in review of #2019 |
+| COMP-E8-T06 → COMP-E1-T04, COMP-E13-T04, COMP-E13-T10 | COMP-E8-T06 | R9 | "conformance on the Vulkan rigs" with coverage for the M1 roster and its dtype classes, as COMP-E8-T03 on HIP; the row reached no reference task |
+
+## The other kernels, tests and harnesses COMP rows' criteria use (2026-10-31)
+
+A second R9 pass over the COMP rows, after the reference ops above. These criteria compare a kernel with another provider's kernel, rerun a test another task builds, or run under a harness another task builds, and the rows did not reach that task.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| COMP-E3-T15 → COMP-E5-T15 | COMP-E3-T15 | R9 | "prediction rows equal the CUDA router's (COMP-E5-T15) for the same inputs". COMP-E6-T05 already depends on COMP-E5-T15 for the same comparison on Metal |
+| COMP-E5-T23 → COMP-E3-T16 | COMP-E5-T23 | R9 | "bit-identical to `kernels::reference` and to the CPU kernel (COMP-E3-T16) for 2–8 slots"; both are M3 |
+| COMP-E6-T10 → COMP-E3-T16 | COMP-E6-T10 | R9 | "bit-identical to `kernels::reference` and the CPU kernel (COMP-E3-T16) for 2–8 slots", as COMP-E5-T23 on CUDA |
+| COMP-E8-T02 → COMP-E4-T14 | COMP-E8-T02 | R9 | "the 1,000-step random-delay replay test of COMP-E4-T14 passes on both paths" on HIP |
+| COMP-E8-T05 → COMP-E4-T14 | COMP-E8-T05 | R9 | "the 1,000-step random-delay replay test passes" on Vulkan; the test is COMP-E4-T14's, as COMP-E8-T02 names it |
+| COMP-E8-T03 → COMP-E2-T17 | COMP-E8-T03 | R9 | "the router determinism check of COMP-E2-T17 passes on HIP" |
+| COMP-E8-T06 → COMP-E2-T17 | COMP-E8-T06 | R9 | "the router determinism check of COMP-E2-T17 passes on Vulkan" |
+| COMP-E9-T06 → QUAL-E3-T13 | COMP-E9-T06 | R9 | "the driver shim aborts on any context creation during the census (QUAL-E3-T13)"; the shim that aborts on a context is QUAL-E3-T13's invariant 3 check; both are M1a |
+| COMP-E4-T21 → QUAL-E4-T06 | COMP-E4-T21 | R9 | "conformance for each op on R-ADA (COMP-E5-T26, QUAL-E4-T06)": the `sm_89` cases in `hw-cuda-ada` are QUAL-E4-T06's, which already depends on COMP-E5-T26 and the other M0 CUDA rows. Both are M0a, and M0a's critical path is unchanged |
+
+## The jobs, maps and certificate rule QUAL rows' criteria use (2026-10-31)
+
+An R9 pass over the QUAL rows. Each of these criteria runs in a job, reads a map or relies on a rule that another task builds, and the row did not reach that task.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| QUAL-E7-T04 → QUAL-E2-T02 | QUAL-E7-T04 | R9 | each micro fixture "runs through parity `smoke` on R-ADA inside the PR† budget (QUAL-E2-T02)". The `hw-cuda-ada` job that runs parity `smoke` on R-ADA, with its 20-minute limit, is QUAL-E2-T02's (M0a) |
+| QUAL-E12-T13 → QUAL-E13-T01 | QUAL-E12-T13 | R9 | "the SC table lists all SC rows with a scenario mapping (QUAL-E13-T01)": the mapping is `bench/sc-map.toml`, which QUAL-E13-T01 (M0b) builds |
+| QUAL-E6-T10 → COMP-E16-T14 | QUAL-E6-T10 | R9 | the PR runs reach check 9 "through COMP-E16-T14's code-hash rule", and "after a module change, the family has no certificate until a pass" is that rule: the oracle reruns on every change to a family's code hash and issues `FamilyCert` only on a pass. COMP-E16-T14 is M0a and depends on neither row |
+
+## The shims, harnesses, probes and kernels PROD, PLC, DIST and TIER rows' criteria use (2026-10-31)
+
+The R9 pass over the remaining areas. Each criterion below uses a harness, a probe, a pinned input or a kernel that another task builds, and the row did not reach that task.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| PROD-E11-T02 → QUAL-E3-T13 | PROD-E11-T02 | R9 | "the daemon process creates no GPU context (QUAL-E3-T13's driver shim)"; COMP-E9-T06 has the same edge for its census |
+| PROD-E10-T06 → PROD-E11-T05 | PROD-E10-T06 | R9 | `setup` checks NVIDIA's archives "against the pinned hashes (PROD-E11-T05)" and "refuses an archive whose hash differs"; the release pipeline pins those hashes into `module.toml` in PROD-E11-T05; both are M1a |
+| PLC-E9-T23 → PLC-E9-T09 | PLC-E9-T23 | R9 | "sampled output passes PLC-E9-T09's harness" with a project-synthetic draft head (M3 → M1a) |
+| DIST-E6-T03 → PLC-E2-T11 | DIST-E6-T03 | R9 | "plugging a cable produces exactly one `InterfacesChanged` and new probes (PLC-E2-T11) within 3 s"; the L1 link probes are PLC-E2-T11's; both are M2 |
+| TIER-E9-T04 → COMP-E5-T02 | TIER-E9-T04 | R9 | "on the CUDA rig with a Q4_K pack and an i-quant pack, the fitted split's layer time is within 5% of the best fixed split"; CUDA i-quant GEMV is COMP-E5-T02's, and the row reached no CUDA kernel beyond `Timestamp`; both are M1a |
