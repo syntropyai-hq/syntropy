@@ -279,8 +279,9 @@ pub struct SamplingParams {
     #[serde(default)]
     pub logit_bias: SmallVec<[(u32, f32); 4]>,
     /// Top-k alternatives per token to return in `TokenEntry::logprobs`; `None` returns none, and
-    /// `Some(0)` the chosen tokens' logprobs alone (OpenAI's `top_logprobs = 0`). The wire cannot
-    /// carry `Some(0)` until OQ-NET-35 settles (`LogprobBlock::k`).
+    /// `Some(0)` the chosen tokens' logprobs alone (OpenAI's `top_logprobs = 0`). The wire carries
+    /// `Some(0)` only on channels with capability bit 16, so ingress asks a remote tail for it
+    /// only when both of the tail's channels have the bit (RFC-0050 §3.1; `LogprobBlock::k`).
     #[serde(default)]
     pub logprobs: Option<u8>,
     /// The output constraint, by reference.
