@@ -314,7 +314,7 @@ RFC-0001 §16 and the epics are authoritative for milestone scope, and this chec
 
 203 tasks in the epics (`implementation/roadmap.md`, M0a).
 
-- [ ] The workspace builds on every Tier 1 OS, and CI enforces the §4.2 dependency rules (RFC-0062). During M0a only the Linux build and tests gate a merge; the macOS and Windows jobs run as advisory (ADR-0626).
+- [ ] The workspace builds on every Tier 1 OS, and CI enforces the §4.2 dependency rules (RFC-0062). During M0a only the Linux build and tests run and gate a merge; the macOS and Windows jobs are paused (ADR-0626, revised 2026-10-31).
 - [ ] The merge gates of ADR-0021 decision 5 run from the first commit: build, lint and tests; the DCO, licence and dependency checks; the workflow security lint; the independent review-agent job; and the sandbox in which agent runs read untrusted content. The repository's security baseline, the private vulnerability-reporting channel and the agent trust tiers are in place from the first commit too (RFC-0062 §12.5, §12.6, §13; ADR-0021; ADR-0624).
 - [ ] GGUF reader, census and manifest for `llama` at Q4_K and Q8_0. Such a model runs end to end through the OpenAI Chat Completions API with streaming, through the daemon and a real runner, on the CPU provider and on CUDA (RFC-0041, RFC-0043, RFC-0050, RFC-0051).
 - [ ] Execution is eager; this exit needs no captured graphs (RFC-0012).
@@ -328,7 +328,7 @@ RFC-0001 §16 and the epics are authoritative for milestone scope, and this chec
 
 ### M0b: parity, certification and the lab
 
-134 tasks in the epics (`implementation/roadmap.md`, M0b).
+135 tasks in the epics (`implementation/roadmap.md`, M0b).
 
 - [ ] `qwen_moe` (GQA with softmax top-k MoE, every expert resident in VRAM), its `FamilyCert` gated on golden logits from the publisher's F32 reference as in M0a (RFC-0043, RFC-0042 §7).
 - [ ] The other M0 schemes (Q4_0, BF16, F16) and captured execution on CUDA (RFC-0040, RFC-0012).

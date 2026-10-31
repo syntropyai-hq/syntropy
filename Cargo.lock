@@ -4129,9 +4129,11 @@ version = "0.0.0"
 dependencies = [
  "cc",
  "proptest",
+ "smallvec",
  "syntropy-core",
  "syntropy-kernels",
  "syntropy-manifest",
+ "syntropy-testkit",
 ]
 
 [[package]]
