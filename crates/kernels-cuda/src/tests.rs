@@ -13,6 +13,7 @@ struct Fake {
     init: Option<Fault>,
     devices: Vec<RawDevice>,
     retained: std::sync::Arc<std::sync::atomic::AtomicI32>,
+    streams: stream::fake::Shared,
 }
 
 struct FakeContext(std::sync::Arc<std::sync::atomic::AtomicI32>);
@@ -41,6 +42,16 @@ impl Driver for Fake {
         self.retained
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Ok(FakeContext(self.retained.clone()))
+    }
+}
+
+impl StreamDriver for Fake {
+    fn stream_api(
+        &self,
+        _: &FakeContext,
+    ) -> Result<Box<dyn stream::StreamApi>, stream::StreamFault> {
+        self.streams.lock().unwrap().retained = Some(self.retained.clone());
+        Ok(Box::new(stream::fake::FakeStreams(self.streams.clone())))
     }
 }
 
@@ -254,6 +265,104 @@ fn open_retains_the_primary_context_and_drop_releases_it() {
     drop(ctx);
     assert_eq!(retained.load(std::sync::atomic::Ordering::SeqCst), 0);
     assert!(p.open(id(1), &opts).is_err());
+}
+
+/// `open` creates the stream plan in the retained context, and closing the device destroys every
+/// stream and event while the context is still retained, then releases it (RFC-0040 §4.1, §4.3).
+#[test]
+fn open_creates_the_plan_and_drop_destroys_it_before_the_context() {
+    use stream::fake::Call;
+    let p = fake(13_050, vec![gpu(0, (8, 9))]);
+    p.driver.streams.lock().unwrap().range = (0, -5);
+    let opts = OpenOptions {
+        streams: syntropy_kernels::StreamPlan {
+            compute: 1,
+            copy_in: 1,
+            copy_out: 1,
+            collective: 1,
+        },
+        doorbell_slots: 8,
+        capture: true,
+        deterministic: false,
+        power: syntropy_kernels::PowerHint::Mains,
+    };
+    let id = DeviceId {
+        node: NodeId([0; 32]),
+        ordinal: 0,
+    };
+    let ctx = p.open(id, &opts).unwrap();
+    let log = || p.driver.streams.lock().unwrap().log.clone();
+    assert_eq!(
+        log(),
+        [-5, -3, -2, -4].map(Call::CreateStream),
+        "compute, copy-in, copy-out, collective"
+    );
+    let s = p.stream(&ctx, StreamPriority::Compute).unwrap();
+    let e = p.event(&ctx).unwrap();
+    let t = p.timing_event(&ctx).unwrap();
+    p.record(&ctx, &s, &e).unwrap();
+    p.wait(&ctx, &s, &t).unwrap();
+    assert!(!p.poll(&ctx, &e).unwrap());
+    assert_eq!(
+        p.elapsed(&ctx, &e, &t),
+        None,
+        "`event`'s events have no timing"
+    );
+    drop(ctx);
+    let retained = p.driver.retained.load(std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(retained, 0);
+    let destroyed: Vec<bool> = log()
+        .into_iter()
+        .filter_map(|c| match c {
+            Call::DestroyStream(_, held) | Call::DestroyEvent(_, held) => Some(held),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        destroyed, [true; 6],
+        "4 streams and 2 events, all before the release"
+    );
+    assert_eq!(p.driver.streams.lock().unwrap().live(), (0, 0));
+}
+
+/// Until the memory module issues buffers, a slice names no buffer of the device, and `copy`
+/// refuses it without reaching the driver.
+#[test]
+fn a_copy_of_an_unknown_buffer_is_refused() {
+    let p = fake(13_050, vec![gpu(0, (8, 9))]);
+    let opts = OpenOptions {
+        streams: syntropy_kernels::StreamPlan {
+            compute: 1,
+            copy_in: 0,
+            copy_out: 0,
+            collective: 0,
+        },
+        doorbell_slots: 8,
+        capture: true,
+        deterministic: false,
+        power: syntropy_kernels::PowerHint::Mains,
+    };
+    let id = DeviceId {
+        node: NodeId([0; 32]),
+        ordinal: 0,
+    };
+    let ctx = p.open(id, &opts).unwrap();
+    let s = p.stream(&ctx, StreamPriority::Compute).unwrap();
+    let slice = |buffer| BufferSlice {
+        buffer,
+        offset: Bytes(0),
+        bytes: Bytes(64),
+    };
+    p.driver.streams.lock().unwrap().log.clear();
+    let err = p.copy(&ctx, &s, slice(1), slice(2)).unwrap_err();
+    assert_eq!(err.class, ErrorClass::Internal);
+    let short = BufferSlice {
+        bytes: Bytes(8),
+        ..slice(2)
+    };
+    assert!(p.copy(&ctx, &s, slice(1), short).is_err());
+    assert!(p.copy_batch(&ctx, &s, &[(slice(1), slice(2))]).is_err());
+    assert!(p.driver.streams.lock().unwrap().log.is_empty());
 }
 
 #[test]

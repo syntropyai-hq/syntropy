@@ -114,7 +114,7 @@ struct Calls {
 
 /// The open driver library and its entry points. The pointers stay valid while `_lib` lives,
 /// and every holder of a pointer holds the `Api` through an `Arc`.
-struct Api {
+pub(crate) struct Api {
     _lib: libloading::Library,
     version: unsafe extern "C" fn(*mut c_int) -> Status,
     error_name: Option<unsafe extern "C" fn(Status, *mut *const c_char) -> Status>,
@@ -123,7 +123,10 @@ struct Api {
 }
 
 /// One entry point of `lib`, as a plain function pointer of type `F`.
-fn sym<F: Copy>(lib: &libloading::Library, name: &'static str) -> Result<F, &'static str> {
+pub(crate) fn sym<F: Copy>(
+    lib: &libloading::Library,
+    name: &'static str,
+) -> Result<F, &'static str> {
     // SAFETY: `F` is the entry point's C signature from the CUDA 13 driver API, as `cudarc`'s
     // bindings declare it, with the status returned as `c_uint` (`CUresult` is `#[repr(u32)]`, so
     // the ABI is the same); the pointer is used only while `lib` is loaded (see `Api`).
@@ -183,7 +186,7 @@ impl Api {
     }
 
     /// `cuGetErrorName`'s text for `status`, when the driver knows the code.
-    fn error_name(&self, status: Status) -> Option<String> {
+    pub(crate) fn error_name(&self, status: Status) -> Option<String> {
         let f = self.error_name?;
         let mut text: *const c_char = std::ptr::null();
         // SAFETY: `cuGetErrorName` takes any integer code and writes a pointer to a static
@@ -197,6 +200,11 @@ impl Api {
                 .to_string_lossy()
                 .into_owned(),
         )
+    }
+
+    /// The open driver library, for modules that resolve entry points of their own.
+    pub(crate) fn lib(&self) -> &libloading::Library {
+        &self._lib
     }
 
     fn calls(&self) -> Result<&Calls, Fault> {
@@ -323,6 +331,11 @@ impl PrimaryContext {
     #[must_use]
     pub fn handle(&self) -> CUcontext {
         self.ctx
+    }
+
+    /// The driver library the context was retained through.
+    pub(crate) fn api(&self) -> &Arc<Api> {
+        &self.api
     }
 }
 
