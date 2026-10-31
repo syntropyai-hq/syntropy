@@ -34,8 +34,8 @@ pub struct ModelInfo {
     /// The largest prompt plus `max_tokens` the model takes.
     pub context_length: u32,
     /// `min(embedding rows, LM-head rows, sampler table size)`, from the model's manifest
-    /// ([`manifest_vocab_limit`](super::manifest_vocab_limit); [`ModelInfo::from_manifest`]):
-    /// every token ID a request carries must be below it (RFC-0050 §2.3).
+    /// ([`vocab_limit`](super::vocab_limit)): every token ID a request carries must be below it
+    /// (RFC-0050 §2.3).
     pub vocab_limit: u32,
 }
 

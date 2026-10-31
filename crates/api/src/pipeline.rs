@@ -62,10 +62,7 @@ pub use logprobs::{TailChannels, answer_logprobs};
 pub use stages::{
     ClientGone, Detokenize, EventSink, ModelInfo, Route, Stages, StopMatch, StopStep,
 };
-pub use token_ids::{
-    TokenField, TokenIdOutOfRange, VocabLimitError, check_request, check_token_ids,
-    manifest_vocab_limit, vocab_limit, vocab_limit_of,
-};
+pub use token_ids::{TokenField, TokenIdOutOfRange, check_request, check_token_ids, vocab_limit};
 pub use types::{
     ApiError, ApiShape, ChatMessage, ClientMeta, ContentPart, GenEvent, GenerateRequest, Input,
     ModelRef, SamplingRequest, StopReason, StreamMode, Timings, ToolCall, Usage,

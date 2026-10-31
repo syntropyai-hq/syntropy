@@ -22,8 +22,6 @@ http-body-util.workspace = true
 hyper.workspace = true
 hyper-util.workspace = true
 tokio = { workspace = true, features = ["net"] }
-# `ModelManifest`, from which ingress derives a model's `vocab_limit` (RFC-0050 §2.3, A9).
-syntropy-manifest = { path = "../manifest" }
 # The rings' ends, which the pipeline holds.
 syntropy-spsc = { path = "../spsc" }
 # The local CA (PROD-E5-T03): certificates, the leaf resolver, validity times and the stored CA.
