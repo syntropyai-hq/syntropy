@@ -6,6 +6,14 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+# The Hub's HTTPS client, blocking to match `RangeSource::read_at`; `store` is the one crate that
+# links it (ADR-0432; RFC-0001 §4.2 rule 6). Default features off: no system proxy, no
+# OpenSSL, and no crypto provider of its own.
+reqwest.workspace = true
+# The TLS config the Hub client uses, on `ring`'s provider (ADR-0018 §3).
+rustls.workspace = true
+# The OS's certificate roots for Hub reads.
+rustls-platform-verifier.workspace = true
 # The local index's record of each file (RFC-0041 §4.3), one JSON object per model, and the
 # probe's `storage-mode.json` (§4.2).
 serde.workspace = true

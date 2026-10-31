@@ -4,14 +4,16 @@
 //! session blobs.
 //!
 //! Layer 2 in RFC-0001 §4.1, designed in RFC-0041. Built so far: store roots and the v1
-//! directory layout (RFC-0041 §4.1), the index of local models (§4.3), and sparse source blobs
-//! with their inventories (§4.2).
+//! directory layout (RFC-0041 §4.1), the index of local models (§4.3), sparse source blobs with
+//! their inventories (§4.2), and the Hub's HTTP range source (§2, §7.2).
 //!
 //! - [`Layout`] names every path under a root's `v1/` directory, with no I/O.
 //! - [`WritableRoot`] opens a root of `store.dirs`, creates its layout and holds its writer
 //!   lock, so one process at a time writes to a root.
 //! - [`ReadOnlyRoot`] opens a root of `store.readonly_dirs` without writing to it.
 //! - [`StoreRoots`] opens both lists.
+//! - [`HubClient`] opens a file on the Hub as a [`HubSource`], a `RangeSource` read with HTTP
+//!   range requests against its commit-pinned resolve URL ([`hub`]).
 //! - [`LocalIndex`] indexes local model files in place: one SHA-256 pass, a (device, inode,
 //!   size, mtime) record per file in `local/<model-id>.sources` that later starts reuse, and
 //!   `LocalSourceChanged` when a file changes ([`local`]).
@@ -24,6 +26,7 @@
 
 pub mod blob;
 mod error;
+pub mod hub;
 pub mod layout;
 pub mod local;
 pub mod root;
@@ -32,6 +35,7 @@ pub use blob::{
     Blob, BlobError, BlobMode, Blobs, DiskUsage, NoSparse, StorageMode, read_storage_mode,
 };
 pub use error::StoreError;
+pub use hub::{HubClient, HubConfig, HubError, HubSource, resolve_url};
 pub use layout::{Layout, Name, NameError};
 pub use local::{LocalError, LocalFile, LocalIndex};
 pub use root::{ReadOnlyRoot, StoreRoots, WritableRoot};
