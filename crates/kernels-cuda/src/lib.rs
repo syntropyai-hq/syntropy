@@ -10,8 +10,12 @@
 //! retains the device's primary context, so code that uses the CUDA runtime later shares it.
 //!
 //! [`memory`] allocates device slabs and host-mapped pages, and registers and imports the tier
-//! manager's host memory (COMP-E4-T02). Streams, capture and the kernels are later tasks
-//! (COMP-E4-T04 onwards); until then those methods return [`unsupported`].
+//! manager's host memory (COMP-E4-T02). `open` also creates the streams of the stream plan;
+//! `stream`, `event`, `record`, `wait`, `poll`, `elapsed`, `synchronize`, `copy` and `copy_batch`
+//! are [`stream`]'s (COMP-E4-T04), and `copy` takes its addresses from [`memory`].
+//!
+//! Capture and the kernels are later tasks (COMP-E4-T05 onwards); until then those methods return
+//! [`unsupported`].
 //!
 //! `unsafe` is allowed in this crate (RFC-0001 §4.2 rule 8). Every `unsafe` block and impl carries
 //! a `// SAFETY:` comment that states its invariant (ADR-0001 item 4).
@@ -27,9 +31,10 @@
 pub mod describe;
 pub mod driver;
 pub mod memory;
+pub mod stream;
 
 use syntropy_core::resource::Backend;
-use syntropy_core::{Bytes, DeviceId, ErrorClass, HostRegion};
+use syntropy_core::{Bytes, DeviceId, ErrorClass, ErrorCode, HostRegion, Nanos};
 use syntropy_kernels::error::codes;
 use syntropy_kernels::{
     AllocRequest, BufferSlice, CapturedGraph, DeviceBuffer, DeviceCtx, DeviceHealth, Error, Event,
@@ -41,6 +46,7 @@ use syntropy_kernels::{
 use crate::describe::{check_driver, describe, driver_text};
 use crate::driver::{Driver, Fault, RawDevice, SystemDriver};
 use crate::memory::{AllocHook, DeviceMemory, HostRanges, MemoryDriver};
+use crate::stream::{DeviceStreams, StreamDriver, stream_error};
 
 /// The CUDA provider, over a [`Driver`]: the real one by default, a fake in tests.
 pub struct CudaProvider<D: Driver = SystemDriver> {
@@ -131,20 +137,50 @@ impl<D: Driver> CudaProvider<D> {
     }
 }
 
-/// An open device: the driver's ordinal and the retained primary context, released on drop.
+/// An open device: the driver's ordinal, its streams and events, and the retained primary
+/// context, released on drop.
+///
+/// Fields drop in declaration order: the streams are drained and destroyed, with their events,
+/// before the context is released.
 #[derive(Debug)]
 pub struct CudaDevice<C> {
     /// The driver's ordinal.
     pub ordinal: i32,
     /// The device's record from `enumerate`.
     pub record: ProviderDevice,
+    /// The device's streams and events. Declared first, so the streams are drained before the
+    /// memory they copy is freed.
+    pub streams: DeviceStreams,
     /// What the tier manager allocated. Declared before the context, so whatever is left is
     /// freed before the context is released.
     pub(crate) memory: DeviceMemory,
     _context: C,
 }
 
-impl<D: MemoryDriver> KernelProvider for CudaProvider<D>
+impl<D: Driver> CudaProvider<D>
+where
+    D::Context: 'static,
+{
+    /// The open device behind `ctx`.
+    fn device<'a>(&self, ctx: &'a DeviceCtx) -> Result<&'a CudaDevice<D::Context>, Error> {
+        ctx.downcast_ref().ok_or_else(|| {
+            Error::new(
+                ErrorClass::Internal,
+                ErrorCode::new(syntropy_core::Domain::Kernels, 0),
+                "the device context is not a CUDA device's",
+            )
+        })
+    }
+
+    /// An event that records timestamps, for [`KernelProvider::elapsed`]. Only microbenchmarks
+    /// and sampled telemetry make these; the steady-state graph uses `event`'s, which do not
+    /// (RFC-0040 §4.3).
+    pub fn timing_event(&self, ctx: &DeviceCtx) -> Result<Event, Error> {
+        self.device(ctx)?.streams.event(true)
+    }
+}
+
+impl<D: StreamDriver + MemoryDriver> KernelProvider for CudaProvider<D>
 where
     D: Send + Sync,
     D::Context: 'static,
@@ -182,8 +218,11 @@ where
         Ok(self.claimed()?.into_iter().map(|c| c.record).collect())
     }
 
-    /// Opens the device at provider-local index `dev.ordinal` and retains its primary context.
-    fn open(&self, dev: DeviceId, _opts: &OpenOptions) -> Result<DeviceCtx, Error> {
+    /// Opens the device at provider-local index `dev.ordinal`, retains its primary context and
+    /// creates the streams of `opts.streams`. Every stream and event call makes the device's
+    /// context current for its duration and restores the thread's previous one, so no call
+    /// depends on what the thread did in between.
+    fn open(&self, dev: DeviceId, opts: &OpenOptions) -> Result<DeviceCtx, Error> {
         let claimed = self
             .claimed()?
             .into_iter()
@@ -199,10 +238,16 @@ where
             .driver
             .retain(claimed.raw.ordinal)
             .map_err(|f| driver_error(&f))?;
+        let api = self
+            .driver
+            .stream_api(&context)
+            .map_err(|f| stream_error(&f))?;
+        let streams = DeviceStreams::open(api, &opts.streams)?;
         let memory = self.driver.memory(&context).map_err(|f| driver_error(&f))?;
         Ok(DeviceCtx::new(CudaDevice {
             ordinal: claimed.raw.ordinal,
             record: claimed.record,
+            streams,
             memory: DeviceMemory::new(
                 memory,
                 self.hook.clone(),
@@ -248,36 +293,67 @@ where
         None
     }
 
-    fn stream(&self, _: &DeviceCtx, _: StreamPriority) -> Result<Stream, Error> {
-        Err(unsupported())
+    /// A stream of the plan with priority `prio` not handed out yet, or a new one.
+    fn stream(&self, ctx: &DeviceCtx, prio: StreamPriority) -> Result<Stream, Error> {
+        self.device(ctx)?.streams.stream(prio)
     }
 
-    fn event(&self, _: &DeviceCtx) -> Result<Event, Error> {
-        Err(unsupported())
+    /// An event without timestamps; [`CudaProvider::timing_event`] makes one with them.
+    fn event(&self, ctx: &DeviceCtx) -> Result<Event, Error> {
+        self.device(ctx)?.streams.event(false)
     }
 
-    fn record(&self, _: &DeviceCtx, _: &Stream, _: &Event) -> Result<(), Error> {
-        Err(unsupported())
+    fn record(&self, ctx: &DeviceCtx, s: &Stream, e: &Event) -> Result<(), Error> {
+        self.device(ctx)?.streams.record(s, e)
     }
 
-    fn wait(&self, _: &DeviceCtx, _: &Stream, _: &Event) -> Result<(), Error> {
-        Err(unsupported())
+    fn wait(&self, ctx: &DeviceCtx, s: &Stream, e: &Event) -> Result<(), Error> {
+        self.device(ctx)?.streams.wait(s, e)
     }
 
     fn signal_host(&self, _: &DeviceCtx, _: &Stream, _: HostFlag, _: u32) -> Result<(), Error> {
         Err(unsupported())
     }
 
-    fn poll(&self, _: &DeviceCtx, _: &Event) -> Result<bool, Error> {
-        Err(unsupported())
+    fn poll(&self, ctx: &DeviceCtx, e: &Event) -> Result<bool, Error> {
+        self.device(ctx)?.streams.poll(e)
     }
 
-    fn synchronize(&self, _: &DeviceCtx, _: &Stream) -> Result<(), Error> {
-        Err(unsupported())
+    /// `None` unless both events come from [`CudaProvider::timing_event`] and both are complete.
+    fn elapsed(&self, ctx: &DeviceCtx, start: &Event, end: &Event) -> Option<Nanos> {
+        self.device(ctx).ok()?.streams.elapsed(start, end)
     }
 
-    fn copy(&self, _: &DeviceCtx, _: &Stream, _: BufferSlice, _: BufferSlice) -> Result<(), Error> {
-        Err(unsupported())
+    fn synchronize(&self, ctx: &DeviceCtx, s: &Stream) -> Result<(), Error> {
+        self.device(ctx)?.streams.synchronize(s)
+    }
+
+    fn copy(
+        &self,
+        ctx: &DeviceCtx,
+        s: &Stream,
+        src: BufferSlice,
+        dst: BufferSlice,
+    ) -> Result<(), Error> {
+        let dev = self.device(ctx)?;
+        let (dst, src, bytes) = copy_addrs(dev, &src, &dst)?;
+        // SAFETY: `copy_addrs` checked both ranges lie inside buffers this device allocated or
+        // imported, which the tier manager keeps until the copy's stream has passed it.
+        unsafe { dev.streams.copy(s, dst, src, bytes) }
+    }
+
+    /// One `cuMemcpyBatchAsync` per [`stream::BATCH_CHUNK`] pairs on a CUDA 13 driver that
+    /// exports it, else a loop of `cuMemcpyAsync` (RFC-0040 §7.7).
+    fn copy_batch(
+        &self,
+        ctx: &DeviceCtx,
+        s: &Stream,
+        pairs: &[(BufferSlice, BufferSlice)],
+    ) -> Result<(), Error> {
+        let dev = self.device(ctx)?;
+        let pairs = pairs.iter().map(|(src, dst)| copy_addrs(dev, src, dst));
+        // SAFETY: as in `copy`, for every pair.
+        unsafe { dev.streams.copy_batch(s, pairs) }
     }
 
     fn prepare(&self, _: &DeviceCtx, _: &OpKey, _: &ShapeSig) -> Result<PreparedOp, Error> {
@@ -309,6 +385,42 @@ where
     fn health(&self, _: &DeviceCtx) -> DeviceHealth {
         DeviceHealth::Ok
     }
+}
+
+/// The device addresses and length of a copy from `src` to `dst`: `(dst, src, bytes)`. Both
+/// slices must lie inside buffers of this device and have the same length.
+fn copy_addrs<C>(
+    dev: &CudaDevice<C>,
+    src: &BufferSlice,
+    dst: &BufferSlice,
+) -> Result<(u64, u64, u64), Error> {
+    if src.bytes != dst.bytes {
+        return Err(Error::new(
+            ErrorClass::Internal,
+            ErrorCode::new(syntropy_core::Domain::Kernels, 0),
+            format!(
+                "a copy of {} bytes into a slice of {}",
+                src.bytes.0, dst.bytes.0
+            ),
+        ));
+    }
+    Ok((slice_addr(dev, dst)?, slice_addr(dev, src)?, src.bytes.0))
+}
+
+/// The device address of `s`'s first byte, when `s` lies inside a buffer this device holds from
+/// `alloc` or `import` ([`DeviceMemory::resolve`]). A buffer of another device, a freed one, a
+/// registration or a range past the buffer's end is refused.
+fn slice_addr<C>(dev: &CudaDevice<C>, s: &BufferSlice) -> Result<u64, Error> {
+    dev.memory.resolve(*s).map(|r| r.device).ok_or_else(|| {
+        Error::new(
+            ErrorClass::Internal,
+            ErrorCode::new(syntropy_core::Domain::Kernels, 0),
+            format!(
+                "no buffer {:#x} on this device holds {} bytes at offset {}",
+                s.buffer, s.bytes.0, s.offset.0
+            ),
+        )
+    })
 }
 
 #[cfg(test)]
