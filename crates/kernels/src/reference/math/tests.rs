@@ -76,6 +76,22 @@ fn silu_edge_cases() {
     assert_eq!(silu(20.0), 20.0);
 }
 
+/// The form is the division `x / (1 + exp(−x))`, not the product `x · (1 / (1 + exp(−x)))`: the
+/// two round differently on part of the range, and the grid below must hit such points.
+#[test]
+fn silu_is_the_written_out_division() {
+    let mut product_differs = 0;
+    for i in 0..10_000 {
+        let x = -20.0 + i as f32 * 0.004;
+        let want = x / (1.0 + exp(-x));
+        assert_eq!(silu(x).to_bits(), want.to_bits(), "silu({x})");
+        if (x * (1.0 / (1.0 + exp(-x)))).to_bits() != want.to_bits() {
+            product_differs += 1;
+        }
+    }
+    assert!(product_differs > 0);
+}
+
 #[test]
 fn silu_by_hand() {
     // x = ln 3 makes 1 + exp(-x) = 4/3, so silu = 0.75 · ln 3 ≈ 0.823_959_2.
