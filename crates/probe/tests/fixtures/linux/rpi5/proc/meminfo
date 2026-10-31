@@ -4,8 +4,11 @@ MemAvailable:    7570784 kB
 Buffers:          412312 kB
 Cached:          6123044 kB
 SwapCached:            0 kB
+Active(file):     301224 kB
+Inactive(file):   289908 kB
 SwapTotal:       2097148 kB
 SwapFree:        2097148 kB
+SReclaimable:      61004 kB
 HugePages_Total:       0
 HugePages_Free:        0
 Hugepagesize:       2048 kB

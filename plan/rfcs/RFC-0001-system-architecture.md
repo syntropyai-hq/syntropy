@@ -3200,8 +3200,21 @@ DIST-E17-T16 builds RFC-0034 §10.4's child that parses a newly added model's he
 | The child returns the file's length and the header's bytes on its stdout, not over an IPC channel, and the daemon re-parses those bytes | RFC-0034 §10.4 (dated note) | the child sends one reply and exits, so a pipe is enough; re-parsing the vetted bytes in the daemon needs no new `ipc` message. Proposed, for the maintainers to confirm |
 | On Linux the child's network ban is a seccomp filter at M1, and the macOS and Windows bans stay at M4 with DIST-E17-T08 | RFC-0034 §10.4 (dated note); DIST-E17-T16 and DIST-E17-T08's criteria | accepted by the maintainers on 2026-10-29. A network namespace needs a privilege Ubuntu 24.04 does not give unprivileged processes by default |
 
-### 18.54 A Linux build host for same-repository PRs (2026-10-30)
+### 18.54 An interim dev GPU, and the M0 CUDA path off the lab (2026-10-31)
+
+R-ADA (QUAL-E15-T02), the other M0 rigs (QUAL-E15-T17) and the fixture store's S3 backend (QUAL-E7-T15) all wait on maintainer actions, and the M0 CUDA path and the real-checkpoint chain waited on them. The maintainers decided on 2026-10-31 that agents may use a dev GPU for development evidence in the meantime.
 
 | Change | Sections touched | Reason |
 |---|---|---|
-| `lint`, `build-linux`, `hosted-test-linux` and `hosted-l3` of a same-repository PR may run on a self-hosted Linux build host, label `syntropy-build`, behind the repository variable `SYNTROPY_BUILD_HOST` and a gate the workflow lint checks. Fork PRs, merge groups and every other run stay hosted | ADR-0625 (new, Proposed); ADR-0620 (dated revision); RFC-0062 §3.1 (dated note) | hosted Linux jobs waited 6 to 10 minutes on average for a runner [measured: GitHub Actions API, the 8 `pr.yml` runs before 2026-10-30]. Each job runs in a fresh container from a single-use just-in-time configuration, with no credential and no route to the LAN, so the fork defence of ADR-0620 decision 4 is unchanged. Binds no task until a maintainer accepts ADR-0625 |
+| An RTX 3090 (`sm_86`) on a maintainer's development host, under WSL2, is an interim dev GPU: development evidence only, labelled `[measured, RTX 3090 dev host, not R-ADA]`, never conformance, gating or performance evidence | ADR-0610 decision 4 (dated revision) | the pool's first devices and R-ADA are not online, so no M0 CUDA task could be developed against a real device |
+| The M0 CUDA tasks no longer depend on the rigs; their R-ADA, R-BW and pool-host legs move to one task, COMP-E4-T21, at the same milestone | the COMP, PLC, TIER and PROD epics; `dependency-fixes.md` | each leg still runs on the rig it names before M0a closes, so no gate moves off the lab |
+| QUAL-E7-T06 imports ungated checkpoints through the local fixture store; the gated and lab-only imports, and the lab-credential read, move to QUAL-E7-T15 | the QUAL and COMP epics; `dependency-fixes.md` | the real-checkpoint chain (tokenizers, families, census, templates and the OpenAI API) needed the S3 backend only for gated files |
+
+The dev-GPU decision is the maintainers', made on 2026-10-31. The R9 splits and the R8 cut that follow from it are taken under their standing instruction and are proposals for the maintainers to confirm.
+
+### 18.55 A Linux build host for this repository's own runs (2026-10-30, revised 2026-10-31)
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| Every Linux job of every workflow may run on a self-hosted Linux build host, label `syntropy-build`, behind the repository variable `SYNTROPY_BUILD_HOST` and a gate the workflow lint checks, for every event except a PR from a fork. Fork PRs, `toolchains-linux` and the macOS and Windows jobs stay hosted (revised 2026-10-31; first proposed for four `pr.yml` jobs of same-repository PRs only) | ADR-0625 (new, Proposed); ADR-0620 (dated revision); RFC-0062 §3.1 (dated note) | hosted Linux jobs waited 6 to 10 minutes on average for a runner [measured: GitHub Actions API, the 8 `pr.yml` runs before 2026-10-30]. Each job runs in a fresh container from a single-use just-in-time configuration, with no credential and no route to the LAN, and a job-started hook refuses a fork's PR, so the fork defence of ADR-0620 decision 4 is unchanged. Binds no task until a maintainer accepts ADR-0625 |
+

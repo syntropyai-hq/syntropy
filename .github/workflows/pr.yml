@@ -298,7 +298,7 @@ jobs:
 
   # The Linux build image: two no-cache builds are byte-identical, and the pinned tools print their
   # versions from inside it (RFC-0062 §4.1; QUAL-E16-T24). `docker buildx` is on the hosted runner.
-  # Its default `docker` driver cannot export an OCI archive, so the step creates a
+  # Its default `docker` driver cannot export an image tarball, so the step creates a
   # `docker-container` builder of its own on the BuildKit image `ci/toolchains.toml` pins.
   toolchains-linux:
     needs: changes
@@ -315,13 +315,46 @@ jobs:
           cache: ${{ github.event.pull_request.head.repo.full_name == github.repository && 'read-write' || 'read-only' }}
       - run: cargo xtask ci toolchains-linux
 
+  # The hosted Windows and macOS runners carry the pinned toolchains (RFC-0062 §4.1 and §4.2;
+  # QUAL-E16-T30). Each job fetches the archives the image lacks, checks their SHA-256 against
+  # `ci/toolchains.toml`, and prints every tool's version against its pin.
+  toolchains-windows:
+    needs: changes
+    if: contains(fromJSON(needs.changes.outputs.jobs), 'toolchains-windows')
+    runs-on: windows-2025
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache-key: toolchains-windows
+          cache: ${{ github.event.pull_request.head.repo.full_name == github.repository && 'read-write' || 'read-only' }}
+      - run: cargo xtask ci toolchains-windows
+
+  toolchains-macos:
+    needs: changes
+    if: contains(fromJSON(needs.changes.outputs.jobs), 'toolchains-macos')
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache-key: toolchains-macos
+          cache: ${{ github.event.pull_request.head.repo.full_name == github.repository && 'read-write' || 'read-only' }}
+      - run: cargo xtask ci toolchains-macos
+
   # The required check. It always runs, even when the run is cancelled: a skipped job reports
   # success to branch protection, so a skipped gate would let a PR merge with nothing checked.
   #
   # The verdict comes from the base branch's `xtask`, built with no cache, as in `pr-meta.yml`,
   # so a PR cannot change how its own jobs are judged (RFC-0062 §2.2, note 2026-10-22).
   ci-gate:
-    needs: [changes, lint, build, hosted-test, hosted-l3, hosted-parity-nano, toolchains-linux]
+    needs: [changes, lint, build, hosted-test, hosted-l3, hosted-parity-nano, toolchains-linux, toolchains-windows, toolchains-macos]
     if: always()
     runs-on: ${{ (vars.SYNTROPY_BUILD_HOST == 'on' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository)) && 'syntropy-build' || 'ubuntu-24.04' }}
     timeout-minutes: 15

@@ -5,14 +5,17 @@
 //!
 //! `ci/toolchains.toml` repeats the pins of the Linux build image, `ci/images/cuda-13/Dockerfile`.
 //! This step fails unless:
-//! - `ci/toolchains.toml` parses with no unknown key, every checksum is 64 lowercase hex digits,
-//!   every pin is either set or marked `verified = false` with no value, and the BuildKit image
-//!   is pinned by digest;
+//! - `ci/toolchains.toml` parses with no unknown key and no missing pin (so a `verified = false`
+//!   placeholder does not parse), every checksum is 64 lowercase hex digits, and the BuildKit
+//!   image is pinned by digest;
 //! - each Linux pin appears in the Dockerfile: the base image, the syntax frontend, the archive
 //!   snapshot, the epoch, the compiler version, the CMake version and checksum, and the CUDA
 //!   release and each component's checksum;
 //! - `ci/arch-sets.toml` parses, and its `pr` profile lists `sm_89` (R-ADA, the M0 rig) and no
 //!   PTX.
+//!
+//! `cargo xtask ci toolchains-linux` builds the image and prints its tools here; the Windows and
+//! macOS jobs, which check the hosted runners' tools, are in [`hosted`] (QUAL-E16-T30).
 
 use std::fs;
 use std::path::Path;
@@ -21,6 +24,10 @@ use std::process::Command;
 use serde::Deserialize;
 
 use crate::run::Context;
+
+mod hosted;
+
+pub use hosted::{macos_step, windows_step};
 
 /// The pins file, relative to the workspace root.
 pub const TOOLCHAINS: &str = "ci/toolchains.toml";
@@ -91,23 +98,48 @@ struct Component {
 struct Windows {
     cmake: Cmake,
     cuda: Cuda,
-    msvc: Unpinned,
+    msvc: Msvc,
+}
+
+/// The MSVC toolchain of the hosted Windows image.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Msvc {
+    /// Visual Studio's servicing line, `<major>.<minor>`: the `installationVersion`'s first two
+    /// parts must equal it. The full build differs between the images a label serves during a
+    /// rollout, while the toolset and `cl` below stay exact (RFC-0062 §4.2, note 2026-10-31).
+    visual_studio: String,
+    /// The default MSVC toolset, `Microsoft.VCToolsVersion.default.txt`.
+    toolset: String,
+    /// The version in `cl`'s banner.
+    cl: String,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Macos {
     cmake: Cmake,
-    xcode: Unpinned,
-    metal: Unpinned,
+    xcode: Xcode,
+    metal: Metal,
 }
 
-/// A pin that only the hosted runner's report can fill in.
+/// The default Xcode of the hosted macOS image.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Unpinned {
-    verified: bool,
-    version: Option<String>,
+struct Xcode {
+    /// As `xcodebuild -version` and the image report give it.
+    version: String,
+    build: String,
+    /// What follows `Apple clang version` in `xcrun clang --version`.
+    clang: String,
+}
+
+/// The Metal compiler, a component of its own from Xcode 26.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Metal {
+    /// What follows `Apple metal version` in `xcrun -sdk macosx metal --version`.
+    version: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -132,6 +164,15 @@ struct Profile {
 
 fn is_sha256(text: &str) -> bool {
     text.len() == 64 && text.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+/// Whether `text` is `<major>.<minor>`, two runs of digits.
+fn is_servicing_line(text: &str) -> bool {
+    text.split_once('.').is_some_and(|(major, minor)| {
+        [major, minor]
+            .iter()
+            .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
+    })
 }
 
 fn is_arch(text: &str, prefix: &str) -> bool {
@@ -177,15 +218,24 @@ pub fn check(toolchains: &str, dockerfile: &str, arch_sets: &str) -> Vec<String>
                 }
             }
             for (name, pin) in [
-                ("windows.msvc", &t.windows.msvc),
-                ("macos.xcode", &t.macos.xcode),
-                ("macos.metal", &t.macos.metal),
+                ("windows.msvc.visual_studio", &t.windows.msvc.visual_studio),
+                ("windows.msvc.toolset", &t.windows.msvc.toolset),
+                ("windows.msvc.cl", &t.windows.msvc.cl),
+                ("macos.xcode.version", &t.macos.xcode.version),
+                ("macos.xcode.build", &t.macos.xcode.build),
+                ("macos.xcode.clang", &t.macos.xcode.clang),
+                ("macos.metal.version", &t.macos.metal.version),
             ] {
-                if pin.verified == pin.version.is_none() {
-                    problems.push(format!(
-                        "{TOOLCHAINS}: `{name}` needs a `version` when verified, and none when not"
-                    ));
+                if pin.trim().is_empty() {
+                    problems.push(format!("{TOOLCHAINS}: `{name}` is empty"));
                 }
+            }
+            if !is_servicing_line(&t.windows.msvc.visual_studio) {
+                problems.push(format!(
+                    "{TOOLCHAINS}: `windows.msvc.visual_studio` is `{}`, not a servicing line \
+                     `<major>.<minor>` such as `18.11`",
+                    t.windows.msvc.visual_studio
+                ));
             }
             let i = &t.linux.image;
             if !i
@@ -372,12 +422,12 @@ fn version_problems(printed: &str, pins: &Toolchains) -> Vec<String> {
 /// The build, twice, and the tools it must carry: `cargo xtask ci toolchains-linux`.
 ///
 /// Builds the Linux image twice with no cache, as the Dockerfile's header says, and fails unless
-/// the two OCI archives are byte-identical. Then it loads the image and prints `nvcc`, CMake and
+/// the two image tarballs are byte-identical. Then it loads the first and prints `nvcc`, CMake and
 /// the C++ compiler from inside it (RFC-0062 §4.1; QUAL-E16-T24). Needs `docker buildx`.
 ///
 /// The builds run on a `docker-container` builder of its own, on the pinned BuildKit image
-/// (`linux.image.buildkit`), because buildx's default `docker` driver cannot export an OCI
-/// archive. The step creates it, leaves the default builder as it was, and removes it at the
+/// (`linux.image.buildkit`), because buildx's default `docker` driver cannot export an image
+/// tarball. The step creates it, leaves the default builder as it was, and removes it at the
 /// end, so a local run and the hosted job build the same way.
 pub fn linux_step(context: &Context) -> Result<(), String> {
     let toolchains = fs::read_to_string(context.root.join(TOOLCHAINS))
@@ -401,7 +451,7 @@ pub fn linux_step(context: &Context) -> Result<(), String> {
             Err(format!("`docker {}`: {status}", args.join(" ")))
         }
     };
-    let builder = format!("syntropy-oci-{}", std::process::id());
+    let builder = format!("syntropy-image-{}", std::process::id());
     let driver_opt = format!("image={}", pins.linux.image.buildkit);
     docker(&[
         "buildx",
@@ -428,7 +478,10 @@ pub fn linux_step(context: &Context) -> Result<(), String> {
 }
 
 /// The two no-cache builds on `builder`, their comparison, and the version print from inside the
-/// image: what the image printed. `work` holds the archives; the caller removes it and the
+/// image: what the image printed. Both builds export Docker image tarballs. The print runs in the
+/// first of the two compared tarballs,
+/// loaded with `docker load`, so the versions shown are those of the bytes shown to rebuild
+/// identically, not of a third build. `work` holds the archives; the caller removes it and the
 /// builder.
 fn build_and_print(
     pins: &Toolchains,
@@ -442,7 +495,13 @@ fn build_and_print(
     let mut archives = Vec::new();
     for n in 1..=2 {
         let archive = work.join(format!("cuda-13-{n}.tar"));
-        let output = format!("type=oci,dest={},rewrite-timestamp=true", archive.display());
+        // A Docker image tarball, which carries the `manifest.json` the daemon's classic image
+        // store needs to load it (an OCI-layout tarball has none). `name` is the same in both
+        // builds, so the comparison is unaffected and `docker load` tags the image it loads.
+        let output = format!(
+            "type=docker,dest={},rewrite-timestamp=true,name={CHECK_TAG}",
+            archive.display()
+        );
         docker(&[
             "buildx",
             "build",
@@ -466,35 +525,40 @@ fn build_and_print(
         );
     }
     eprintln!("toolchains-linux: two no-cache builds are byte-identical");
-    let tag = "syntropy-build-check:local";
-    docker(&[
-        "buildx",
-        "build",
-        "--builder",
-        builder,
-        "--platform",
-        "linux/amd64",
-        "--build-arg",
-        &epoch,
-        "--load",
-        "-t",
-        tag,
-        &context,
-    ])?;
+    let load = Command::new("docker")
+        .args(["load", "--input"])
+        .arg(&archives[0])
+        .output()
+        .map_err(|e| format!("could not start `docker load`: {e}"))?;
+    if !load.status.success() {
+        return Err(format!(
+            "`docker load` of the compared archive failed ({}): {}",
+            load.status,
+            String::from_utf8_lossy(&load.stderr)
+        ));
+    }
+    let loaded = String::from_utf8_lossy(&load.stdout);
+    let Some(tag) = loaded_image(&loaded) else {
+        // The load may still have stored the image under the archive's name.
+        docker(&["image", "rm", CHECK_TAG]).ok();
+        return Err(format!("`docker load` named no image it loaded: {loaded}"));
+    };
+    eprintln!("toolchains-linux: the version print runs in the compared archive, loaded as {tag}");
     let run = Command::new("docker")
         .args([
             "run",
             "--rm",
             "--platform",
             "linux/amd64",
-            tag,
+            &tag,
             "sh",
             "-c",
             "nvcc --version && cmake --version | head -1 && g++ --version | head -1 && ldd --version | head -1",
         ])
-        .output()
-        .map_err(|e| format!("could not start `docker run`: {e}"))?;
-    docker(&["image", "rm", tag]).ok();
+        .output();
+    // Removed whether or not the print ran, so no image is left behind.
+    docker(&["image", "rm", &tag]).ok();
+    let run = run.map_err(|e| format!("could not start `docker run`: {e}"))?;
     if !run.status.success() {
         return Err(format!("the version print failed: {}", run.status));
     }
@@ -503,9 +567,45 @@ fn build_and_print(
     Ok(printed)
 }
 
+/// The name `docker load` gives the image the compared tarball holds (the export's `name`).
+const CHECK_TAG: &str = "syntropy-build-check:local";
+
+/// The image `docker load` reports it loaded: the last `Loaded image: <name>` line, or else the
+/// last `Loaded image ID: <id>` line for an image that came without a name.
+fn loaded_image(stdout: &str) -> Option<String> {
+    let last = |prefix: &str| {
+        stdout
+            .lines()
+            .filter_map(|line| line.trim().strip_prefix(prefix))
+            .map(|rest| rest.trim().to_owned())
+            .rfind(|image| !image.is_empty())
+    };
+    last("Loaded image: ").or_else(|| last("Loaded image ID: "))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_loaded_image_is_read_from_docker_loads_report() {
+        assert_eq!(
+            loaded_image("Loaded image: syntropy-build-check:local\n").as_deref(),
+            Some("syntropy-build-check:local")
+        );
+        assert_eq!(
+            loaded_image("Loaded image ID: sha256:0123abcd\n").as_deref(),
+            Some("sha256:0123abcd")
+        );
+        // A name wins over an ID, and the last of each counts.
+        assert_eq!(
+            loaded_image("Loaded image ID: sha256:aa\nLoaded image: a:1\nLoaded image: b:2\n")
+                .as_deref(),
+            Some("b:2")
+        );
+        assert_eq!(loaded_image("nothing loaded\n"), None);
+        assert_eq!(loaded_image("Loaded image: \n"), None);
+    }
 
     fn real() -> (String, String, String) {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
@@ -619,17 +719,44 @@ ldd (Ubuntu GLIBC 2.35-0ubuntu3.15) 2.35
     }
 
     #[test]
-    fn an_unverified_pin_with_a_value_is_refused() {
+    fn an_unverified_or_empty_pin_is_refused() {
         let (t, d, a) = real();
-        let bad = t.replace(
-            "[windows.msvc]\nverified = false",
-            "[windows.msvc]\nverified = false\nversion = \"14\"",
-        );
+        let metal = t
+            .lines()
+            .find(|l| l.starts_with("version = \"32023"))
+            .expect("the metal pin");
+        // QUAL-E16-T30: no pin may be a `verified = false` placeholder any more.
+        let unverified = t.replace(metal, "verified = false");
+        assert_ne!(unverified, t);
+        assert!(!check(&unverified, &d, &a).is_empty());
+        let cl = t
+            .lines()
+            .find(|l| l.starts_with("cl = "))
+            .expect("the cl pin");
+        let empty = t.replace(cl, "cl = \" \"");
         assert!(
-            check(&bad, &d, &a)
+            check(&empty, &d, &a)
                 .iter()
-                .any(|p| p.contains("windows.msvc"))
+                .any(|p| p.contains("windows.msvc.cl"))
         );
+    }
+
+    #[test]
+    fn the_visual_studio_pin_is_a_servicing_line() {
+        let (t, d, a) = real();
+        let pin = t
+            .lines()
+            .find(|l| l.starts_with("visual_studio = "))
+            .expect("the pin");
+        for bad in ["18.11.12328.437", "18", "18.x", ".11"] {
+            let file = t.replace(pin, &format!("visual_studio = \"{bad}\""));
+            assert!(
+                check(&file, &d, &a)
+                    .iter()
+                    .any(|p| p.contains("servicing line")),
+                "{bad}"
+            );
+        }
     }
 
     #[test]

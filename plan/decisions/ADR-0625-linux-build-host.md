@@ -1,4 +1,4 @@
-# ADR-0625: A self-hosted Linux build host for same-repository PRs, behind a gate, with fork PRs left on hosted runners
+# ADR-0625: A self-hosted Linux build host for this repository's own runs, behind a gate, with fork PRs left on hosted runners
 - Status: Proposed
 - Date: 2026-10-30
 - Deciders: maintainers (drafted by the quality and release engineering area)
@@ -22,7 +22,7 @@ RFC-0062 §3.2 explains why self-hosted runners on a public repository are dange
 1. **Keep hosted runners only.** No new risk, but the wait stays.
 2. **Larger hosted runners.** They are billed per minute, and ADR-0620 decision 1 needs a measured reason in `ci/cost.toml`. They do not raise the concurrency limit, so they don't shorten the wait.
 3. **A persistent self-hosted runner for every PR.** Fast, but a fork's code would run on the machine with the runner's credentials, and could persist and tamper with later jobs.
-4. **Chosen: an ephemeral build host for same-repository PRs only.** Fork PRs, merge groups and every other event stay on hosted runners.
+4. **Chosen: an ephemeral build host for this repository's own runs only.** Fork PRs stay on hosted runners (revised 2026-10-31; first proposed for same-repository PRs only, with merge groups and every other event hosted).
 
 ## Decision
 1. **What runs there.** Every Linux job of every workflow, for every event except a PR from a fork (revised 2026-10-31; first proposed for `pr.yml`'s `lint`, `build-linux`, `hosted-test-linux` and `hosted-l3` on same-repository PRs only). `toolchains-linux` stays hosted, because it needs `docker buildx` and job containers get no Docker socket, and so do the macOS and Windows jobs. `changes`, `ci-gate` and `pr-meta.yml` still judge from the base branch, so running them on the host gives a PR no say in its verdict. The host never runs a lab job.
@@ -35,11 +35,11 @@ RFC-0062 §3.2 explains why self-hosted runners on a public repository are dange
 
 ## Consequences
 - **Positive.**
-  - Same-repository PRs, which are most of the traffic, no longer wait for hosted Linux capacity, and they free that capacity for fork PRs and the macOS and Windows jobs.
+  - Same-repository PRs, merge groups and scheduled runs, which are most of the traffic, no longer wait for hosted Linux capacity, and they free that capacity for fork PRs and the macOS and Windows jobs.
   - The host's 20 threads speed up the build and test steps themselves.
   - Turning the host off is one variable change, with no workflow edit.
 - **Negative.**
-  - The maintainer's machine must stay awake and online. While it is down and the variable is still `on`, same-repository PRs' Linux jobs queue until it returns or the variable is turned off.
+  - The maintainer's machine must stay awake and online. While it is down and the variable is still `on`, the Linux jobs of every run except a fork's PR queue until it returns or the variable is turned off.
   - A token with Administration write on the repository lives on a machine outside GitHub. It is limited to this repository and never enters a job.
   - Build-host jobs run on Ubuntu 24.04 in a container, not on the hosted image. A tool the hosted image has and the build-host image lacks fails there first, and the image must be updated.
   - A slot's container counts against the host's 45 GB of RAM; three slots at 14 GB each is the default.
