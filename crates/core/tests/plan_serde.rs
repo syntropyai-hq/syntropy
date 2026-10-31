@@ -9,11 +9,12 @@
 use std::fmt::Debug;
 
 use proptest::prelude::*;
+use proptest::strategy::ValueTree;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use smallvec::SmallVec;
 use syntropy_core::plan::*;
-use syntropy_core::resource::TransportKind;
+use syntropy_core::resource::{TierKind, TransportKind};
 use syntropy_core::*;
 
 // ---- Strategies -------------------------------------------------------------------------
@@ -396,6 +397,149 @@ fn batching_limits() -> impl Strategy<Value = BatchingLimits> {
         )
 }
 
+fn stage_term() -> impl Strategy<Value = StageTerm> {
+    prop::sample::select(StageTerm::ALL.to_vec())
+}
+
+fn stage_cost() -> impl Strategy<Value = StageCost> {
+    let purpose = prop::sample::select(vec![
+        MemoryPurpose::ContextReserve,
+        MemoryPurpose::Scratch,
+        MemoryPurpose::DenseWeights,
+        MemoryPurpose::Kv,
+        MemoryPurpose::KvReserved,
+        MemoryPurpose::ExpertCache,
+        MemoryPurpose::Staging,
+        MemoryPurpose::NetPools,
+        MemoryPurpose::History,
+        MemoryPurpose::Headroom,
+    ]);
+    let resident = (tier_id(), bytes(), bytes(), small((purpose, bytes()))).prop_map(
+        |(tier, before, after, by_purpose)| ResidentBytes {
+            tier,
+            before,
+            after,
+            by_purpose,
+        },
+    );
+    (
+        (
+            stage_ix(),
+            small((stage_term(), nanos())),
+            small((stage_term(), nanos())),
+        ),
+        (
+            nanos(),
+            small((tier_id(), bytes())),
+            small(resident),
+            nanos(),
+        ),
+    )
+        .prop_map(
+            |((stage, terms, overlapped), (cpu_layer_max, bytes, resident, prefill_per_chunk))| {
+                StageCost {
+                    stage,
+                    terms,
+                    overlapped,
+                    cpu_layer_max,
+                    bytes,
+                    resident,
+                    prefill_per_chunk,
+                }
+            },
+        )
+}
+
+fn plan_ext() -> impl Strategy<Value = PlacementPlanExt> {
+    let transition = prop::sample::select(vec![
+        TransitionStrategy::MakeBeforeBreak,
+        TransitionStrategy::BreakBeforeMake,
+    ]);
+    let path = prop::sample::select(vec![
+        SolvePath::Milp,
+        SolvePath::MilpIncumbent,
+        SolvePath::Dp,
+    ]);
+    let solve = (path, f32s(), any::<u64>(), any::<u64>(), nanos()).prop_map(
+        |(path, gap, mip_nodes, simplex_iterations, wall)| SolveStats {
+            path,
+            gap,
+            mip_nodes,
+            simplex_iterations,
+            wall,
+        },
+    );
+    let degraded = prop::option::of(prop::sample::select(vec![
+        DegradedReason::DenseOnNvme,
+        DegradedReason::MultiStageOnNode,
+        DegradedReason::AbsorbedStage,
+    ]));
+    let status = prop::sample::select(vec![
+        CertStatus::Certified,
+        CertStatus::Derived,
+        CertStatus::Uncertified,
+    ]);
+    let kind = prop::sample::select(vec![
+        CertKind::Op,
+        CertKind::Wire,
+        CertKind::Family,
+        CertKind::Path,
+    ]);
+    let tier_kind = prop::sample::select(vec![TierKind::HostPinned, TierKind::Nvme]);
+    let runtime = (any::<bool>(), small(tier_kind), any::<u32>(), any::<u16>()).prop_map(
+        |(prefix_reuse, kv_spill_tiers, max_concurrency, max_window)| CertifiedRuntime {
+            prefix_reuse,
+            kv_spill_tiers,
+            max_concurrency,
+            max_window,
+        },
+    );
+    let certification = (
+        status,
+        runtime,
+        prop::collection::vec(
+            (kind, blake3()).prop_map(|(kind, id)| CertRef { kind, id }),
+            0..3,
+        ),
+    )
+        .prop_map(|(status, runtime, relies_on)| PlanCertification {
+            status,
+            runtime,
+            relies_on,
+        });
+    (
+        (
+            transition,
+            prop::option::of(blake3()),
+            solve,
+            degraded,
+            bytes(),
+        ),
+        (
+            certification,
+            small((node_id(), any::<u16>())),
+            prop::collection::vec(group_id(), 0..3),
+            small((node_id(), any::<u8>())),
+        ),
+    )
+        .prop_map(
+            |(
+                (transition, explanation, solve, degraded, move_bytes),
+                (certification, rdma_qps, per_site_layout, wan_rate_class),
+            )| PlacementPlanExt {
+                transition,
+                explanation,
+                solve,
+                degraded,
+                move_bytes,
+                certification,
+                rdma_qps,
+                per_site_layout,
+                wan_rate_class,
+            },
+        )
+}
+
 fn predicted_cost() -> impl Strategy<Value = PredictedCost> {
     let jitter = (f32s(), nanos()).prop_map(|(stall_rate, t_tok_p99)| Jitter {
         stall_rate,
@@ -405,14 +549,18 @@ fn predicted_cost() -> impl Strategy<Value = PredictedCost> {
         (nanos(), nanos(), f32s(), small((any::<u32>(), nanos()))),
         ((any::<u32>(), nanos()), prop::option::of(nanos())),
         (prop::option::of(jitter), any::<u32>()),
-        (small((any::<u16>(), nanos())), prop::option::of(f32s())),
+        (
+            small((any::<u16>(), nanos())),
+            prop::option::of(f32s()),
+            prop::collection::vec(stage_cost(), 0..3),
+        ),
     )
         .prop_map(
             |(
                 (t_tok, t_pass, tokens_per_pass, ttft),
                 (ttft_ref, ttft_cap),
                 (jitter, context_length),
-                (pass_by_window, throughput),
+                (pass_by_window, throughput, stages),
             )| PredictedCost {
                 t_tok,
                 t_pass,
@@ -424,6 +572,7 @@ fn predicted_cost() -> impl Strategy<Value = PredictedCost> {
                 context_length,
                 pass_by_window,
                 throughput,
+                stages,
             },
         )
 }
@@ -476,13 +625,14 @@ fn placement_plan() -> impl Strategy<Value = PlacementPlan> {
             batching_limits(),
             predicted_cost(),
             prop::collection::vec(assumption(), 0..2),
+            plan_ext(),
         ),
     )
         .prop_map(
             |(
                 (epoch, instance, model, graph, policy, objective, exactness),
                 (stages, tensors, expert_cache, kv, prefetch, scratch),
-                (speculative, batching, predicted, assumptions),
+                (speculative, batching, predicted, assumptions, ext),
             )| PlacementPlan {
                 epoch,
                 instance: InstanceId(instance),
@@ -501,6 +651,7 @@ fn placement_plan() -> impl Strategy<Value = PlacementPlan> {
                 batching,
                 predicted,
                 assumptions,
+                ext,
             },
         )
 }
@@ -588,6 +739,8 @@ round_trip_tests! {
     rt_batching_limits: batching_limits();
     rt_predicted_cost: predicted_cost();
     rt_assumption: assumption();
+    rt_stage_cost: stage_cost();
+    rt_plan_ext: plan_ext();
     rt_placement_plan: placement_plan();
     rt_delta_item: delta_item();
     rt_plan_delta: plan_delta();
@@ -893,4 +1046,63 @@ fn both_collective_algorithms_round_trip() {
     for algo in [CollectiveAlgo::OneShot, CollectiveAlgo::Ring] {
         round_trip(&algo);
     }
+}
+
+/// A plan serialized before RFC-0011 §2's additions, with no `stages` and no `ext`, loads in a
+/// self-describing format, with each default the conservative one (PLC-E4-T01).
+#[test]
+fn a_plan_from_before_the_additions_loads_with_conservative_defaults() {
+    let mut runner = proptest::test_runner::TestRunner::deterministic();
+    let plan = placement_plan()
+        .new_tree(&mut runner)
+        .expect("a plan")
+        .current();
+    let mut json = serde_json::to_value(&plan).expect("serialize");
+    let object = json.as_object_mut().expect("a plan is a JSON object");
+    object.remove("ext");
+    object["predicted"]
+        .as_object_mut()
+        .expect("an object")
+        .remove("stages");
+    let back: PlacementPlan = serde_json::from_value(json).expect("an older plan loads");
+    assert!(back.predicted.stages.is_empty());
+    assert_eq!(back.ext, PlacementPlanExt::default());
+    assert_eq!(back.ext.transition, TransitionStrategy::BreakBeforeMake);
+    assert_eq!(back.ext.certification.status, CertStatus::Uncertified);
+    assert_eq!(back.ext.certification.runtime, CertifiedRuntime::default());
+    assert!(!back.ext.certification.runtime.prefix_reuse);
+    assert_eq!(back.ext.solve.path, SolvePath::Dp);
+    assert!(back.ext.degraded.is_none());
+}
+
+/// `StageTerm`'s codes are 0 to 17 in `ALL`'s order, and each code reads back as its term.
+#[test]
+fn stage_terms_are_numbered_in_order() {
+    for (code, term) in StageTerm::ALL.iter().enumerate() {
+        assert_eq!(usize::from(term.code()), code);
+        assert_eq!(StageTerm::from_code(term.code()), Some(*term));
+    }
+    assert_eq!(StageTerm::from_code(18), None);
+}
+
+/// A stage's step is the sum of its critical-path terms; overlapped work is not in it.
+#[test]
+fn a_stage_step_sums_its_terms_and_not_the_overlapped_ones() {
+    let cost = StageCost {
+        stage: StageIx(0),
+        terms: [
+            (StageTerm::DenseVram, Nanos(30)),
+            (StageTerm::HopWait, Nanos(12)),
+        ]
+        .into_iter()
+        .collect(),
+        overlapped: [(StageTerm::ExpertHitCpu, Nanos(1_000))]
+            .into_iter()
+            .collect(),
+        cpu_layer_max: Nanos(0),
+        bytes: SmallVec::new(),
+        resident: SmallVec::new(),
+        prefill_per_chunk: Nanos(0),
+    };
+    assert_eq!(cost.step(), Nanos(42));
 }

@@ -7,7 +7,7 @@
 use smallvec::smallvec;
 use syntropy_core::ledger::LedgerGrant;
 use syntropy_core::plan::*;
-use syntropy_core::resource::TransportKind;
+use syntropy_core::resource::{TierKind, TransportKind};
 use syntropy_core::{
     ApproxKnobs, ApproxParams, Blake3, Bytes, DeviceId, Endpoint as LinkEnd, ExactnessPolicy,
     GraphVersion, InstanceId, LayerIx, LinkId, LinkKind, MeasureSource, ModelId, Nanos, NetMedium,
@@ -151,6 +151,23 @@ fn predicted() -> PredictedCost {
         context_length: 131_072,
         pass_by_window: smallvec![(1, Nanos(48_000_000)), (4, Nanos(60_000_000))],
         throughput: Some(83.5),
+        stages: vec![StageCost {
+            stage: StageIx(1),
+            terms: smallvec![
+                (StageTerm::DenseVram, Nanos(20_000_000)),
+                (StageTerm::HopSend, Nanos(1_000_000)),
+            ],
+            overlapped: smallvec![(StageTerm::ExpertHitCpu, Nanos(3_000_000))],
+            cpu_layer_max: Nanos(400_000),
+            bytes: smallvec![(tier(1, 1), Bytes(1 << 30))],
+            resident: smallvec![ResidentBytes {
+                tier: tier(1, 1),
+                before: Bytes(1 << 30),
+                after: Bytes(3 << 30),
+                by_purpose: smallvec![(MemoryPurpose::DenseWeights, Bytes(2 << 30))],
+            }],
+            prefill_per_chunk: Nanos(90_000_000),
+        }],
     }
 }
 
@@ -264,6 +281,35 @@ pub(super) fn plan() -> PlacementPlan {
                 sensitivity: Nanos(250_000),
             },
         ],
+        ext: PlacementPlanExt {
+            transition: TransitionStrategy::MakeBeforeBreak,
+            explanation: Some(Blake3([9; 32])),
+            solve: SolveStats {
+                path: SolvePath::MilpIncumbent,
+                gap: 0.004,
+                mip_nodes: 812,
+                simplex_iterations: 40_000,
+                wall: Nanos(1_200_000_000),
+            },
+            degraded: Some(DegradedReason::MultiStageOnNode),
+            move_bytes: Bytes(5 << 30),
+            certification: PlanCertification {
+                status: CertStatus::Derived,
+                runtime: CertifiedRuntime {
+                    prefix_reuse: true,
+                    kv_spill_tiers: smallvec![TierKind::HostPinned],
+                    max_concurrency: 8,
+                    max_window: 4,
+                },
+                relies_on: vec![CertRef {
+                    kind: CertKind::Family,
+                    id: Blake3([4; 32]),
+                }],
+            },
+            rdma_qps: smallvec![(NodeId([1; 32]), 2)],
+            per_site_layout: vec![TensorGroupId(3)],
+            wan_rate_class: smallvec![(NodeId([2; 32]), 6)],
+        },
     }
 }
 
