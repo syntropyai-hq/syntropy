@@ -4318,6 +4318,7 @@ dependencies = [
  "syntropy-core",
  "syntropy-io",
  "syntropy-kernels",
+ "syntropy-manifest",
  "syntropy-spsc",
  "syntropy-testkit",
 ]
