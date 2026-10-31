@@ -1524,6 +1524,14 @@ COMP-E7-T02's criterion "ggml CPU ops pass conformance against `kernels::referen
 |---|---|---|---|
 | Moved: conformance of COMP-E7-T02's mappings against `kernels::reference`'s op functions → COMP-E7-T19 (M0b), which depends on COMP-E7-T02 and COMP-E1-T03 | COMP-E7-T02, COMP-E7-T19 | R9 | the criterion uses COMP-E1-T03's op functions, which no edge of COMP-E7-T02 reaches; COMP-E7-T19 reaches them |
 
+## COMP-E4-T02's arena-test leg moves to the task that builds the arena tests (2026-10-31)
+
+COMP-E4-T02 (M0a) asked that "TIER's arena tests pass on a CUDA device". No arena-construction tests exist in `syntropy-tier` until TIER-E1-T07 builds `Vram` arenas through `KernelProvider::alloc`, and TIER-E1-T07 already depends on COMP-E4-T02, both M0a. `tier` cannot use `kernels-cuda` either, since both are layer 2 (RFC-0001 §4.2 rule 2).
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| COMP-E4-T02's criterion keeps the provider-level arena build on a CUDA device; "TIER's arena tests pass on a CUDA device" moves to TIER-E1-T07, and COMP-E4-T21's R-ADA re-run names each leg's task | COMP-E4-T02, TIER-E1-T07, COMP-E4-T21 | R9 | the tests a criterion runs must exist when the task closes; the existing edge TIER-E1-T07 → COMP-E4-T02 keeps the graph acyclic and within M0a. Proposed, for the maintainers to confirm |
+
 ## COMP-E1-T03 split into three slices (2026-10-31)
 
 COMP-E1-T03 asked for the reference semantics of 23 M0 ops in one change, and 15 tasks waited on all of it, though most use only a few of the ops. The row is split by the ops' kind. COMP-E1-T03 keeps the reduction helper, the matrix products and the data movement, and two new M0a rows take the rest, each depending on COMP-E1-T03 for its reduction helper. Each dependent now points at the slice that holds the ops its criteria use. `RmsNorm` stays in COMP-E1-T03 because `Logits` is the final norm plus the LM head (RFC-0040 §3.1). `Act` goes with `Rope` and attention, and `TapGather` goes with sampling, since it reads the logits the sampler reads. "Masked positions" moves to the slices that have masks. These are plan corrections under R9, approved by the lead running the task under the maintainer's standing instruction, and listed for the maintainers' sign-off on the PR.
