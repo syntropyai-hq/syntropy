@@ -795,7 +795,9 @@ fn specials_come_from_their_keys() {
         SpecialTokens {
             bos: Some(eot),
             eos: Some(im_end),
-            end_of_turn: vec![im_start, im_end, added_id(3)],
+            // EOT and EOM keys, and the control tokens spelled `<|endoftext|>` and
+            // `<|im_end|>`.
+            end_of_turn: vec![eot, im_start, im_end, added_id(3)],
             pad: Some(eot),
             unk: Some(5),
             // By spelling: the file names no FIM keys.
@@ -1110,4 +1112,25 @@ proptest! {
             prop_assert_eq!(ids(&converted, &text, add_special), ids(&source, &text, add_special));
         }
     }
+}
+
+#[test]
+fn end_of_turn_adds_the_control_tokens_spelled_as_listed() {
+    // With no EOS, EOT or EOM key, the set is the listed spellings among control tokens:
+    // `<|endoftext|>` and `<|im_end|>`, not `<|im_start|>`.
+    let s = spec(&qwen_like());
+    assert_eq!(s.specials().end_of_turn, [added_id(0), added_id(2)]);
+
+    // A spelling counts only as a control token: as a user-defined token it is left out.
+    let mut kvs = qwen_like();
+    let Kv::I32s(mut types) = kvs[3].1.clone() else {
+        unreachable!()
+    };
+    types[added_id(0) as usize] = 4;
+    set(&mut kvs, TOKEN_TYPE, Kv::I32s(types));
+    assert_eq!(spec(&kvs).specials().end_of_turn, [added_id(2)]);
+
+    // A SentencePiece vocabulary with none of the spellings keeps EOS alone.
+    let s = spec(&spm_kvs(&spm_vocab(true)));
+    assert_eq!(s.specials().end_of_turn, [2]);
 }

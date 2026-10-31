@@ -41,7 +41,10 @@
 //! special here.
 //!
 //! **Specials** come from their keys: BOS, EOS, unknown, padding, and the end-of-turn set, which
-//! is EOS with `eot_token_id` and `eom_token_id`. FIM prefix, middle and suffix come from
+//! is EOS with `eot_token_id` and `eom_token_id`, and every control token spelled as in
+//! [`END_OF_TURN_SPELLINGS`]. A GGUF file does not carry `generation_config.json`'s EOS list,
+//! which the `tokenizer.json` path reads, and without the spellings a Qwen3 file would not stop
+//! on `<|endoftext|>` where its source does. FIM prefix, middle and suffix come from
 //! `fim_pre_token_id`, `fim_mid_token_id` and `fim_suf_token_id` (or the older `prefix_token_id`,
 //! `middle_token_id` and `suffix_token_id`), all three or none; with none set, from the added
 //! tokens spelled as in [`FIM_SPELLINGS`], as for `tokenizer.json` sources. `add_bos` and
@@ -112,6 +115,19 @@ const FIM_KEYS: [[&str; 3]; 2] = [
         "tokenizer.ggml.middle_token_id",
         "tokenizer.ggml.suffix_token_id",
     ],
+];
+
+/// The control-token spellings added to the end-of-turn set: the end-of-sequence tokens the M0
+/// checkpoints' `generation_config.json` lists, which their GGUF files cannot carry (Qwen3:
+/// `<|endoftext|>`, `<|im_end|>`; Llama 3: `<|end_of_text|>`, `<|eot_id|>`, `<|eom_id|>`). Only
+/// a control token counts, never a normal or user-defined one. A family whose files need another
+/// spelling adds it here with that family's task.
+pub const END_OF_TURN_SPELLINGS: [&str; 5] = [
+    "<|endoftext|>",
+    "<|im_end|>",
+    "<|end_of_text|>",
+    "<|eot_id|>",
+    "<|eom_id|>",
 ];
 
 /// SentencePiece's whitespace marker.
@@ -466,6 +482,14 @@ impl<'a> Vocab<'a> {
             .map(|(id, _)| id)
     }
 
+    /// The ID of a control token spelled `text`.
+    fn control_id(&self, text: &str) -> Option<u32> {
+        (0u32..)
+            .zip(self.tokens.iter().zip(&self.types))
+            .find(|(_, (t, ty))| **t == text && **ty == TokenType::Control)
+            .map(|(id, _)| id)
+    }
+
     /// `tokenizer.ggml.merges`, each checked against the vocabulary.
     fn listed_merges(&self, meta: &'a MetaView) -> Result<Vec<(&'a str, &'a str)>, TokenizeError> {
         let array = meta
@@ -605,6 +629,11 @@ fn specials(meta: &MetaView, vocab: &Vocab<'_>) -> Result<SpecialTokens, Tokeniz
     let end_of_turn = [eos, id(EOT_ID)?, id(EOM_ID)?]
         .into_iter()
         .flatten()
+        .chain(
+            END_OF_TURN_SPELLINGS
+                .iter()
+                .filter_map(|t| vocab.control_id(t)),
+        )
         .collect();
     Ok(SpecialTokens {
         bos: id(BOS_ID)?,
