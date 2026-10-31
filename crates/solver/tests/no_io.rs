@@ -62,6 +62,10 @@ const IO_APIS: &[&str] = &[
     "File::open",
     "File::create",
     "tokio",
+    // A glob of `std`, or `std` under another name, hides which modules the code uses.
+    "std::*",
+    "use std as ",
+    "crate std as ",
 ];
 
 /// The packages the solver reaches through normal dependencies, by name, each with the chain
@@ -166,7 +170,8 @@ const IO_MODULES: &[&str] = &["fs", "net", "process", "thread", "env"];
 
 /// The I/O uses in one source text, each as `line: what`. Comments after `//` are skipped. A
 /// path is found written out (`std::fs::File`) or inside a braced `use std::{…}` group, nested
-/// or across lines (`use std::{fs as f, time::{Instant}}`).
+/// or across lines (`use std::{fs as f, time::{Instant}}`). A glob of `std` or a rename of it
+/// counts as a use, since it hides the modules the code then names.
 fn io_uses(text: &str) -> Vec<String> {
     let code: Vec<&str> = text
         .lines()
@@ -197,7 +202,8 @@ fn io_uses(text: &str) -> Vec<String> {
 }
 
 /// The I/O modules a braced group names at its top level, with `time` counted when the group
-/// takes `Instant` or `SystemTime` from it. `group` starts at the `{`.
+/// takes `Instant` or `SystemTime` from it, and a glob or a rename of `std` itself counted too.
+/// `group` starts at the `{`.
 fn group_modules(group: &str) -> Vec<String> {
     let mut depth = 0usize;
     let mut end = group.len();
@@ -238,7 +244,9 @@ fn group_modules(group: &str) -> Vec<String> {
                 .next()
                 .unwrap_or_default();
             let clock = head == "time" && (item.contains("Instant") || item.contains("SystemTime"));
-            (IO_MODULES.contains(&head) || clock)
+            // `*` takes every module, and `self as x` renames `std` itself.
+            let opaque = head == "*" || (head == "self" && item.contains(" as "));
+            (IO_MODULES.contains(&head) || clock || opaque)
                 .then(|| item.split_whitespace().collect::<Vec<_>>().join(" "))
         })
         .collect()
@@ -258,6 +266,26 @@ fn the_scan_finds_io_in_every_form() {
         ("use std::{fmt, collections::{BTreeMap, BTreeSet}};", 0),
         ("use std::{time::Duration};", 0),
         ("// use std::{fs};", 0),
+        // Renamed.
+        ("use std::fs as files;", 1),
+        ("use std::{net as n, fmt};", 1),
+        // Glob, at the top or inside a group, and of an I/O module.
+        ("use std::*;", 1),
+        ("use std::{*};", 1),
+        ("use std::{fmt, *};", 1),
+        ("use std::fs::*;", 1),
+        ("use std::{thread::*};", 1),
+        // `std` itself renamed.
+        ("use std as s;", 1),
+        ("use std::{self as s};", 1),
+        ("extern crate std as s;", 1),
+        ("use std::{self, fmt};", 0),
+        // Fully qualified calls.
+        ("let _ = std::fs::read(path);", 1),
+        ("let _ = ::std::thread::spawn(f);", 1),
+        ("let t = std::time::Instant::now();", 2),
+        ("let _ = std::process::Command::new(\"x\");", 1),
+        ("let v = std::env::var(\"X\");", 1),
     ];
     for &(text, expected) in cases {
         let found = io_uses(text);
