@@ -114,7 +114,7 @@ struct Calls {
 
 /// The open driver library and its entry points. The pointers stay valid while `_lib` lives,
 /// and every holder of a pointer holds the `Api` through an `Arc`.
-struct Api {
+pub(crate) struct Api {
     _lib: libloading::Library,
     version: unsafe extern "C" fn(*mut c_int) -> Status,
     error_name: Option<unsafe extern "C" fn(Status, *mut *const c_char) -> Status>,
@@ -175,7 +175,7 @@ fn fault(call: &'static str, status: Status, name: Option<String>) -> Fault {
 
 impl Api {
     /// `Ok` for `CUDA_SUCCESS`, else the fault for `call`.
-    fn check(&self, call: &'static str, status: Status) -> Result<(), Fault> {
+    pub(crate) fn check(&self, call: &'static str, status: Status) -> Result<(), Fault> {
         if status == SUCCESS {
             return Ok(());
         }
@@ -332,6 +332,91 @@ impl Drop for PrimaryContext {
             // SAFETY: `dev` is the device whose primary context `retain` retained once; this is
             // the matching release, run once, while the library is loaded (`api` holds it).
             let _ = unsafe { (c.release)(self.dev) };
+        }
+    }
+}
+
+impl Api {
+    /// The entry point `name` as a function pointer of type `F`, for a module that resolves its
+    /// own calls. The pointer is valid while this `Api` lives, so its user keeps an `Arc<Api>`.
+    ///
+    /// # Safety
+    ///
+    /// `F` must be the entry point's C signature from the CUDA 13 driver API, with the status
+    /// returned as [`Status`].
+    pub(crate) unsafe fn symbol<F: Copy>(&self, name: &'static str) -> Result<F, Fault> {
+        sym(&self._lib, name).map_err(|missing| Fault {
+            call: missing,
+            error: "the driver library lacks this entry point".into(),
+            no_device: false,
+        })
+    }
+}
+
+impl PrimaryContext {
+    /// The driver library this context was retained through.
+    pub(crate) fn api(&self) -> &Arc<Api> {
+        &self.api
+    }
+
+    /// Retains the same primary context once more, for an owner that must keep it alive on its
+    /// own (`cuDevicePrimaryCtxRetain`); the new value releases its retain when dropped.
+    pub(crate) fn share(&self) -> Result<PrimaryContext, Fault> {
+        let c = self.api.calls()?;
+        let mut ctx: CUcontext = std::ptr::null_mut();
+        // SAFETY: `dev` is the valid device this context was retained for; the retain is
+        // released by the new value's drop.
+        let s = unsafe { (c.retain)(&raw mut ctx, self.dev) };
+        self.api.check("cuDevicePrimaryCtxRetain", s)?;
+        Ok(PrimaryContext {
+            api: Arc::clone(&self.api),
+            dev: self.dev,
+            ctx,
+        })
+    }
+
+    /// Makes this context current on the calling thread (`cuCtxSetCurrent`). Driver calls that
+    /// take no context, such as allocation, act on the calling thread's current one.
+    pub(crate) fn make_current(&self) -> Result<(), Fault> {
+        let c = self.api.calls()?;
+        // SAFETY: `ctx` is retained while `self` lives; setting it current takes no pointers
+        // and changes only the calling thread's current context.
+        let s = unsafe { (c.set_current)(self.ctx) };
+        self.api.check("cuCtxSetCurrent", s)
+    }
+
+    /// Makes this context current on the calling thread until the returned guard drops, which
+    /// puts back the context that was current before (as [`SystemDriver`]'s free-memory read
+    /// does). A call made on another device's dispatcher thread therefore leaves that thread's
+    /// context as it found it.
+    pub(crate) fn scoped(&self) -> Result<Scoped<'_>, Fault> {
+        let c = self.api.calls()?;
+        let mut previous: CUcontext = std::ptr::null_mut();
+        // SAFETY: writes one handle through a pointer to a live local.
+        let s = unsafe { (c.get_current)(&raw mut previous) };
+        self.api.check("cuCtxGetCurrent", s)?;
+        self.make_current()?;
+        Ok(Scoped {
+            api: &self.api,
+            previous,
+        })
+    }
+}
+
+/// The guard [`PrimaryContext::scoped`] returns: restores the previous current context on drop.
+pub(crate) struct Scoped<'a> {
+    api: &'a Api,
+    previous: CUcontext,
+}
+
+impl Drop for Scoped<'_> {
+    fn drop(&mut self) {
+        if let Ok(c) = self.api.calls() {
+            // SAFETY: `previous` was current on this thread when the guard was made (or null,
+            // which makes no context current); setting it takes no pointers. A context
+            // destroyed since then fails the call, which is ignored: nothing is left current
+            // that this guard made current, beyond what the driver keeps.
+            let _ = unsafe { (c.set_current)(self.previous) };
         }
     }
 }

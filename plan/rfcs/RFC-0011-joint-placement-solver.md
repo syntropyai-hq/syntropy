@@ -221,6 +221,19 @@ pub struct ResidentBytes {
 
 The verify window is `SpeculativeConfig::max_window` = γ_max as RFC-0001 §5.4 defines it; `T_max = max_window + 1` is derived wherever it is needed, and no second field stores it.
 
+*Note 2026-10-31 (PLC-E4-T01, as built in `core`):* the additions above live in `core`, beside `PlacementPlan` and `PredictedCost`, and the solver re-exports them.
+- **`StageCost` is keyed by `core::plan::StageTerm`, not `CostTerm`.** `CostTerm` lives in `obs`, which `core` does not depend on (RFC-0001 §4.2). `StageTerm` mirrors it variant for variant, with the same names and discriminants 0–17. `obs` converts both ways (`CostTerm::stage_term`, `CostTerm::from_stage_term`). A test there holds the two lists to each other: every `CostTerm` maps to exactly one `StageTerm`, and back.
+- **`PredictedCost::stages`** and **`PlacementPlan::ext: PlacementPlanExt`** have serde defaults, so a plan serialized before them still loads in a self-describing format. Each default is the conservative one:
+  - `BreakBeforeMake`;
+  - `Uncertified`, with nothing certified at run time;
+  - `Dp`;
+  - no degradation recorded.
+- **Names the block above leaves open:**
+  - `ResidentBytes::by_purpose` keys by `MemoryPurpose`, RFC-0001 §9.1/§9.3's ten purposes. The tier manager's arena purposes (RFC-0020 §2) are a finer taxonomy, so whoever fills `by_purpose` from arenas maps them onto these;
+  - `CertRef` is a kind (`Op`, `Wire`, `Family`, `Path`) and a `Blake3` ID;
+  - `SolveStats` is `path`, `gap`, `mip_nodes`, `simplex_iterations` and `wall`.
+- **The IPC protocol goes to 7.0.** The command channel carries the plan in postcard, which reads fields by position, so a 6.x peer cannot read the longer plan.
+
 
 ### 3. Preprocessing: placement nodes, blocks and coefficients
 

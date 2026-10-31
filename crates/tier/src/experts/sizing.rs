@@ -375,6 +375,7 @@ mod tests {
             batching: batching(4, &[], 1),
             predicted: PredictedCost::default(),
             assumptions: Vec::new(),
+            ext: syntropy_core::plan::PlacementPlanExt::default(),
         };
         // P_max = max(T_max 2, prefill 4) = 4: MAX_UNION = 32, MAX_PRED = 2 · min(128, 48) = 96.
         let l = plan_layout(&plan, QWEN).unwrap();

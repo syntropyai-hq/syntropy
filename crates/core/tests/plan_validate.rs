@@ -125,6 +125,7 @@ fn valid_plan() -> PlacementPlan {
         batching: BatchingLimits::default(),
         predicted: PredictedCost::default(),
         assumptions: vec![],
+        ext: PlacementPlanExt::default(),
     }
 }
 
