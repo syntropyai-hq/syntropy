@@ -1,0 +1,61 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+# The build host's watchdog (ADR-0625 decision 8). Every 10 minutes it moves the gate variable
+# `SYNTROPY_BUILD_HOST` from `on` to `auto-off` when no runner labelled `syntropy-build` is online,
+# and back when one is, so a host that is down sends the Linux jobs back to hosted runners instead
+# of leaving them queued. Runs that were already waiting for the host are cancelled and re-run. A
+# maintainer's `off` is left alone (ci/build-host/watchdog.sh).
+#
+# It runs on a hosted runner, never on the build host it watches. Its token comes from a GitHub App
+# with Administration: read and Variables: write on this repository, whose ID is the variable
+# `BUILD_HOST_WATCHDOG_APP_ID` and whose key is the secret `BUILD_HOST_WATCHDOG_KEY`; until the
+# variable is set the job is skipped. It checks out only `main`, from a schedule or a manual run.
+#
+# The same rules as `pr.yml` hold: read-only top-level permissions, actions pinned by SHA, no
+# `pull_request_target`.
+
+name: build-host-watchdog
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-host-watchdog
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  watchdog:
+    if: vars.BUILD_HOST_WATCHDOG_APP_ID != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      # Cancels and re-runs the runs that wait for a host that is down.
+      actions: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        id: app
+        with:
+          app-id: ${{ vars.BUILD_HOST_WATCHDOG_APP_ID }}
+          private-key: ${{ secrets.BUILD_HOST_WATCHDOG_KEY }}
+          repositories: ${{ github.event.repository.name }}
+          permission-administration: read
+          permission-variables: write
+      - name: Move the gate from the runners' state
+        env:
+          REPO: ${{ github.repository }}
+          APP_TOKEN: ${{ steps.app.outputs.token }}
+          RUNS_TOKEN: ${{ github.token }}
+        run: ci/build-host/watchdog.sh

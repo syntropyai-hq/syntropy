@@ -4,8 +4,9 @@
 # Installs or updates the Linux build host (ADR-0625) on an x86-64 Linux machine with Docker and
 # systemd. Run as root from the root of a `main` checkout:
 #   sudo ci/build-host/install.sh [slots]
-# It builds the job image, installs the scripts and the unit, and starts `slots` job slots
-# (default 3). The token must already be in /etc/syntropy-build/token (README.md).
+# It builds the job image, installs the scripts and the units, starts `slots` job slots (default
+# 3) and enables the daily update from `main` (update.sh). The credential must already be in
+# /etc/syntropy-build: a GitHub App's `app-key.pem` and `app-id`, or a `token` (README.md).
 
 set -euo pipefail
 
@@ -14,15 +15,21 @@ here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/../.." && pwd)"
 
 [ "$(id -u)" -eq 0 ] || { echo "run as root" >&2; exit 1; }
-[ -s /etc/syntropy-build/token ] || { echo "put the token in /etc/syntropy-build/token first" >&2; exit 1; }
-chmod 0600 /etc/syntropy-build/token
+cred=/etc/syntropy-build
+if [ -s "$cred/app-key.pem" ] && [ -s "$cred/app-id" ]; then :
+elif [ -s "$cred/token" ]; then :
+else echo "put app-key.pem and app-id, or a token, in $cred first" >&2; exit 1
+fi
+chmod 0700 "$cred"; chmod 0600 "$cred"/*
 
 docker build --pull -f "$here/Dockerfile" -t syntropy-build:latest "$root"
 
 install -d -m 0755 /opt/syntropy-build
-install -m 0755 "$here/runner-slot.sh" "$here/egress.sh" /opt/syntropy-build/
-install -m 0644 "$here/syntropy-build-runner@.service" /etc/systemd/system/
+install -m 0755 "$here/runner-slot.sh" "$here/egress.sh" "$here/update.sh" /opt/syntropy-build/
+install -m 0644 "$here/syntropy-build-runner@.service" "$here/syntropy-build-update.service" \
+  "$here/syntropy-build-update.timer" /etc/systemd/system/
 systemctl daemon-reload
+systemctl enable --now syntropy-build-update.timer >/dev/null
 
 for slot in $(seq 1 "$slots"); do
   systemctl enable "syntropy-build-runner@$slot" >/dev/null
