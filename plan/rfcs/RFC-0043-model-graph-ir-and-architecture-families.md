@@ -385,7 +385,7 @@ Facts about each model come from its configuration (`backends-and-portability.md
 - **`FamilySpec`.** `syntropy_graph::spec::FamilySpec` lists variants, because QK-norm, QKV bias and tied embeddings are fixed for a whole checkpoint. For `llama` there are four, which between them cover every rule and every RoPE kind. `llama::fixture_spec()` returns it. The trait method joins `Family` with the generator (QUAL-E7-T01).
 - **Chat format.** The chat format is COMP-E17-T04's, which adds `ChatFormat`.
 - **The golden census.** In CI it runs on a header derived from Qwen3-0.6B's published configuration: names and shapes only, with no file of the checkpoint in the repository. An opt-in test runs the same census on the fixture store's recorded Qwen3-0.6B files (QUAL-E7-T06), found through `SYNTROPY_QWEN3_0_6B_DIR`, against the same golden file. CI does not run that test.
-- **Conformance checks.** RFC-0060 §7.2 checks 1–2 on Qwen3-0.6B's recorded headers stay with COMP-E16-T03. They run through the census builder (COMP-E10-T07) and the KV byte counters (TIER-E6-T02), and have not run yet. Checks 1–3 on the `nano` and `micro` fixtures, and check 3 on the real checkpoint, are QUAL-E6-T06's and QUAL-E6-T22's (`dependency-fixes.md`, 2026-10-31).
+- **Conformance checks.** RFC-0060 §7.2 checks 1–3 for `llama` are QUAL-E6-T06's and QUAL-E6-T22's: on the `nano` and `micro` fixtures, on Qwen3-0.6B's recorded headers (checks 1–2) and on its weights (check 3). See `dependency-fixes.md`, 2026-10-31.
 
 ### 6. Stage cut points, segments and tensor-parallel sharding
 
