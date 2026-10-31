@@ -1480,3 +1480,14 @@ The R9 pass over the remaining areas. Each criterion below uses a harness, a pro
 | PLC-E9-T23 → PLC-E9-T09 | PLC-E9-T23 | R9 | "sampled output passes PLC-E9-T09's harness" with a project-synthetic draft head (M3 → M1a) |
 | DIST-E6-T03 → PLC-E2-T11 | DIST-E6-T03 | R9 | "plugging a cable produces exactly one `InterfacesChanged` and new probes (PLC-E2-T11) within 3 s"; the L1 link probes are PLC-E2-T11's; both are M2 |
 | TIER-E9-T04 → COMP-E5-T02 | TIER-E9-T04 | R9 | "on the CUDA rig with a Q4_K pack and an i-quant pack, the fitted split's layer time is within 5% of the best fixed split"; CUDA i-quant GEMV is COMP-E5-T02's, and the row reached no CUDA kernel beyond `Timestamp`; both are M1a |
+
+## COMP-E16-T03's conformance checks re-homed (2026-10-31)
+
+COMP-E16-T03 (the `llama` family) required RFC-0060 §7.2 checks 1–3 on the `nano` and `micro` fixtures and on the nightly checkpoint, but its row reached none of the tasks those checks need. The fixture generator (QUAL-E7-T01) and the conformance runner (QUAL-E6-T06) both depend on COMP-E16-T03, so edges to them would make a cycle. As for COMP-E16-T04 under #2013's review, the family keeps what its recorded headers can show, and the runner takes the rest. Review of #2037 (2026-10-31).
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| COMP-E16-T03 → COMP-E10-T07 | COMP-E16-T03 | R9 | check 1's group membership and byte total come from the census builder; both are M0a |
+| COMP-E16-T03 → TIER-E6-T02 | COMP-E16-T03 | R9 | check 2 compares `KvFormula` with the KV store's byte counters, which TIER-E6-T02 builds; both are M0a, and TIER-E6-T02 does not reach COMP-E16-T03 |
+| COMP-E16-T03 keeps checks 1–2 on the nightly checkpoint's (Qwen3-0.6B) recorded headers, without the weights; checks 1–3 on the `nano` and `micro` fixtures are left to QUAL-E6-T06 and QUAL-E6-T22, which already require them of both M0 families | COMP-E16-T03 | R9 | the fixtures come from QUAL-E7-T01 and QUAL-E7-T04, which depend on COMP-E16-T03's `FamilySpec` |
+| COMP-E16-T03's check 3 (single-device parity) on the real `llama` checkpoint (Qwen3-0.6B) moves to QUAL-E6-T06 | COMP-E16-T03, QUAL-E6-T06 | R9 | check 3 runs the weights through the parity driver (QUAL-E5-T06) and the providers' kernels, which QUAL-E6-T06 reaches and COMP-E16-T03 cannot without a cycle. QUAL-E6-T06 named check 3 on a real checkpoint for `qwen_moe` only, so the `llama` leg had no owner |
