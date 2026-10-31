@@ -66,6 +66,18 @@ mod imp {
         Ok(RawLibrary(handle))
     }
 
+    /// Opens a library by file name, searched as the system loader searches (`ld.so`'s cache
+    /// and default directories, `dyld`'s), so a driver install is found where it put itself.
+    pub fn open_system(name: &str) -> Result<RawLibrary, String> {
+        let c_name = CString::new(name).map_err(|_| "the name holds a NUL byte".to_owned())?;
+        // SAFETY: `c_name` is NUL-terminated and outlives the call.
+        let handle = unsafe { dlopen(c_name.as_ptr(), RTLD_NOW | RTLD_LOCAL) };
+        if handle.is_null() {
+            return Err(last_error());
+        }
+        Ok(RawLibrary(handle))
+    }
+
     pub fn symbol(lib: &RawLibrary, name: &str) -> Result<*mut c_void, String> {
         let c_name =
             CString::new(name).map_err(|_| "the symbol name holds a NUL byte".to_owned())?;
@@ -103,6 +115,29 @@ mod imp {
     // directories, never from the current directory or `PATH` (RFC-0052 §4.3).
     const LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR: u32 = 0x0000_0100;
     const LOAD_LIBRARY_SEARCH_DEFAULT_DIRS: u32 = 0x0000_1000;
+    const LOAD_LIBRARY_SEARCH_SYSTEM32: u32 = 0x0000_0800;
+
+    /// Opens a library by file name from the system directory alone, where a driver installs
+    /// its management library (`nvml.dll`).
+    pub fn open_system(name: &str) -> Result<RawLibrary, String> {
+        let wide: Vec<u16> = std::ffi::OsStr::new(name)
+            .encode_wide()
+            .chain([0])
+            .collect();
+        // SAFETY: `wide` is NUL-terminated and outlives the call; the file handle must be null.
+        let handle = unsafe {
+            LoadLibraryExW(
+                wide.as_ptr(),
+                std::ptr::null_mut(),
+                LOAD_LIBRARY_SEARCH_SYSTEM32,
+            )
+        };
+        if handle.is_null() {
+            // SAFETY: `GetLastError` takes no arguments.
+            return Err(format!("Windows error {}", unsafe { GetLastError() }));
+        }
+        Ok(RawLibrary(handle))
+    }
 
     pub fn open(path: &Path) -> Result<RawLibrary, String> {
         let wide: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
@@ -149,6 +184,17 @@ impl RawLibrary {
             return Err("a provider library is opened by absolute path".to_owned());
         }
         imp::open(path)
+    }
+
+    /// Opens a vendor library by file name, such as `libnvidia-ml.so.1`, from where the system
+    /// loader finds a driver install (RFC-0010 §2.1): its default search on Unix, the system
+    /// directory alone on Windows. The library is never unloaded.
+    ///
+    /// # Errors
+    ///
+    /// The loader's reason, as text, when no such library is installed.
+    pub fn open_system(name: &str) -> Result<Self, String> {
+        imp::open_system(name)
     }
 
     /// The address of the symbol `name`.

@@ -1,0 +1,4 @@
+# The hosted macos-26 runner's IOAccelerator entry, as live_accelerators() read it there
+# (CI run 41163167471, hosted-test-macos, 2026-10-31, test output): the virtual machine's
+# paravirtual GPU, with no model and no gpu-core-count. Format: src/gpu/iokit.rs.
+accelerator class=AppleParavirtGPU
