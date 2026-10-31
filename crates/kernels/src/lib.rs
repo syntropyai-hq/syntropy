@@ -10,10 +10,10 @@
 //! workspace dependency is `core`. It holds the op registry, the op types and the argument
 //! types ([`op`], RFC-0040 §3.1, §3.2, §3.5), the selection engine ([`select`], RFC-0040 §6.2,
 //! §6.4), the step descriptor with its C header, its Rust mirrors and the parity handshake
-//! ([`step`], RFC-0040 §3.5, §4.2), the reference numerics' modes
-//! ([`reference`](mod@reference), RFC-0060 §4.1), and the module side of the provider-library
-//! ABI with its `export!` macro ([`abi`], RFC-0040 §10.4). The F32 reference semantics of every op come
-//! with later tasks.
+//! ([`step`], RFC-0040 §3.5, §4.2), the F32 reference semantics of
+//! the ops with the reference numerics' modes ([`reference`](mod@reference), RFC-0040 §3.3,
+//! RFC-0060 §4.1), and the module side of the provider-library ABI with its `export!` macro
+//! ([`abi`], RFC-0040 §10.4).
 
 #![forbid(unsafe_code)]
 // `core::Error` is RFC-0001 §5.12's struct with its fields inline: 344 B [measured: `size_of`,
