@@ -1,0 +1,4 @@
+# Recorded on an Apple M4 Pro (macOS 26.6.2) on 2026-10-31 by
+# live_accelerators() (tests/gpu_iokit.rs, SYNTROPY_RECORD_IOKIT=1), which reads the
+# IOAccelerator registry entries' class, model and gpu-core-count. Format: src/gpu/iokit.rs.
+accelerator class=AGXAcceleratorG16X;model=Apple M4 Pro;gpu-core-count=16
