@@ -9,8 +9,9 @@
 //! fails `enumerate` with `DriverTooOld`, `(Kernels, 5)`, and the backend is skipped. `open`
 //! retains the device's primary context, so code that uses the CUDA runtime later shares it.
 //!
-//! Memory, streams, capture and the kernels are later tasks (COMP-E4-T02 onwards); until then
-//! those methods return [`unsupported`].
+//! [`memory`] allocates device slabs and host-mapped pages, and registers and imports the tier
+//! manager's host memory (COMP-E4-T02). Streams, capture and the kernels are later tasks
+//! (COMP-E4-T04 onwards); until then those methods return [`unsupported`].
 //!
 //! `unsafe` is allowed in this crate (RFC-0001 §4.2 rule 8). Every `unsafe` block and impl carries
 //! a `// SAFETY:` comment that states its invariant (ADR-0001 item 4).
@@ -25,6 +26,7 @@
 
 pub mod describe;
 pub mod driver;
+pub mod memory;
 
 use syntropy_core::resource::Backend;
 use syntropy_core::{Bytes, DeviceId, ErrorClass, HostRegion};
@@ -38,12 +40,23 @@ use syntropy_kernels::{
 
 use crate::describe::{check_driver, describe, driver_text};
 use crate::driver::{Driver, Fault, RawDevice, SystemDriver};
+use crate::memory::{AllocHook, DeviceMemory, MemoryDriver};
 
 /// The CUDA provider, over a [`Driver`]: the real one by default, a fake in tests.
-#[derive(Debug)]
 pub struct CudaProvider<D: Driver = SystemDriver> {
     driver: D,
     ops: OpRegistry,
+    hook: Option<AllocHook>,
+}
+
+impl<D: Driver + std::fmt::Debug> std::fmt::Debug for CudaProvider<D> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CudaProvider")
+            .field("driver", &self.driver)
+            .field("ops", &self.ops)
+            .field("hook", &self.hook.is_some())
+            .finish()
+    }
 }
 
 impl CudaProvider<SystemDriver> {
@@ -82,6 +95,7 @@ impl<D: Driver> CudaProvider<D> {
         Self {
             driver,
             ops: OpRegistry::new(),
+            hook: None,
         }
     }
 
@@ -121,10 +135,13 @@ pub struct CudaDevice<C> {
     pub ordinal: i32,
     /// The device's record from `enumerate`.
     pub record: ProviderDevice,
+    /// What the tier manager allocated. Declared before the context, so whatever is left is
+    /// freed before the context is released.
+    pub(crate) memory: DeviceMemory,
     _context: C,
 }
 
-impl<D: Driver> KernelProvider for CudaProvider<D>
+impl<D: MemoryDriver> KernelProvider for CudaProvider<D>
 where
     D: Send + Sync,
     D::Context: 'static,
@@ -179,9 +196,11 @@ where
             .driver
             .retain(claimed.raw.ordinal)
             .map_err(|f| driver_error(&f))?;
+        let memory = self.driver.memory(&context).map_err(|f| driver_error(&f))?;
         Ok(DeviceCtx::new(CudaDevice {
             ordinal: claimed.raw.ordinal,
             record: claimed.record,
+            memory: DeviceMemory::new(memory, self.hook.clone()),
             _context: context,
         }))
     }
@@ -194,18 +213,24 @@ where
         None
     }
 
-    fn alloc(&self, _: &DeviceCtx, _: AllocRequest) -> Result<DeviceBuffer, Error> {
-        Err(unsupported())
+    /// A `Device` fixed slab or `HostMapped` doorbell pages (RFC-0040 §5.1; [`memory`]).
+    fn alloc(&self, ctx: &DeviceCtx, req: AllocRequest) -> Result<DeviceBuffer, Error> {
+        self.memory(ctx)?.alloc(req)
     }
 
-    fn free(&self, _: &DeviceCtx, _: DeviceBuffer) {}
-
-    fn register_host(&self, _: &DeviceCtx, _: HostRegion) -> Result<Registration, Error> {
-        Err(unsupported())
+    fn free(&self, ctx: &DeviceCtx, buf: DeviceBuffer) {
+        if let Ok(m) = self.memory(ctx) {
+            m.free(&buf);
+        }
     }
 
-    fn import(&self, _: &DeviceCtx, _: HostRegion) -> Result<DeviceBuffer, Error> {
-        Err(unsupported())
+    /// One RFC-0020 §6.1 unit of whole host pages (RFC-0040 §5.2; [`memory`]).
+    fn register_host(&self, ctx: &DeviceCtx, region: HostRegion) -> Result<Registration, Error> {
+        self.memory(ctx)?.register_host(region)
+    }
+
+    fn import(&self, ctx: &DeviceCtx, region: HostRegion) -> Result<DeviceBuffer, Error> {
+        self.memory(ctx)?.import(region)
     }
 
     fn repack(&self, _: &OpKey, _: &[u8], _: &mut [u8]) -> Option<Result<LayoutVersion, Error>> {

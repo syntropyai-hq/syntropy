@@ -44,6 +44,13 @@ impl Driver for Fake {
     }
 }
 
+/// The enumeration tests make no memory calls; `memory`'s own tests stand in a recorder.
+impl crate::memory::MemoryDriver for Fake {
+    fn memory(&self, _: &FakeContext) -> Result<Box<dyn crate::memory::MemoryOps>, Fault> {
+        Ok(Box::new(crate::memory::tests::Recorder::default()))
+    }
+}
+
 fn gpu(ordinal: i32, cc: (i32, i32)) -> RawDevice {
     RawDevice {
         ordinal,
