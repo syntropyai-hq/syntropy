@@ -295,6 +295,36 @@ fn malformed_or_inconsistent_sources_are_integrity_errors() {
 }
 
 #[test]
+fn an_unknown_model_type_is_an_integrity_error() {
+    for (tok, ok) in [
+        (&br#"{"model": {"type": "BPE", "vocab": {}}}"#[..], true),
+        (br#"{"model": {"type": "Unigram", "vocab": []}}"#, true),
+        (br#"{"model": {"type": "WordLevel", "vocab": {}}}"#, true),
+        (br#"{"model": {"type": "WordPiece", "vocab": {}}}"#, true),
+        (br#"{"model": {"vocab": {}}}"#, true),
+        (
+            br#"{"model": {"type": "SentencePieceBPE", "vocab": {}}}"#,
+            false,
+        ),
+        (br#"{"model": {"type": "bpe", "vocab": {}}}"#, false),
+        (br#"{"model": {"type": 1, "vocab": {}}}"#, false),
+    ] {
+        let src = TokenizerSources {
+            tokenizer_json: tok,
+            ..Default::default()
+        };
+        match TokenizerSpec::from_sources(src) {
+            Ok(_) => assert!(ok, "{}", String::from_utf8_lossy(tok)),
+            Err(e) => {
+                assert!(!ok, "{e}");
+                assert_eq!((e.file, e.class()), (TOKENIZER_JSON, ErrorClass::Integrity));
+                assert!(e.reason.contains("model type"), "{e}");
+            }
+        }
+    }
+}
+
+#[test]
 fn fim_needs_all_three_tokens_marked_special_or_not() {
     // Only a FIM prefix token: no FIM set.
     let only_prefix = br#"{"added_tokens": [{"id": 0, "content": "<|fim_prefix|>", "special": true}], "model": {"vocab": {}}}"#;

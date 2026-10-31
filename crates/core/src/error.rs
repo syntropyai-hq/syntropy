@@ -81,6 +81,9 @@ pub enum Domain {
     /// The faults `exec` detects in its dispatchers and CPU pools: 0x0600–0x06FF (RFC-0012
     /// §13, note of 2026-10-28).
     Exec,
+    /// The tier manager: 0x0700–0x07FF, where RFC-0020 §15's code n is 0x0700 + n (RFC-0020
+    /// §15, note of 2026-10-31).
+    Tier,
 }
 
 impl Domain {
@@ -94,6 +97,7 @@ impl Domain {
             Self::Security => 0x0500..=0x05FF,
             Self::Kernels => 0x0001..=0x00FF,
             Self::Exec => 0x0600..=0x06FF,
+            Self::Tier => 0x0700..=0x07FF,
         }
     }
 
@@ -107,6 +111,7 @@ impl Domain {
             Self::Security => "RFC-0034 §15",
             Self::Kernels => "RFC-0040 §13",
             Self::Exec => "RFC-0012 §13",
+            Self::Tier => "RFC-0020 §15",
         }
     }
 
@@ -114,7 +119,7 @@ impl Domain {
     /// the provider ABI's domain numbers (RFC-0040 §10.4), is checked against this list, since
     /// `Domain` is `non_exhaustive` there. `tests/error_codes.rs` counts the variants through their
     /// serde index and fails unless this list holds every one.
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::Cluster,
         Self::Net,
         Self::Dist,
@@ -122,6 +127,7 @@ impl Domain {
         Self::Security,
         Self::Kernels,
         Self::Exec,
+        Self::Tier,
     ];
 }
 
