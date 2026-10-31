@@ -24,6 +24,9 @@ serde_json.workspace = true
 syntropy-api = { path = "../api" }
 # `ErrorClass`, which the exit-code table maps (RFC-0051 §2.2).
 syntropy-core = { path = "../core" }
+# The core's static ggml copy, CPU backend only, every symbol hidden (RFC-0040 §8.1; ADR-0403
+# item 6). `--version` reports the ggml commit it was built from.
+syntropy-kernels-ggml = { path = "../kernels-ggml" }
 # The runtime location, `SYNTROPY_HOST` and `SYNTROPY_API_KEY` (RFC-0054 §1, §2.4), and the
 # `config show`, `check` and `path` commands with their layering and validation (RFC-0054 §2, §8).
 syntropy-config = { path = "../config" }

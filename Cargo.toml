@@ -58,6 +58,14 @@ license = "MIT OR Apache-2.0"
 publish = false
 
 [workspace.dependencies]
+# The CUDA driver API's types for `syntropy-kernels-cuda` (RFC-0040 §7.1). The provider opens the
+# driver itself, by its versioned name, with `libloading`; `dynamic-loading` only keeps `cudarc`
+# from linking `libcuda` at build time, so a host without the driver builds. No runtime library,
+# cuBLAS or NVRTC (RFC-0040 §10.3).
+cudarc = { version = "0.19.10", default-features = false, features = ["std", "driver", "dynamic-loading", "cuda-13040"] }
+# Opens the CUDA driver library by its exact name (RFC-0040 §7.1, note 2026-10-31). The version
+# `cudarc` already brings in.
+libloading = "0.9.0"
 # Structured events for async and other non-hot code (RFC-0053 §4.1). Hot threads never use it
 # (the `hot-threads` lint step). Without default features: no `attributes` proc macro.
 tracing = { version = "0.1.44", default-features = false, features = ["std"] }
