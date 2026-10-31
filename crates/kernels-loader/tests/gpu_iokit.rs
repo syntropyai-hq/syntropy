@@ -76,8 +76,11 @@ fn fixture_text_round_trips_and_refuses_bad_lines() {
     }
 }
 
-/// On a Mac, the live registry has one accelerator with a model and a core count. Set
-/// `SYNTROPY_RECORD_IOKIT=1` to print it as fixture text.
+/// On a Mac, the live registry has at least one accelerator, each with a class, and the
+/// mapping never fails on what it reads. On Apple silicon each has a model and a core count. In a
+/// virtual machine (`kern.hv_vmm_present` 1, as on the hosted macOS runner) the accelerator is
+/// paravirtual, `AppleParavirtGPU`, with neither, and its `gpu_cores` stays unknown. Set
+/// `SYNTROPY_RECORD_IOKIT=1` to print the registry as fixture text.
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 #[test]
 fn live_registry_reads_on_macos() {
@@ -85,10 +88,40 @@ fn live_registry_reads_on_macos() {
     if std::env::var_os("SYNTROPY_RECORD_IOKIT").is_some() {
         print!("{}", render_fixture(&live));
     }
+    let vm = std::process::Command::new("/usr/sbin/sysctl")
+        .args(["-n", "kern.hv_vmm_present"])
+        .output()
+        .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "1");
     assert!(!live.is_empty());
-    for a in &live {
+    let gpus = apple_gpus(&live);
+    for (a, gpu) in live.iter().zip(&gpus) {
         assert!(!a.class.is_empty());
-        assert!(a.model.is_some(), "{a:?}");
-        assert!(a.gpu_core_count.is_some_and(|n| n > 0), "{a:?}");
+        if vm {
+            assert!(gpu.unified && !gpu.name.is_empty(), "{a:?}");
+        } else {
+            assert!(a.model.is_some(), "{a:?}");
+            assert!(a.gpu_core_count.is_some_and(|n| n > 0), "{a:?}");
+            assert!(gpu.ext.gpu_cores.is_some(), "{a:?}");
+        }
     }
+}
+
+/// The hosted macOS runner's virtual machine, recorded: a paravirtual accelerator with no model
+/// and no core count maps to a GPU named by its class, with `gpu_cores` unknown, and no error.
+#[test]
+fn a_paravirtual_accelerator_has_no_core_count() {
+    let accelerators = fixture("paravirt");
+    assert_eq!(
+        accelerators,
+        vec![Accelerator {
+            class: "AppleParavirtGPU".into(),
+            model: None,
+            gpu_core_count: None,
+        }]
+    );
+    let gpus = apple_gpus(&accelerators);
+    assert_eq!(gpus.len(), 1);
+    assert_eq!(gpus[0].name, "AppleParavirtGPU");
+    assert_eq!(gpus[0].ext.gpu_cores, None);
+    assert!(gpus[0].unified);
 }
