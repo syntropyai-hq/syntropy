@@ -20,7 +20,7 @@
 # After a change to `ci/jobs.toml`: re-check each golden, add one for each new rule or pattern,
 # and set `jobs_toml` to the digest `lint` prints.
 
-jobs_toml = "fnv1a:fec496af00cc6773"
+jobs_toml = "fnv1a:77b30f7fd842127c"
 
 [[golden]]
 name = "plan only"
@@ -597,3 +597,13 @@ paths = ["ci/images/cuda-12/Dockerfile"]
 jobs = ["build", "hosted-test", "lint", "toolchains-linux"]
 hw_required = ["hw-cuda-ada"]
 planned = ["hosted-parity-nano", "hw-cuda-ada"]
+
+[[golden]]
+name = "CUDA binding bump"
+source = "constructed: a `Cargo.lock` change to `cudarc` alone, as a bump of the CUDA binding makes it (COMP-E4-T01)"
+paths = ["Cargo.lock"]
+lock = ["cudarc"]
+jobs = ["build", "hosted-l3", "hosted-test", "lint"]
+hw_required = ["hw-cuda-ada"]
+planned = ["hosted-parity-nano", "hw-cuda-ada"]
+

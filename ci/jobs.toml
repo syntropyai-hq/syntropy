@@ -158,8 +158,9 @@ paths = [
     "ci/images/cuda*/**",
     "rust-toolchain.toml",
 ]
-# The CUDA bindings crate, once it exists: a `Cargo.lock` change to it also requires the job.
-# COMP-E4-T01, which adds it, names it here. ggml's bindings are generated inside `kernels-ggml`
-# (COMP-E7-T01), whose paths the rule already covers, so they need no entry.
-lock_deps = []
+# The CUDA bindings crate (COMP-E4-T01): a `Cargo.lock` change to it also requires the job, so a
+# bump of the binding runs on the rig (RFC-0062 §2.2, note 2026-10-23). ggml's bindings are
+# generated inside `kernels-ggml` (COMP-E7-T01), whose paths the rule already covers, so they need
+# no entry.
+lock_deps = ["cudarc"]
 planned = "QUAL-E2-T02"
