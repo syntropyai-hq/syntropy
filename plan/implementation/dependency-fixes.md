@@ -1425,3 +1425,19 @@ The same gap as the CPU kernel tasks above, in the CUDA, Metal, HIP and Vulkan r
 | COMP-E6-T05 → COMP-E13-T10 | COMP-E6-T05 | R9 | the Metal GEMV covers "the remaining GGUF types" under "conformance on R-MACF and R-ULTRA"; the row reached COMP-E13-T04's widening tables but not the GGUF dequantisers |
 | COMP-E8-T03 → COMP-E1-T04, COMP-E13-T04, COMP-E13-T10 | COMP-E8-T03 | R9 | "conformance on R-AMD for the M1 roster's ops" needs the M1 reference ops; the row reached only the M0 ones, through COMP-E5-T01. RFC-0040 §11.2 counts coverage per dtype class, and the M1 roster ships FP8 (DeepSeek-V3-class) and MXFP4 (gpt-oss-class) checkpoints; the row names FP8 on RDNA4. Their references are COMP-E13-T04's widening and COMP-E13-T10's GGUF `MXFP4` dequantiser. Raised in review of #2019 |
 | COMP-E8-T06 → COMP-E1-T04, COMP-E13-T04, COMP-E13-T10 | COMP-E8-T06 | R9 | "conformance on the Vulkan rigs" with coverage for the M1 roster and its dtype classes, as COMP-E8-T03 on HIP; the row reached no reference task |
+
+## The other kernels, tests and harnesses COMP rows' criteria use (2026-10-31)
+
+A second R9 pass over the COMP rows, after the reference ops above. These criteria compare a kernel with another provider's kernel, rerun a test another task builds, or run under a harness another task builds, and the rows did not reach that task.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| COMP-E3-T15 → COMP-E5-T15 | COMP-E3-T15 | R9 | "prediction rows equal the CUDA router's (COMP-E5-T15) for the same inputs". COMP-E6-T05 already depends on COMP-E5-T15 for the same comparison on Metal |
+| COMP-E5-T23 → COMP-E3-T16 | COMP-E5-T23 | R9 | "bit-identical to `kernels::reference` and to the CPU kernel (COMP-E3-T16) for 2–8 slots"; both are M3 |
+| COMP-E6-T10 → COMP-E3-T16 | COMP-E6-T10 | R9 | "bit-identical to `kernels::reference` and the CPU kernel (COMP-E3-T16) for 2–8 slots", as COMP-E5-T23 on CUDA |
+| COMP-E8-T02 → COMP-E4-T14 | COMP-E8-T02 | R9 | "the 1,000-step random-delay replay test of COMP-E4-T14 passes on both paths" on HIP |
+| COMP-E8-T05 → COMP-E4-T14 | COMP-E8-T05 | R9 | "the 1,000-step random-delay replay test passes" on Vulkan; the test is COMP-E4-T14's, as COMP-E8-T02 names it |
+| COMP-E8-T03 → COMP-E2-T17 | COMP-E8-T03 | R9 | "the router determinism check of COMP-E2-T17 passes on HIP" |
+| COMP-E8-T06 → COMP-E2-T17 | COMP-E8-T06 | R9 | "the router determinism check of COMP-E2-T17 passes on Vulkan" |
+| COMP-E9-T06 → QUAL-E3-T13 | COMP-E9-T06 | R9 | "the driver shim aborts on any context creation during the census (QUAL-E3-T13)"; the shim that aborts on a context is QUAL-E3-T13's invariant 3 check; both are M1a |
+| COMP-E4-T21 → QUAL-E4-T06 | COMP-E4-T21 | R9 | "conformance for each op on R-ADA (COMP-E5-T26, QUAL-E4-T06)": the `sm_89` cases in `hw-cuda-ada` are QUAL-E4-T06's, which already depends on COMP-E5-T26 and the other M0 CUDA rows. Both are M0a, and M0a's critical path is unchanged |
