@@ -11,11 +11,13 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-LoadCredential=token:/etc/syntropy-build/token
+# Every file in /etc/syntropy-build, as `syntropy-build_<file>`: the app's `app-key.pem` and
+# `app-id`, or a fine-grained `token` (runner-slot.sh).
+LoadCredential=syntropy-build:/etc/syntropy-build
 ExecStartPre=/opt/syntropy-build/egress.sh
 ExecStart=/opt/syntropy-build/runner-slot.sh %i
 # `-`: when the job ends on its own, `--rm` has already removed the container.
-ExecStop=-/usr/bin/docker stop --time 30 syntropy-build-%i
+ExecStop=-/usr/bin/docker stop --timeout 30 syntropy-build-%i
 Restart=always
 RestartSec=5
 # The slot needs the Docker socket, the token and iptables, and nothing else on the host.

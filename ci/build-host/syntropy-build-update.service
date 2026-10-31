@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+# Brings the Linux build host up to date with `main` (ADR-0625 decision 9), from
+# syntropy-build-update.timer. Root: it builds the job image and installs units.
+
+[Unit]
+Description=Update the Syntropy build host from main
+After=docker.service network-online.target
+Requires=docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/syntropy-build/update.sh

@@ -3218,3 +3218,10 @@ The dev-GPU decision is the maintainers', made on 2026-10-31. The R9 splits and 
 |---|---|---|
 | Every Linux job of every workflow may run on a self-hosted Linux build host, label `syntropy-build`, behind the repository variable `SYNTROPY_BUILD_HOST` and a gate the workflow lint checks, for every event except a PR from a fork. Fork PRs, `toolchains-linux`, `dep-approval.yml` and the macOS and Windows jobs stay hosted (revised 2026-10-31; first proposed for four `pr.yml` jobs of same-repository PRs only) | ADR-0625 (new, Proposed); ADR-0620 (dated revision); RFC-0062 §3.1 (dated note) | hosted Linux jobs waited 6 to 10 minutes on average for a runner [measured: GitHub Actions API, the 8 `pr.yml` runs before 2026-10-30]. Each job runs in a fresh container from a single-use just-in-time configuration, with no credential and no route to the LAN, and a job-started hook refuses a fork's PR, so the fork defence of ADR-0620 decision 4 is unchanged. Binds no task until a maintainer accepts ADR-0625 |
 
+### 18.56 Build-host operations: an app credential, a watchdog and daily updates (2026-10-31)
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| The build host mints runner configurations with installation tokens from a GitHub App's key; a fine-grained token stays the fallback | ADR-0625 decision 3 (dated revision); QUAL-E1-T34 | a token expires, and when it does the host silently stops taking jobs; an app's tokens last an hour and are minted per run |
+| `build-host-watchdog.yml` moves `SYNTROPY_BUILD_HOST` between `on` and `auto-off` from whether a build-host runner is online, and re-runs the runs waiting for a host that is down | ADR-0625 decision 8 (new); QUAL-E1-T34 | while the host is down and the gate is on, every same-repository run's Linux jobs queue; the watchdog bounds that to about 12 minutes. Proposed, with ADR-0625 |
+| The host brings itself up to date with `main` daily, rebuilding its image and restarting only idle slots | ADR-0625 decision 9 (new); QUAL-E1-T34 | a host installed by hand drifts from what `main` says it is |

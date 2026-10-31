@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+# Runs syntropy-build-update.service once a day, and at boot if the host was off at the time.
+
+[Unit]
+Description=Update the Syntropy build host from main, daily
+
+[Timer]
+OnCalendar=*-*-* 04:00
+RandomizedDelaySec=30min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
