@@ -67,3 +67,11 @@ The maintainers' decision covers M0a, so this ADR ends at M0b's start and the ma
 - A macOS or Windows deliverable moves into M0a, for example a Metal measurement on R-MACF that needs a host build first. Then gate that OS's jobs from then on.
 - Hosted macOS or Windows capacity gets faster or slower enough to change the wait.
 - M0b starts. The maintainers then end this ADR by decision 5, or extend it with a dated revision.
+
+## Revisions
+- Revised 2026-10-31, by devdaviddr's instruction: during M0a the macOS and Windows jobs don't run at all, rather than running as advisory. This takes option 2 in place of option 3 for M0a. Decision 3 reads with these changes:
+  - `ci/jobs.toml` marks the six jobs `paused`, with this ADR as the reason, in place of `advisory`. `changes` still evaluates each one's rule and prints what it would have done, but never lists a paused job, so `pr.yml` skips it and `ci-gate` does not wait for it. The macOS and Windows legs of `build` and `hosted-test` stay jobs of their own, so ending the pause is one change to `ci/jobs.toml` and `ci-gate`'s `needs`.
+  - The base branch's rules still decide. A PR cannot pause its own job, and a job `changes` lists that `ci-gate` does not wait for still fails the gate. A paused job that runs anyway and fails still fails it.
+  - Decision 4: an M0a task reports each macOS or Windows leg as **NOT RUN (ADR-0626)**. No advisory result exists to report. A task whose subject is only macOS or Windows, such as QUAL-E16-T30's toolchain pins, has no CI evidence during M0a, so it waits for M0b or for a maintainer's decision.
+  - Consequences: no runner minutes go to the macOS and Windows jobs, and `main` shows no red macOS or Windows checks. In exchange, the positive consequence "the macOS and Windows signal stays visible on every PR" no longer holds: portability breakage goes unseen until the jobs run again, and nobody can count it before then. The PR that ends the pause (decision 5) may find more to fix.
+  - Decision 5 and "What would make us revisit" stand: at M0b's start the maintainers end this ADR, which removes the `paused` marks, or extend it with a dated revision. A maintainer can end the pause sooner for one OS by the same change.

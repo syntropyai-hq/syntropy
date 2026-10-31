@@ -16,7 +16,8 @@
 #   fork's PR there while the `SYNTROPY_BUILD_HOST` variable is `on`, and a fork's PR to the
 #   hosted label. The workflow lint checks the form;
 # - `ci-gate` waits for every other job, and a new job is added to its `needs`. The exceptions are
-#   the jobs `ci/jobs.toml` marks advisory, which it does not wait for (ADR-0626).
+#   the jobs `ci/jobs.toml` marks paused, which `changes` never lists, so they do not run and
+#   it does not wait for them (ADR-0626).
 
 name: pr
 
@@ -144,9 +145,10 @@ jobs:
       - name: cargo xtask ci build-test-release
         run: cargo xtask ci build-test-release
 
-  # The macOS and Windows legs of `build`, on the same rule. `ci/jobs.toml` marks them advisory
-  # during M0a (ADR-0626): `ci-gate` does not wait for them, so it is not in its `needs`. At M0b's
-  # start, unless a revision of ADR-0626 extends it, the mark goes and the job rejoins `needs`.
+  # The macOS and Windows legs of `build`, on the same rule. `ci/jobs.toml` marks them paused
+  # during M0a (ADR-0626): `changes` never lists the job, so it does not run, and it is not in
+  # `ci-gate`'s `needs`. At M0b's start, unless a revision of ADR-0626 extends it, the mark goes
+  # and the job rejoins `needs`.
   build-macos-windows:
     needs: changes
     if: contains(fromJSON(needs.changes.outputs.jobs), 'build-macos-windows')
@@ -196,7 +198,7 @@ jobs:
           echo "SYNTROPY_IPC_PEER_USER=syntropy-peer" >> "$GITHUB_ENV"
       - run: cargo xtask test unit
 
-  # The macOS and Windows legs of `hosted-test`, advisory during M0a as `build-macos-windows` is.
+  # The macOS and Windows legs of `hosted-test`, paused during M0a as `build-macos-windows` is.
   hosted-test-macos-windows:
     needs: changes
     if: contains(fromJSON(needs.changes.outputs.jobs), 'hosted-test-macos-windows')
@@ -376,7 +378,7 @@ jobs:
   # The verdict comes from the base branch's `xtask`, built with no cache, as in `pr-meta.yml`,
   # so a PR cannot change how its own jobs are judged (RFC-0062 §2.2, note 2026-10-22).
   ci-gate:
-    # Not the advisory jobs `ci/jobs.toml` marks (ADR-0626): `build-macos-windows`,
+    # Not the paused jobs `ci/jobs.toml` marks (ADR-0626): `build-macos-windows`,
     # `hosted-test-macos-windows`, `toolchains-windows` and `toolchains-macos`.
     needs: [changes, lint, build, hosted-test, hosted-l3, hosted-parity-nano, toolchains-linux]
     if: always()

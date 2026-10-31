@@ -71,13 +71,14 @@ when = "always"
 runner = "hosted"
 when = "closure"
 
-# Advisory during M0a (ADR-0626): the job runs when its rule says, and `ci-gate` neither waits for
-# it nor fails on it. At M0b's start, unless a revision of ADR-0626 extends it, the marks below
-# go, and the jobs rejoin `ci-gate`'s `needs` in `pr.yml`.
+# Paused during M0a (ADR-0626, revision 2026-10-31): `changes` evaluates the rule and reports it,
+# but never lists the job, so it does not run and `ci-gate` does not wait for it. At M0b's start,
+# unless a revision of ADR-0626 extends it, the marks below go, and the jobs rejoin `ci-gate`'s
+# `needs` in `pr.yml`.
 [job.build-macos-windows]
 runner = "hosted"
 when = "closure"
-advisory = "ADR-0626"
+paused = "ADR-0626"
 
 # `hosted-test-<os>`: L1 and L2, the unit, property and simulator tests. `hosted-test` is
 # `hosted-test-linux`, and `hosted-test-macos-windows` holds the other two legs.
@@ -88,7 +89,7 @@ when = "closure"
 [job.hosted-test-macos-windows]
 runner = "hosted"
 when = "closure"
-advisory = "ADR-0626"
+paused = "ADR-0626"
 
 # L3: the loom models now (QUAL-E3-T09), and Miri and the sanitizer builds with QUAL-E3-T10
 # (RFC-0060 §3.4). RFC-0062 §2.3's five crates, and `spsc`, whose ring the loom models cover, and
@@ -118,11 +119,12 @@ paths = [
 ]
 
 # The hosted Windows and macOS runners carry the pinned toolchains, and print them (RFC-0062 §4.1
-# and §4.2; QUAL-E16-T30). Only the pins and the steps that check them start these jobs.
+# and §4.2; QUAL-E16-T30). Only the pins and the steps that check them start these jobs. Both
+# are paused during M0a, as `build-macos-windows` is.
 [job.toolchains-windows]
 runner = "hosted"
 when = "direct"
-advisory = "ADR-0626"
+paused = "ADR-0626"
 paths = [
     "ci/toolchains.toml",
     "xtask/src/toolchains.rs",
@@ -132,7 +134,7 @@ paths = [
 [job.toolchains-macos]
 runner = "hosted"
 when = "direct"
-advisory = "ADR-0626"
+paused = "ADR-0626"
 paths = [
     "ci/toolchains.toml",
     "xtask/src/toolchains.rs",
