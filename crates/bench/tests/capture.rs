@@ -232,6 +232,17 @@ mod on_unix {
     }
 
     #[test]
+    fn a_slot_slower_than_the_gpu_caps_the_recorded_generation() {
+        let fake = Fake::new("hostmax");
+        fake.tool(
+            "nvidia-smi",
+            "echo '00000000:01:00.0, Fixture Ada-class 24GB, 00.00.00.00.01, 000.00, 8.9, 4, 3, 16'",
+        );
+        let rig = captured(&fake).rigs.remove(0);
+        assert_eq!(rig.gpu[0].pcie.as_ref().unwrap().to_string(), "gen3x16");
+    }
+
+    #[test]
     fn the_spare_gpu_record_differs_only_by_its_own_fields() {
         let fake = Fake::new("spare");
         let main = captured(&fake).rigs.remove(0);
@@ -306,6 +317,13 @@ mod on_unix {
         let mut args = GOOD.to_vec();
         args[5] = "bad\"sensor";
         refused(&Fake::new("quote"), &args, "quote or backslash");
+    }
+
+    #[test]
+    fn a_value_with_a_backslash_is_refused() {
+        let mut args = GOOD.to_vec();
+        args[5] = "bad\\sensor";
+        refused(&Fake::new("backslash"), &args, "quote or backslash");
     }
 
     #[test]
