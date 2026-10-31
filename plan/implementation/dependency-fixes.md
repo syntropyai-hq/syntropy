@@ -1398,3 +1398,12 @@ R-ADA (QUAL-E15-T02), the other M0 rigs (QUAL-E15-T17), the agent pool's first d
 | COMP-E17-T14's run on gated or Llama-family files, with the lab credential, moves to QUAL-E7-T15; QUAL-E7-T15 → QUAL-E7-T06, COMP-E17-T14 | COMP-E17-T14, QUAL-E7-T15 | R9 | of QUAL-E7-T06's dependents, only COMP-E17-T14 read through the lab credential. The others use the checkpoints T06 imports, or run on the lab, which reaches T15 another way. T15 now imports the gated checkpoints T06 records and runs COMP-E17-T14's test on them |
 | QUAL-E5-T22 → QUAL-E7-T15 | QUAL-E5-T22 | R9 | the `smoke` tier keeps a `stress` item from a gated or lab-only tokenizer under that fixture's access rule, and those tokenizers come from QUAL-E7-T15's lab store now that QUAL-E7-T06 imports only ungated checkpoints. Review of #2009 (2026-10-31) |
 
+## The `qwen_moe` weights wait for the lab store (2026-10-31)
+
+QUAL-E7-T06 confirmed Qwen/Qwen3-30B-A3B as the `qwen_moe` checkpoint. It is the smallest Qwen3-MoE checkpoint its publisher releases, and its 16 BF16 shards come to 61.08 GB [measured: the Hub's sizes]. Import copies each file into the store, so the importing host needs about twice that free, and the host that ran QUAL-E7-T06 did not have it. Every file of the checkpoint is recorded in `fixtures.toml` with its Hub hash; the configuration, tokenizer and shard index are imported, and the shards wait for the lab store.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| QUAL-E7-T15 gains a criterion: the `qwen_moe` checkpoint's 16 weight shards are imported into the bucket and verified | QUAL-E7-T06, QUAL-E7-T15 | R9 | the shards' entries are QUAL-E7-T06's, and the store that can hold them is QUAL-E7-T15's |
+| COMP-E16-T13 → QUAL-E7-T15 | COMP-E16-T13 | R9 | its `qwen_moe` golden set comes from the checkpoint's weights, which are in the lab store. The other tasks that run those weights (QUAL-E5-T06, QUAL-E5-T10, COMP-E5-T24, TIER-E8-T18, QUAL-E7-T09) already reach QUAL-E7-T15 |
+

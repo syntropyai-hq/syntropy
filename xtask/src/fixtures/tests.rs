@@ -259,6 +259,7 @@ bytes   = 0
 source  = { hub = "h", revision = "r", file = "f" }
 licence = "apache-2.0"
 gated   = false
+tier    = "nightly"
 used_by = ["parity:smoke"]
 
 [[fixture]]
@@ -268,6 +269,7 @@ blake3  = ""
 source  = { hub = "h", revision = "r", file = "g" }
 licence = "mit"
 gated   = false
+tier    = "nightly"
 
 [[reference]]
 model = "nano/dense"
@@ -301,12 +303,12 @@ fn fill_sets_blake3_and_bytes_of_one_fixture_and_nothing_else() {
 #[test]
 fn the_manifest_rejects_duplicates_and_unknown_fields() {
     let twice = format!(
-        "{MANIFEST}\n[[fixture]]\nname = \"other\"\nsource = {{}}\nlicence = \"x\"\ngated = false\n"
+        "{MANIFEST}\n[[fixture]]\nname = \"other\"\nsource = {{}}\nlicence = \"x\"\ngated = false\ntier = \"lab\"\n"
     );
     assert!(Manifest::parse(&twice).unwrap_err().contains("twice"));
     let extra = MANIFEST.replace(
-        "gated   = false\nused_by",
-        "gated   = false\nfrob = 1\nused_by",
+        "tier    = \"nightly\"\nused_by",
+        "tier    = \"nightly\"\nfrob = 1\nused_by",
     );
     assert!(Manifest::parse(&extra).is_err());
 }
@@ -342,8 +344,19 @@ fn import_then_fetch_then_verify_end_to_end() {
     run(Action::Fetch, &only, &dir, &mut out).unwrap();
     run(Action::Verify, &only, &dir, &mut out).unwrap();
     assert!(dir.join("cache").join(hex(b"weights")).is_file());
-    // `other` was never imported, so it has no hash and the whole-manifest verify refuses it.
-    assert!(run(Action::Verify, &base, &dir, &mut out).is_err());
+    // `other` was never imported, so it has no hash: the whole-manifest verify passes over it and
+    // says so (QUAL-E7-T06), and naming it is still an error, so no run uses an empty hash.
+    let mut log = Vec::new();
+    run(Action::Verify, &base, &dir, &mut log).unwrap();
+    let log = String::from_utf8(log).unwrap();
+    assert!(log.contains("nano/dense: ok"), "{log}");
+    assert!(log.contains("other: not imported yet, skipped"), "{log}");
+    let named = Args {
+        name: Some("other".into()),
+        ..base.clone()
+    };
+    assert!(run(Action::Verify, &named, &dir, &mut out).is_err());
+    assert!(run(Action::Fetch, &named, &dir, &mut out).is_err());
     // Tamper with the store: both fetch of a fresh cache and verify abort.
     fs::write(dir.join("store/fixtures").join(hex(b"weights")), b"weightz").unwrap();
     assert!(

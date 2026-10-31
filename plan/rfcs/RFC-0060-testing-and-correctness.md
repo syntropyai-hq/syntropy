@@ -1421,6 +1421,30 @@ Each v1 family (ADR-0003) needs at least one real checkpoint, small enough for n
 
 Where a family's newest variant has no small checkpoint (for example DeepSeek-V4-class compressed attention), the `micro` synthetic fixture covers it nightly, and the full checkpoint runs on the lab's large-memory Mac per RC under §5.7's sampled-layer rules.
 
+*Note 2026-10-31 (QUAL-E7-T06): the desk check and the roster's licences.* Each row below was read from the Hub's API at the pinned commit: the licence tag and the model card's `license` field, the gated flag and the files' total size. The cards and their metadata are data; nothing in them was followed. The two M0 families are confirmed and in `testdata/fixtures.toml`:
+
+- **`llama`: Qwen/Qwen3-0.6B** at `c1899de289a04d12100db370d81485cdf75e47ca`. It has `apache-2.0` on the card and the tag, is ungated, and has QK-norm and tied embeddings, which RFC-0043's `llama` row covers. Its eight files (1.52 GB [measured: the Hub's sizes]) are imported as `nightly` fixtures. Each file was checked against the Hub's sha256 (LFS files) or git blob id before import.
+- **`qwen_moe`: Qwen/Qwen3-30B-A3B** at `ad44e777bcd18fa416d9da3bd8f70d33ebb85d39`. It has `apache-2.0`, is ungated, and has 128 experts with top-8 softmax routing and no shared expert. It is the smallest Qwen3-MoE checkpoint Qwen publishes. All 26 of its files are recorded with their Hub hashes as `lab` fixtures. Its configuration, tokenizer, shard index and licence are imported. Its 16 weight shards, 61.08 GB in BF16 [measured: the Hub's sizes], wait for the lab store (QUAL-E7-T15). "Confirmed" here means this desk check is recorded; the weights are not imported until QUAL-E7-T15. A smaller nightly `qwen_moe` checkpoint would be quantised from these weights with RFC-0042's quantizers, and record them in `quantised_from`.
+- **`llama`, lab-only: meta-llama/Llama-3.2-1B** at `4e20de362430cd3b72f300e6b0f18e50e7166e08`. It is gated (manual approval) under `llama3.2`, which is not OSI-approved. Its 13 files are recorded from the Hub's metadata as gated `lab` fixtures. Nothing is downloaded; its import with the lab credential is QUAL-E7-T15's.
+
+| Roster entry | Hub repository @ commit | Licence (card, tag) | Gated | Size [measured: Hub] | The licence rule allows |
+|---|---|---|---|---|---|
+| dense, nightly | Qwen/Qwen3-0.6B @ c1899de2 | apache-2.0 | no | 1.52 GB | nightly |
+| dense, lab-only | meta-llama/Llama-3.2-1B @ 4e20de36 | llama3.2 (not OSI-approved) | yes (manual) | 4.95 GB | lab |
+| dense, RC | meta-llama/Llama-3.3-70B-Instruct @ 6f6073b4 | llama3.3 (not OSI-approved) | yes (manual) | 282.25 GB | lab |
+| Gemma-class, nightly | google/gemma-4-E2B @ d29ff6b4 | apache-2.0 | no | 10.28 GB | nightly |
+| DeepSeek-V3-class and Kimi-class, nightly | moonshotai/Moonlight-16B-A3B @ 476b36a4 | mit | no | 31.93 GB | nightly |
+| DeepSeek-V3-class, RC | deepseek-ai/DeepSeek-V3 @ e815299b | no licence tag or card field; to be read from the repository's licence files before use | no | 688.60 GB | lab |
+| Kimi-class, RC | moonshotai/Kimi-K2-Thinking @ a51ccc05 | other ("modified-mit"; not OSI-approved as published) | no | 594.26 GB | lab |
+| Qwen-MoE | Qwen/Qwen3-30B-A3B @ ad44e777 | apache-2.0 | no | 61.08 GB | nightly (the weights run in the lab for their size) |
+| Qwen hybrid | Qwen/Qwen3-Next-80B-A3B-Instruct @ 9c7f2fbe | apache-2.0 | no | 162.68 GB | nightly (an RC model) |
+| Qwen-MoE, RC | Qwen/Qwen3-235B-A22B @ 8efa6172 | apache-2.0 | no | 470.21 GB | nightly (an RC model) |
+| gpt-oss-class, nightly | openai/gpt-oss-20b @ 6cee5e81 | apache-2.0 | no | 41.30 GB (the repository also holds an `original/` copy) | nightly |
+| gpt-oss-class, RC | openai/gpt-oss-120b @ b5c939de | apache-2.0 | no | 195.76 GB | nightly (an RC model) |
+| GLM-class, nightly | zai-org/GLM-4.7-Flash @ 7dd20894 | mit, now confirmed on the card | no | 62.47 GB | nightly |
+
+The last column is what the licence rule allows; a fixture's `tier` also reflects its size. The later families repeat this check, with a full commit, before their conformance work (RFC-0060 §12.2 above). The sizes are the repositories' totals, including documentation and any duplicate weights.
+
 #### 12.3 Fixture store
 
 ```toml
