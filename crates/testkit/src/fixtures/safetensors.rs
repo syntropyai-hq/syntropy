@@ -61,6 +61,21 @@ pub fn config_json(v: &VariantSpec, o: &Original) -> String {
         ),
         other => unreachable!("`model::build` refuses the RoPE rule {other:?}"),
     };
+    let moe = if d.experts > 0 {
+        format!(
+            concat!(
+                "  \"num_experts\": {},\n",
+                "  \"num_experts_per_tok\": {},\n",
+                "  \"moe_intermediate_size\": {},\n",
+                "  \"norm_topk_prob\": true,\n",
+                "  \"decoder_sparse_step\": 1,\n",
+                "  \"mlp_only_layers\": [],\n"
+            ),
+            d.experts, d.top_k, d.d_expert
+        )
+    } else {
+        String::new()
+    };
     format!(
         concat!(
             "{{\n",
@@ -80,6 +95,7 @@ pub fn config_json(v: &VariantSpec, o: &Original) -> String {
             "  \"hidden_act\": \"silu\",\n",
             "  \"attention_bias\": false,\n",
             "  \"tie_word_embeddings\": {tied},\n",
+            "{moe}",
             "  \"bos_token_id\": {bos},\n",
             "  \"eos_token_id\": {eos},\n",
             "  \"torch_dtype\": \"float32\"\n",
@@ -98,6 +114,7 @@ pub fn config_json(v: &VariantSpec, o: &Original) -> String {
         theta = r.theta,
         rope = rope,
         tied = v.tied_embeddings,
+        moe = moe,
         bos = tokenizer::BOS,
         eos = tokenizer::EOS,
     )

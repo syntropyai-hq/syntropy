@@ -6,7 +6,7 @@
 use syntropy_graph::spec::VariantSpec;
 use syntropy_kernels::RopeKind;
 
-use super::model::Original;
+use super::model::{Original, Tensor};
 use super::tokenizer;
 
 /// The data alignment: GGUF's default, so the file states none.
@@ -109,6 +109,11 @@ fn metadata(v: &VariantSpec, o: &Original, name: &str) -> Vec<(String, Value)> {
         (k("rope.dimension_count"), Value::U32(d.d_head)),
         (k("vocab_size"), Value::U32(d.vocab)),
     ];
+    if d.experts > 0 {
+        kv.push((k("expert_count"), Value::U32(d.experts)));
+        kv.push((k("expert_used_count"), Value::U32(d.top_k)));
+        kv.push((k("expert_feed_forward_length"), Value::U32(d.d_expert)));
+    }
     if o.rope.kind == RopeKind::Linear {
         kv.push((k("rope.scaling.type"), Value::Str("linear".into())));
         kv.push((k("rope.scaling.factor"), Value::F32(o.rope.factor)));
@@ -141,34 +146,71 @@ fn metadata(v: &VariantSpec, o: &Original, name: &str) -> Vec<(String, Value)> {
     kv
 }
 
+/// One GGUF tensor: a tensor of the original, or a run of one layer's experts stacked.
+struct Entry<'a> {
+    name: &'a str,
+    /// `ne`, innermost first.
+    ne: Vec<u64>,
+    parts: Vec<&'a Tensor>,
+}
+
+/// The original's tensors as GGUF lists them, consecutive experts of one name stacked.
+fn entries(o: &Original) -> Vec<Entry<'_>> {
+    let mut out: Vec<Entry<'_>> = Vec::new();
+    for t in &o.tensors {
+        if t.expert.is_some()
+            && let Some(last) = out.last_mut()
+            && last.name == t.gguf
+            && last.parts[0].expert.is_some()
+        {
+            last.parts.push(t);
+            *last.ne.last_mut().expect("a stacked tensor has dims") += 1;
+            continue;
+        }
+        let mut ne: Vec<u64> = t.shape.iter().rev().copied().collect();
+        if t.expert.is_some() {
+            ne.push(1);
+        }
+        out.push(Entry {
+            name: &t.gguf,
+            ne,
+            parts: vec![t],
+        });
+    }
+    out
+}
+
 /// The GGUF file of `o`, every tensor F32.
 pub fn write(v: &VariantSpec, o: &Original, name: &str) -> Vec<u8> {
     let kv = metadata(v, o, name);
+    let entries = entries(o);
     let mut w = W::default();
     w.0.extend_from_slice(b"GGUF");
     w.u32(3);
-    w.u64(o.tensors.len() as u64);
+    w.u64(entries.len() as u64);
     w.u64(kv.len() as u64);
     for (key, value) in &kv {
         w.str(key);
         w.value(value);
     }
     let mut offset = 0u64;
-    for t in &o.tensors {
-        w.str(&t.gguf);
-        w.u32(t.shape.len() as u32);
-        for ne in t.shape.iter().rev() {
+    for e in &entries {
+        w.str(e.name);
+        w.u32(e.ne.len() as u32);
+        for ne in &e.ne {
             w.u64(*ne);
         }
         w.u32(GGML_F32);
         w.u64(offset);
-        let bytes = 4 * t.data.len() as u64;
+        let bytes: u64 = e.parts.iter().map(|t| 4 * t.data.len() as u64).sum();
         offset = (offset + bytes).next_multiple_of(ALIGNMENT as u64);
     }
     w.pad();
-    for t in &o.tensors {
-        for x in t.gguf_data() {
-            w.0.extend_from_slice(&x.to_le_bytes());
+    for e in &entries {
+        for t in &e.parts {
+            for x in t.gguf_data() {
+                w.0.extend_from_slice(&x.to_le_bytes());
+            }
         }
         w.pad();
     }

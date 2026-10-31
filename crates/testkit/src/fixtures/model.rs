@@ -7,7 +7,7 @@
 //! checkpoint holds, and the names are the formats' own. The census of the generated files
 //! checks every name against the family's classification rules.
 
-use syntropy_graph::spec::{LayerKind, VariantSpec};
+use syntropy_graph::spec::{LayerKind, MoeSpec, VariantSpec};
 use syntropy_kernels::RopeKind;
 
 use super::normal::Normals;
@@ -30,6 +30,12 @@ pub struct Dims {
     pub d_ffn: u32,
     /// The vocabulary: the byte-level tokenizer's.
     pub vocab: u32,
+    /// Routed experts per MoE layer; 0 without MoE layers.
+    pub experts: u32,
+    /// Experts selected per token; 0 without MoE layers.
+    pub top_k: u32,
+    /// Each expert's intermediate width; 0 without MoE layers.
+    pub d_expert: u32,
     /// The context length the metadata states.
     pub max_ctx: u32,
 }
@@ -52,6 +58,26 @@ impl Dims {
                 v.name
             )));
         }
+        let (experts, top_k, d_expert) = match v.moe {
+            None => (0, 0, 0),
+            Some(MoeSpec {
+                experts,
+                top_k,
+                shared: 0,
+                latent: false,
+                router_bias: false,
+            }) => {
+                let n = u32::from(experts).min(16);
+                (n, u32::from(top_k).min(n), 32)
+            }
+            Some(other) => {
+                return Err(FixtureError::Unsupported(format!(
+                    "variant `{}`'s MoE layout {other:?}: shared experts, latent experts and \
+                     router biases are not generated yet",
+                    v.name
+                )));
+            }
+        };
         Ok(Self {
             layers,
             hidden: 64,
@@ -61,6 +87,9 @@ impl Dims {
             d_ffn: 128,
             vocab: tokenizer::VOCAB,
             max_ctx: 4096,
+            experts,
+            top_k,
+            d_expert,
         })
     }
 
@@ -115,7 +144,8 @@ pub enum Init {
     Ones,
 }
 
-/// One tensor of the original.
+/// One tensor of the original. A routed expert's matrix is its own tensor in safetensors; GGUF
+/// stacks a layer's experts into one tensor, expert outermost, named by [`Tensor::gguf`].
 #[derive(Clone, Debug, PartialEq)]
 pub struct Tensor {
     /// Its GGUF name.
@@ -129,6 +159,8 @@ pub struct Tensor {
     /// Q and K rows of a `llama` GGUF file are stored with each head's halves interleaved, as
     /// that format's RoPE pairs them: the number of heads, for such a tensor.
     pub gguf_rope_heads: Option<u32>,
+    /// The routed expert it belongs to, for an expert's matrix.
+    pub expert: Option<u32>,
     /// Its values, row-major in `shape`.
     pub data: Vec<f32>,
 }
@@ -192,6 +224,7 @@ impl Builder<'_> {
             shape: shape.to_vec(),
             init,
             gguf_rope_heads: None,
+            expert: None,
             data,
         });
         self.tensors.last_mut().expect("just pushed")
@@ -208,6 +241,8 @@ pub fn build(v: &VariantSpec, dims: Dims, normals: &mut Normals) -> Result<Origi
         d_head,
         d_ffn,
         vocab,
+        experts,
+        d_expert,
         ..
     } = dims;
     let (h, q, kv, f, voc) = (
@@ -334,9 +369,34 @@ pub fn build(v: &VariantSpec, dims: Dims, normals: &mut Normals) -> Result<Origi
                     Init::FanIn,
                 );
             }
+            LayerKind::GqaMoe if experts > 0 => {
+                let (n, de) = (u64::from(experts), u64::from(d_expert));
+                b.push(
+                    g("ffn_gate_inp.weight"),
+                    m("mlp.gate.weight"),
+                    &[n, h],
+                    Init::FanIn,
+                );
+                // Each stacked GGUF tensor is one run of experts, so its bytes are contiguous.
+                for (gn, hn, shape) in [
+                    ("ffn_gate_exps.weight", "gate_proj", [de, h]),
+                    ("ffn_up_exps.weight", "up_proj", [de, h]),
+                    ("ffn_down_exps.weight", "down_proj", [h, de]),
+                ] {
+                    for e in 0..experts {
+                        b.push(
+                            g(gn),
+                            m(&format!("mlp.experts.{e}.{hn}.weight")),
+                            &shape,
+                            Init::FanIn,
+                        )
+                        .expert = Some(e);
+                    }
+                }
+            }
             other => {
                 return Err(FixtureError::Unsupported(format!(
-                    "layer kind {other:?} is not generated yet"
+                    "layer kind {other:?} is not generated yet, or has no MoE layout"
                 )));
             }
         }

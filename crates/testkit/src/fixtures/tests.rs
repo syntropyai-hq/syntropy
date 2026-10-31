@@ -8,7 +8,7 @@ use syntropy_graph::families::llama;
 use syntropy_graph::families::{Family, families};
 use syntropy_graph::ir::Block;
 use syntropy_graph::spec::{FamilySpec, LayerKind};
-use syntropy_manifest::census::ModelManifest;
+use syntropy_manifest::census::{ModelManifest, TensorClass};
 
 use super::*;
 
@@ -184,6 +184,14 @@ fn the_files_match_their_golden_digests() {
 fn layer_blocks(family: &dyn Family, m: &ModelManifest) -> BTreeMap<u16, BTreeSet<String>> {
     let mut out: BTreeMap<u16, BTreeSet<String>> = BTreeMap::new();
     for t in &m.census.tensors {
+        // A GGUF expert record is a slice of a stacked tensor, named `<tensor>[e]`, which no
+        // rule matches by itself; its class names its layer.
+        if let TensorClass::Expert { layer, .. } = t.class {
+            out.entry(layer.0)
+                .or_default()
+                .insert(format!("{:?}", Block::Moe));
+            continue;
+        }
         match family.classify(&t.name, &t.shape, &m.hparams) {
             Classification::Classified {
                 block: BlockSel::Layer(b),
@@ -317,6 +325,7 @@ fn llama_gguf_q_and_k_rows_interleave_each_head_halves() {
         shape: vec![8, 1],
         init: model::Init::Unit,
         gguf_rope_heads: Some(2),
+        expert: None,
         data: (0..8).map(|x| x as f32).collect(),
     };
     // Head 0 holds rows 0–3: halves [0, 1] and [2, 3] interleave to 0, 2, 1, 3.
