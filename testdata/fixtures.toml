@@ -369,6 +369,174 @@ tier    = "lab"
 used_by = ["family:qwen_moe"]
 
 
+
+# The `qwen_moe` checkpoint's safetensors headers, one per shard: the 8-byte little-endian length and
+# the JSON header, read with ranged requests at the pinned commit (QUAL-E7-T06, 2026-10-31). They
+# let the M0 census (COMP-E10-T07) and the family (COMP-E16-T04) work without the 61 GB of weights.
+# Each was parsed with its length capped at 100 MiB, and its last tensor's end offset plus 8 plus the
+# header length equals the shard's size on the Hub. `range` is the bytes taken from `file`, and
+# `sha256` is the whole shard's, for provenance.
+
+[[fixture]]
+name    = "qwen3-30b-a3b/model-00001-of-00016.safetensors.header"
+blake3  = "99e2790e4c65d79f1837395d745a7b5d44a0661cdb10a4cb9bfb56a11183d82c"
+bytes   = 130720
+source  = { hub = "Qwen/Qwen3-30B-A3B", revision = "ad44e777bcd18fa416d9da3bd8f70d33ebb85d39", file = "model-00001-of-00016.safetensors", range = "bytes=0-130719", sha256 = "454e77b346a61bfb201d54df60e15158838cf930617ee135113556204f2802b5" }
+licence = "apache-2.0"
+gated   = false
+tier    = "nightly"
+used_by = ["family:qwen_moe", "census"]
+
+[[fixture]]
+name    = "qwen3-30b-a3b/model-00002-of-00016.safetensors.header"
+blake3  = "0c12b841cacfeef9adc3c4d33fbc2573e649850eb1d29c47416d2d05a6616fca"
+bytes   = 154928
+source  = { hub = "Qwen/Qwen3-30B-A3B", revision = "ad44e777bcd18fa416d9da3bd8f70d33ebb85d39", file = "model-00002-of-00016.safetensors", range = "bytes=0-154927", sha256 = "47f015d6e5bb1782a834d75c06113c5e8c77ddca1cb7daf89686a4ec0deda19e" }
+licence = "apache-2.0"
+gated   = false
+tier    = "nightly"
+used_by = ["family:qwen_moe", "census"]
+
+[[fixture]]
+name    = "qwen3-30b-a3b/model-00003-of-00016.safetensors.header"
+blake3  = "bdbe9b5e3ff8267715e94af9e42031e6126df7d37e13b1e5e0e65362d581480e"
+bytes   = 154304
+source  = { hub = "Qwen/Qwen3-30B-A3B", revision = "ad44e777bcd18fa416d9da3bd8f70d33ebb85d39", file = "model-00003-of-00016.safetensors", range = "bytes=0-154303", sha256 = "ac0bf5990f2da995c1e8b77a3149dee71900b4fe1b8a614231dea9647193d96b" }
+licence = "apache-2.0"
+gated   = false
+tier    = "nightly"
+used_by = ["family:qwen_moe", "census"]
+
+[[fixture]]
+name    = "qwen3-30b-a3b/model-00004-of-00016.safetensors.header"
+blake3  = "948625a26be6e7e72d481f204709c3f82197cec50b5e65a0d1bb2a17e407285f"
+bytes   = 155792
+source  = { hub = "Qwen/Qwen3-30B-A3B", revision = "ad44e777bcd18fa416d9da3bd8f70d33ebb85d39", file = "model-00004-of-00016.safetensors", range = "bytes=0-155791", sha256 = "89b01fd34a683c70fdb7f22c2e7090538d65063335ba0db46f3654642b17d1e5" }
+licence = "apache-2.0"
+gated   = false
+tier    = "nightly"
+used_by = ["family:qwen_moe", "census"]
+
+[[fixture]]
+name    = "qwen3-30b-a3b/model-00005-of-00016.safetensors.header"
+blake3  = "0927eeec03b823886c4343a203ff5907c05bf3f1f73f4d0b11fe0e91972a8748"
+bytes   = 156136
+source  = { hub = "Qwen/Qwen3-30B-A3B", revision = "ad44e777bcd18fa416d9da3bd8f70d33ebb85d39", file = "model-00005-of-00016.safetensors", range = "bytes=0-156135", sha256 = "9849eb3584d928e35bf5956ccfd91b64207467e1fad8304aae68dc4d92d6d6d9" }
+licence = "apache-2.0"
+gated   = false
+tier    = "nightly"
+used_by = ["family:qwen_moe", "census"]
+
+[[fixture]]
+name    = "qwen3-30b-a3b/model-00006-of-00016.safetensors.header"
+blake3  = "115efad41e11827111508e7e65092a5b0b040aac45ea3d11efac7cd9383b7171"
+bytes   = 156136
+source  = { hub = "Qwen/Qwen3-30B-A3B", revision = "ad44e777bcd18fa416d9da3bd8f70d33ebb85d39", file = "model-00006-of-00016.safetensors", range = "bytes=0-156135", sha256 = "f7a0f1525557d740158fb692986ad43506e1b5901e7406ae65808c6457bc53ad" }
+licence = "apache-2.0"
+gated   = false
+tier    = "nightly"
+used_by = ["family:qwen_moe", "census"]
+
+[[fixture]]
+name    = "qwen3-30b-a3b/model-00007-of-00016.safetensors.header"
+blake3  = "2d0adb4dae83e9cd618c8d1d989e791ddcb3bb9a0e469e683e16e4a914a6aea8"
+bytes   = 156208
+source  = { hub = "Qwen/Qwen3-30B-A3B", revision = "ad44e777bcd18fa416d9da3bd8f70d33ebb85d39", file = "model-00007-of-00016.safetensors", range = "bytes=0-156207", sha256 = "920702a50f27a009e5f676da3b02978dbd794f6ad7854f301d709136154c1a84" }
+licence = "apache-2.0"
+gated   = false
+tier    = "nightly"
+used_by = ["family:qwen_moe", "census"]
+
+[[fixture]]
+name    = "qwen3-30b-a3b/model-00008-of-00016.safetensors.header"
+blake3  = "bd451231e41b5fcd26361594c56590c4a0b2e5e8fe4e15f83e0365d58f6f7762"
+bytes   = 155536
+source  = { hub = "Qwen/Qwen3-30B-A3B", revision = "ad44e777bcd18fa416d9da3bd8f70d33ebb85d39", file = "model-00008-of-00016.safetensors", range = "bytes=0-155535", sha256 = "a85bf0cc8a8047c116172d4c08cf4792eb59d4375032708ba3e1a7ffca0f708a" }
+licence = "apache-2.0"
+gated   = false
+tier    = "nightly"
+used_by = ["family:qwen_moe", "census"]
+
+[[fixture]]
+name    = "qwen3-30b-a3b/model-00009-of-00016.safetensors.header"
+blake3  = "0f2d8423b6650a664d71ab778845c06c4b69f81d6dcbbdfb25b2599bd9c947e0"
+bytes   = 156144
+source  = { hub = "Qwen/Qwen3-30B-A3B", revision = "ad44e777bcd18fa416d9da3bd8f70d33ebb85d39", file = "model-00009-of-00016.safetensors", range = "bytes=0-156143", sha256 = "25cd8aaed86b8e17685efb152912f92448ea3fffb1bdc247f257f04d05907604" }
+licence = "apache-2.0"
+gated   = false
+tier    = "nightly"
+used_by = ["family:qwen_moe", "census"]
+
+[[fixture]]
+name    = "qwen3-30b-a3b/model-00010-of-00016.safetensors.header"
+blake3  = "cf74ae0ee8979a5cbc7cbd0a7f456556989cb3bac9dd74df0e421713a0ded856"
+bytes   = 156136
+source  = { hub = "Qwen/Qwen3-30B-A3B", revision = "ad44e777bcd18fa416d9da3bd8f70d33ebb85d39", file = "model-00010-of-00016.safetensors", range = "bytes=0-156135", sha256 = "7c3307ee214797c4bc61c0994f81d690e768150df5f14d18edf84e53ba4810dc" }
+licence = "apache-2.0"
+gated   = false
+tier    = "nightly"
+used_by = ["family:qwen_moe", "census"]
+
+[[fixture]]
+name    = "qwen3-30b-a3b/model-00011-of-00016.safetensors.header"
+blake3  = "0a2efdec8aa0c378f6f5f515c1b1e1021adffbf816c46982842500f35997d974"
+bytes   = 156144
+source  = { hub = "Qwen/Qwen3-30B-A3B", revision = "ad44e777bcd18fa416d9da3bd8f70d33ebb85d39", file = "model-00011-of-00016.safetensors", range = "bytes=0-156143", sha256 = "c658cad2842d36fa4c7c7f726f8515dc5670a3d80c94e13257d4e322ffe61988" }
+licence = "apache-2.0"
+gated   = false
+tier    = "nightly"
+used_by = ["family:qwen_moe", "census"]
+
+[[fixture]]
+name    = "qwen3-30b-a3b/model-00012-of-00016.safetensors.header"
+blake3  = "50e35cbdcc21ce362a0c5d8d551761c9174030b3ef049bc2f8e188769f74acf3"
+bytes   = 155952
+source  = { hub = "Qwen/Qwen3-30B-A3B", revision = "ad44e777bcd18fa416d9da3bd8f70d33ebb85d39", file = "model-00012-of-00016.safetensors", range = "bytes=0-155951", sha256 = "8cb898bc5e78492600053d1105c9ff61d7a719f5cc2802df63e41535a652cc26" }
+licence = "apache-2.0"
+gated   = false
+tier    = "nightly"
+used_by = ["family:qwen_moe", "census"]
+
+[[fixture]]
+name    = "qwen3-30b-a3b/model-00013-of-00016.safetensors.header"
+blake3  = "16c16957db6195b37761a12f42a60aad2089928461c47048185b350c9d24a7e7"
+bytes   = 155296
+source  = { hub = "Qwen/Qwen3-30B-A3B", revision = "ad44e777bcd18fa416d9da3bd8f70d33ebb85d39", file = "model-00013-of-00016.safetensors", range = "bytes=0-155295", sha256 = "599594421f314cb8e8ab4474db0eb490cc6310585067e82d73821254b93319ce" }
+licence = "apache-2.0"
+gated   = false
+tier    = "nightly"
+used_by = ["family:qwen_moe", "census"]
+
+[[fixture]]
+name    = "qwen3-30b-a3b/model-00014-of-00016.safetensors.header"
+blake3  = "b6ab282dd2bf862a5ccee7a90f6701d97316d9e27630f49076999cece0429153"
+bytes   = 156136
+source  = { hub = "Qwen/Qwen3-30B-A3B", revision = "ad44e777bcd18fa416d9da3bd8f70d33ebb85d39", file = "model-00014-of-00016.safetensors", range = "bytes=0-156135", sha256 = "66d3294e9976b5f01d117a0a0bed768f128a8898eb6937e224d051de2961d363" }
+licence = "apache-2.0"
+gated   = false
+tier    = "nightly"
+used_by = ["family:qwen_moe", "census"]
+
+[[fixture]]
+name    = "qwen3-30b-a3b/model-00015-of-00016.safetensors.header"
+blake3  = "027a559927ce6d35346299dae257418f055b308a1f03ad0ad7ed496cdebe5b86"
+bytes   = 156136
+source  = { hub = "Qwen/Qwen3-30B-A3B", revision = "ad44e777bcd18fa416d9da3bd8f70d33ebb85d39", file = "model-00015-of-00016.safetensors", range = "bytes=0-156135", sha256 = "2fe000da4fc7399ff6303bb0daec8c415a5d850f5ea53863392758c77fc37664" }
+licence = "apache-2.0"
+gated   = false
+tier    = "nightly"
+used_by = ["family:qwen_moe", "census"]
+
+[[fixture]]
+name    = "qwen3-30b-a3b/model-00016-of-00016.safetensors.header"
+blake3  = "bbe57754ad211fb3f46bf4aa27c8e49254b8a2c14ecc7a6f646cca654e3080f2"
+bytes   = 18696
+source  = { hub = "Qwen/Qwen3-30B-A3B", revision = "ad44e777bcd18fa416d9da3bd8f70d33ebb85d39", file = "model-00016-of-00016.safetensors", range = "bytes=0-18695", sha256 = "0c979e314faf06e94a5e1841abd285d4e26e763c79c1abe7710d543192d9da48" }
+licence = "apache-2.0"
+gated   = false
+tier    = "nightly"
+used_by = ["family:qwen_moe", "census"]
+
 # The `llama` family's lab-only checkpoint (RFC-0060 §12.2): Llama-3.2-1B, gated on the Hub
 # (manual approval), `llama3.2` on the model card and the licence tag, not OSI-approved, so `lab`
 # only. Recorded from the Hub's metadata on 2026-10-31 (QUAL-E7-T06); nothing is downloaded or
