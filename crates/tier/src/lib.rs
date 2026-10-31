@@ -30,11 +30,13 @@ pub mod pressure;
 pub mod residency;
 pub mod tune;
 
+pub use arena::plan::{ArenaPlanError, TierConfig};
 pub use arena::{
     ArenaPlan, ArenaRef, ArenaSpec, PinClass, Purpose, Registrations, SegmentSpec, SlotClass,
     SlotGeometry, TierBudgetLine,
 };
-pub use manager::TierCommand;
+pub use budget::check_ledger;
+pub use manager::{TierCommand, TierManager};
 pub use os::{
     CgroupMem, CommitCharge, CommitOutcome, HostRange, HugePages, LockOutcome, MemSnapshot,
     OsMemError, OsMemory, PageableReason, PinLimits, Psi, ReclaimStalls,
