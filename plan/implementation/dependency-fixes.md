@@ -1441,3 +1441,13 @@ A second R9 pass over the COMP rows, after the reference ops above. These criter
 | COMP-E8-T06 → COMP-E2-T17 | COMP-E8-T06 | R9 | "the router determinism check of COMP-E2-T17 passes on Vulkan" |
 | COMP-E9-T06 → QUAL-E3-T13 | COMP-E9-T06 | R9 | "the driver shim aborts on any context creation during the census (QUAL-E3-T13)"; the shim that aborts on a context is QUAL-E3-T13's invariant 3 check; both are M1a |
 | COMP-E4-T21 → QUAL-E4-T06 | COMP-E4-T21 | R9 | "conformance for each op on R-ADA (COMP-E5-T26, QUAL-E4-T06)": the `sm_89` cases in `hw-cuda-ada` are QUAL-E4-T06's, which already depends on COMP-E5-T26 and the other M0 CUDA rows. Both are M0a, and M0a's critical path is unchanged |
+
+## The jobs, maps and certificate rule QUAL rows' criteria use (2026-10-31)
+
+An R9 pass over the QUAL rows. Each of these criteria runs in a job, reads a map or relies on a rule that another task builds, and the row did not reach that task.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| QUAL-E7-T04 → QUAL-E2-T02 | QUAL-E7-T04 | R9 | each micro fixture "runs through parity `smoke` on R-ADA inside the PR† budget (QUAL-E2-T02)". The `hw-cuda-ada` job that runs parity `smoke` on R-ADA, with its 20-minute limit, is QUAL-E2-T02's (M0a) |
+| QUAL-E12-T13 → QUAL-E13-T01 | QUAL-E12-T13 | R9 | "the SC table lists all SC rows with a scenario mapping (QUAL-E13-T01)": the mapping is `bench/sc-map.toml`, which QUAL-E13-T01 (M0b) builds |
+| QUAL-E6-T10 → COMP-E16-T14 | QUAL-E6-T10 | R9 | the PR runs reach check 9 "through COMP-E16-T14's code-hash rule", and "after a module change, the family has no certificate until a pass" is that rule: the oracle reruns on every change to a family's code hash and issues `FamilyCert` only on a pass. COMP-E16-T14 is M0a and depends on neither row |
