@@ -56,7 +56,16 @@ else
 fi
 [ -n "$token" ] && [ "$token" != null ] || { echo "no token to mint a runner configuration with" >&2; exit 1; }
 
-name="$(hostname -s)-${slot}-$(date +%s)"
+# A run that ends without taking a job, because a restart or an update stopped it, leaves its
+# runner registered and offline. Remove this slot's; a failure here never holds up the slot.
+prefix="$(hostname -s)-${slot}-"
+for id in $(gh_api "$token" GET "/repos/$repo/actions/runners?per_page=100" |
+  jq -r --arg p "$prefix" '.runners[] | select(.status == "offline" and (.name | startswith($p))) | .id' ||
+  true); do
+  gh_api "$token" DELETE "/repos/$repo/actions/runners/$id" >/dev/null || true
+done
+
+name="${prefix}$(date +%s)"
 request="$(jq -n --arg name "$name" --arg label "$label" \
   '{name: $name, runner_group_id: 1, labels: [$label], work_folder: "_work"}')"
 jit="$(gh_api "$token" POST "/repos/$repo/actions/runners/generate-jitconfig" "$request" |
