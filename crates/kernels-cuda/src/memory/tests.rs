@@ -168,6 +168,16 @@ impl MemoryDriver for MemFake {
     }
 }
 
+/// The memory tests make no stream calls past `open`'s; the stream module's fake creates them.
+impl crate::stream::StreamDriver for MemFake {
+    fn stream_api(
+        &self,
+        _: &MemFakeContext,
+    ) -> Result<Box<dyn crate::stream::StreamApi>, crate::stream::StreamFault> {
+        Ok(Box::new(crate::stream::fake::FakeStreams(Arc::default())))
+    }
+}
+
 fn opts() -> OpenOptions {
     OpenOptions {
         streams: syntropy_kernels::StreamPlan {
