@@ -7,9 +7,9 @@
 //! The Metal facts (`recommendedMaxWorkingSetSize`, `supportsFamily`, …) are E5's: reading them
 //! creates an `MTLDevice`, which opens the GPU (RFC-0010 §2.2).
 //!
-//! [`live_accelerators`] reads the registry on macOS, and [`render_fixture`] writes what it read
-//! as fixture text, which [`parse_fixture`] reads back, so a recorded host runs the same mapping
-//! ([`apple_gpus`]). The format is one accelerator per line; `#` starts a comment:
+//! `live_accelerators`, on macOS on Apple silicon only, reads the registry, and
+//! [`render_fixture`] writes what it read as fixture text, which [`parse_fixture`] reads back, so
+//! a recorded host runs the same mapping ([`apple_gpus`]). The format is one accelerator per line; `#` starts a comment:
 //!
 //! ```text
 //! accelerator class=<IOClass>;model=<text>;gpu-core-count=<n>
