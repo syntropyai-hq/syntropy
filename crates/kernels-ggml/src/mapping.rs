@@ -775,7 +775,8 @@ impl Template {
             no_alloc: true,
         };
         // SAFETY: with a null `mem_buffer`, ggml allocates `mem_size` bytes for the tensor and
-        // graph headers itself and returns null if it cannot. `no_alloc` keeps tensor data out.
+        // graph headers itself; `no_alloc` keeps tensor data out. ggml aborts rather than return
+        // null when it cannot allocate (`GGML_MALLOC`), so the null check below is defensive.
         let ctx = unsafe { sys::ggml_init(params) };
         if ctx.is_null() {
             return Err(fail());
@@ -800,8 +801,9 @@ impl Template {
         let r = i64::from(rows);
         let f32t = sys::ggml_type::GGML_TYPE_F32;
         // SAFETY: `ctx` is live and sized for `MAX_TENSORS + 2` tensors and a graph, more than
-        // any template below creates; each constructor returns null only when the context is
-        // full, which is checked once at the end through the output.
+        // any template below creates, so no constructor runs out of room. (A full context would
+        // make ggml abort in `GGML_ASSERT(obj_new)`, never return null; the null checks after the
+        // build are defensive.)
         let out = unsafe {
             let new2 =
                 |ty, ne0: u32, ne1: i64| sys::ggml_new_tensor_2d(ctx, ty, i64::from(ne0), ne1);
