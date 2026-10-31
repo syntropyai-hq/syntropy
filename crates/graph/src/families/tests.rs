@@ -390,14 +390,14 @@ fn an_unknown_architecture_fails_with_code_1() {
 }
 
 #[test]
-fn this_builds_registry_refuses_every_architecture_until_families_land() {
-    let h = header(&toy_kvs("llama"));
+fn this_builds_registry_refuses_architectures_no_family_accepts() {
+    let h = header(&toy_kvs("toy"));
     let e = families()
         .resolve(&MetaView::Gguf(&h.metadata))
         .err()
         .unwrap();
     assert_eq!(e.code(), 1);
-    assert!(e.to_string().contains("registers no family"), "{e}");
+    assert!(e.to_string().contains("supported families: llama"), "{e}");
 }
 
 #[test]

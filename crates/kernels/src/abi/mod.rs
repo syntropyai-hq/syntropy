@@ -78,7 +78,7 @@ pub const DOMAIN_KERNELS: u32 = 1;
 /// [`SynHealth`] (RFC-0040 §10.4, note of 2026-10-30). The table only grows: a domain keeps its
 /// number, and a domain added to `core` takes the next one. `Kernels` keeps the 1 the ABI
 /// published first. `tests/abi_domains.rs` fails unless every `Domain` has a number here.
-pub const DOMAIN_CODES: [(Domain, u32); 7] = [
+pub const DOMAIN_CODES: [(Domain, u32); 8] = [
     (Domain::Kernels, DOMAIN_KERNELS),
     (Domain::Cluster, 2),
     (Domain::Net, 3),
@@ -86,6 +86,7 @@ pub const DOMAIN_CODES: [(Domain, u32); 7] = [
     (Domain::Recovery, 5),
     (Domain::Security, 6),
     (Domain::Exec, 7),
+    (Domain::Tier, 8),
 ];
 
 /// The boundary number of `domain`, or `None` for a domain this build has no number for.

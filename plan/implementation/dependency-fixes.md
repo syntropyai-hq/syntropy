@@ -1507,6 +1507,15 @@ COMP-E10-T07 (M0a) builds the census. Its criterion asked for "golden census tes
 | COMP-E16-T03 → COMP-E10-T07 | COMP-E16-T03 | R9 | "golden census on recorded headers" runs the `llama` family through COMP-E10-T07's builder |
 | COMP-E16-T04 → COMP-E10-T07 | COMP-E16-T04 | R9 | "on the `qwen_moe` checkpoint, the golden census … run[s] on its recorded safetensors headers" through the same builder; the edge was only transitive, through COMP-E16-T03 |
 
+## COMP-E16-T03's conformance checks re-homed (2026-10-31)
+
+COMP-E16-T03 (the `llama` family) required RFC-0060 §7.2 checks 1–3 on the `nano` and `micro` fixtures and on the nightly checkpoint, but its row reached none of the tasks those checks need. The fixture generators (QUAL-E7-T01, QUAL-E7-T04) and the conformance runner (QUAL-E6-T06) depend on COMP-E16-T03, so edges to them would make a cycle. The checks move to the runner, which already reaches the census builder, the KV byte counters and the parity driver. COMP-E16-T03 keeps the golden census and the KV dtype rule, which its own module shows. Review of #2037 (2026-10-31).
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| RFC-0060 §7.2 checks 1–2 on the real `llama` checkpoint's (Qwen3-0.6B) recorded headers, and check 3 on its weights, move to QUAL-E6-T06 | COMP-E16-T03, QUAL-E6-T06 | R9 | check 1's groups and byte total come from the census builder (COMP-E10-T07), check 2 needs the KV byte counters (TIER-E6-T02), and check 3 needs the parity driver (QUAL-E5-T06) and the providers' kernels. QUAL-E6-T06 already depends on all of them. QUAL-E6-T06 named the real-checkpoint checks for `qwen_moe` only, so the `llama` leg had no owner |
+| COMP-E16-T03's checks 1–3 on the `nano` and `micro` fixtures are left to QUAL-E6-T06 and QUAL-E6-T22, which already require them of both M0 families | COMP-E16-T03 | R9 | the fixtures come from QUAL-E7-T01 and QUAL-E7-T04, which depend on COMP-E16-T03's `FamilySpec` |
+
 ## COMP-E7-T02's conformance leg (2026-10-31)
 
 COMP-E7-T02's criterion "ggml CPU ops pass conformance against `kernels::reference`" uses `kernels::reference`'s op functions, which COMP-E1-T03 builds. COMP-E7-T02 does not depend on COMP-E1-T03, and COMP-E1-T03 has not landed. The leg moves to COMP-E7-T19, which COMP-E7-T02 split off for the attention, RoPE and MoE mappings and which already depends on COMP-E1-T03. Until then, COMP-E7-T02's tests compare each mapped op with an F64 evaluation of its definition, bit for bit where it is one IEEE operation per element and within a derived F32 rounding bound otherwise. Those tests stay as interim evidence.
