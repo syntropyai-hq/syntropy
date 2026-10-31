@@ -3901,6 +3901,7 @@ dependencies = [
  "syntropy-config",
  "syntropy-core",
  "syntropy-ipc",
+ "syntropy-manifest",
  "syntropy-net",
  "syntropy-obs",
  "syntropy-spsc",
