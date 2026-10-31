@@ -12,10 +12,14 @@
 //! activation blocks, BF16 rounding of matrix inputs, and the fake-quant step of the op-level
 //! comparison (RFC-0042 §6.4).
 //!
+//! [`dequant`] holds the reference dequantisers of RFC-0042 §2.1 for `F16`, `BF16`, `Q8_0`, `Q4_0`
+//! and `Q4_K`, bit-exact against ggml's, and the GGUF block geometry table.
+//!
 //! [`embed_inject`] holds the reserved `EmbedInject` op's semantics (RFC-0043 §2.4), defined so
 //! that its meaning is fixed before any provider or family uses it.
 
 pub mod act_quant;
+pub mod dequant;
 pub mod embed_inject;
 
 /// The reference's numeric mode (RFC-0060 §4.1).

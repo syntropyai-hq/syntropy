@@ -2409,7 +2409,7 @@ The milestones run in the order M0a, M0b, M1a, M1b, M2, M3, M4. M0 is split so t
 
 ### M0a: walking skeleton
 One dense family end to end on one Linux machine, CPU and CUDA, behind every merge gate. It is the first integration point, and nothing in it is built for scale.
-- The workspace builds on every Tier 1 OS, and CI enforces the §4.2 dependency rules (RFC-0062).
+- The workspace builds on every Tier 1 OS, and CI enforces the §4.2 dependency rules (RFC-0062). During M0a only the Linux build and tests gate a merge; the macOS and Windows jobs run as advisory (ADR-0626).
 - The merge gates of ADR-0021 decision 5 run from the first commit: build, lint and tests; the DCO, licence and dependency checks; the workflow security lint; the independent review-agent job; and the sandbox in which agent runs read untrusted content. The repository's security baseline, the private vulnerability-reporting channel and the agent trust tiers are in place from the first commit too (RFC-0062 §12.5, §12.6, §13; ADR-0021; ADR-0624).
 - GGUF reader, census and manifest for `llama` at Q4_K and Q8_0. Such a model runs end to end through the OpenAI Chat Completions API with streaming, through the daemon and a real runner, on the CPU provider and on CUDA (RFC-0041, RFC-0043, RFC-0050, RFC-0051).
 - Execution is eager; this exit needs no captured graphs (RFC-0012).
@@ -3218,10 +3218,15 @@ The dev-GPU decision is the maintainers', made on 2026-10-31. The R9 splits and 
 |---|---|---|
 | Every Linux job of every workflow may run on a self-hosted Linux build host, label `syntropy-build`, behind the repository variable `SYNTROPY_BUILD_HOST` and a gate the workflow lint checks, for every event except a PR from a fork. Fork PRs, `toolchains-linux`, `dep-approval.yml` and the macOS and Windows jobs stay hosted (revised 2026-10-31; first proposed for four `pr.yml` jobs of same-repository PRs only) | ADR-0625 (new, Proposed); ADR-0620 (dated revision); RFC-0062 §3.1 (dated note) | hosted Linux jobs waited 6 to 10 minutes on average for a runner [measured: GitHub Actions API, the 8 `pr.yml` runs before 2026-10-30]. Each job runs in a fresh container from a single-use just-in-time configuration, with no credential and no route to the LAN, and a job-started hook refuses a fork's PR, so the fork defence of ADR-0620 decision 4 is unchanged. Binds no task until a maintainer accepts ADR-0625 |
 
+### 18.56 Linux alone gates merges during M0a (2026-10-31)
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| Until M0b starts, only Linux x86_64 gates a merge; the maintainers then end or extend it. `build-macos`, `build-windows`, `hosted-test-macos`, `hosted-test-windows`, `toolchains-macos` and `toolchains-windows` still run and post their checks, but `ci-gate` does not wait for them or count them. M0a tasks close on their Linux legs and report each macOS or Windows leg as NOT RUN or with its advisory result | ADR-0626 (new, Accepted 2026-10-31); RFC-0062 §2.5 (dated note); QUAL-E1-T37 (new); §16 (M0a's first deliverable) | the maintainers decided on 2026-10-31 that M0a supports Linux only. M0a's and M0b's exits are on Linux, and the Windows tests were the slowest job `ci-gate` waited for: median 22.6 min against 7.8 min for `hosted-test-linux` [measured: GitHub Actions API, the 60 most recent `pull_request` runs of `pr.yml` up to 2026-10-31]. Accepted by devdaviddr on 2026-10-31. §16's first M0a deliverable notes that it is enforced on Linux only during M0a |
+
 ### 18.57 RFC-0011's plan additions in `core` (2026-10-31)
 
 | Change | Sections touched | Reason |
 |---|---|---|
 | `PlacementPlan` gains `ext: PlacementPlanExt`, and `PredictedCost` gains `stages: Vec<StageCost>`, both with serde defaults. `StageCost` is keyed by `core::plan::StageTerm`, a mirror of `obs::CostTerm` with the same discriminants, which `obs` converts | §5.4 (through RFC-0011 §2's note of 2026-10-31) | RFC-0011 §2 adds both to the plan. `core` cannot name `obs`'s `CostTerm` (§4.2), so a mirror holds the key, and `obs` checks that it matches (PLC-E4-T01) |
 | The IPC protocol goes to 7.0 | §3.5 | the plan in `AssignPlan`, and the cost in a delta's `Predicted` item, change their postcard layout |
-
