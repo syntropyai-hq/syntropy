@@ -89,7 +89,7 @@ const NAMES: &[&str] = &[
 
 /// What the architecture name says about the attention block.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Variant {
+pub(super) enum Variant {
     /// Llama and Mistral: no QK-norm, no projection bias.
     Llama,
     /// Qwen2: a bias on the Q, K and V projections.
@@ -188,7 +188,7 @@ const DEFAULT_BETA_SLOW: f64 = 1.0;
 
 // ---- Classification rules ----------------------------------------------------------------------
 
-const fn rule(
+pub(super) const fn rule(
     pattern: &'static str,
     block: BlockSel,
     role: TensorRole,
@@ -216,8 +216,9 @@ const TIED: ClassSel = ClassSel::Ignored {
     reason: TIED_REASON,
 };
 
-/// GGUF names, shapes innermost first (ggml's `ne`).
-const GGUF_BASE: &[ClassRule] = &[
+/// GGUF names, shapes innermost first (ggml's `ne`): the embedding, the attention block and
+/// the final norm, which `qwen_moe` shares.
+pub(super) const GGUF_ATTN: &[ClassRule] = &[
     rule(
         "token_embd.weight",
         BlockSel::Prologue,
@@ -261,6 +262,16 @@ const GGUF_BASE: &[ClassRule] = &[
         &[Q_WIDTH, Hp("hidden")],
     ),
     rule(
+        "output_norm.weight",
+        BlockSel::Epilogue,
+        TensorRole::Norm,
+        DENSE,
+        &[Hp("hidden")],
+    ),
+];
+/// GGUF names of the `DenseFfn` block.
+const GGUF_FFN: &[ClassRule] = &[
+    rule(
         "blk.{L}.ffn_norm.weight",
         FFN,
         TensorRole::Norm,
@@ -287,13 +298,6 @@ const GGUF_BASE: &[ClassRule] = &[
         TensorRole::Down,
         DENSE,
         &[Hp(D_FFN), Hp("hidden")],
-    ),
-    rule(
-        "output_norm.weight",
-        BlockSel::Epilogue,
-        TensorRole::Norm,
-        DENSE,
-        &[Hp("hidden")],
     ),
 ];
 const GGUF_HEAD: &[ClassRule] = &[rule(
@@ -344,8 +348,9 @@ const GGUF_BIAS: &[ClassRule] = &[
     ),
 ];
 
-/// safetensors names, shapes outermost first.
-const ST_BASE: &[ClassRule] = &[
+/// safetensors names, shapes outermost first: the embedding, the attention block and the
+/// final norm, which `qwen_moe` shares.
+pub(super) const ST_ATTN: &[ClassRule] = &[
     rule(
         "model.embed_tokens.weight",
         BlockSel::Prologue,
@@ -398,6 +403,16 @@ const ST_BASE: &[ClassRule] = &[
         &[Any],
     ),
     rule(
+        "model.norm.weight",
+        BlockSel::Epilogue,
+        TensorRole::Norm,
+        DENSE,
+        &[Hp("hidden")],
+    ),
+];
+/// safetensors names of the `DenseFfn` block.
+const ST_FFN: &[ClassRule] = &[
+    rule(
         "model.layers.{L}.post_attention_layernorm.weight",
         FFN,
         TensorRole::Norm,
@@ -424,13 +439,6 @@ const ST_BASE: &[ClassRule] = &[
         TensorRole::Down,
         DENSE,
         &[Hp("hidden"), Hp(D_FFN)],
-    ),
-    rule(
-        "model.norm.weight",
-        BlockSel::Epilogue,
-        TensorRole::Norm,
-        DENSE,
-        &[Hp("hidden")],
     ),
 ];
 const ST_HEAD: &[ClassRule] = &[rule(
@@ -487,20 +495,29 @@ const ST_BIAS: &[ClassRule] = &[
     ),
 ];
 
-/// The rule tables for one combination of the variant flags.
-fn tables(qk_norm: bool, bias: bool, tied: bool) -> Vec<RuleTable> {
-    let gguf = |rules| RuleTable {
+/// A table of GGUF rules.
+pub(super) const fn gguf(rules: &'static [ClassRule]) -> RuleTable {
+    RuleTable {
         order: DimOrder::InnermostFirst,
         rules,
-    };
-    let st = |rules| RuleTable {
+    }
+}
+
+/// A table of safetensors rules.
+pub(super) const fn st(rules: &'static [ClassRule]) -> RuleTable {
+    RuleTable {
         order: DimOrder::OutermostFirst,
         rules,
-    };
+    }
+}
+
+/// The rule tables of everything but the FFN, for one combination of the variant flags: the
+/// embedding, the attention block, the final norm and the head. `qwen_moe` builds on them.
+pub(super) fn attention_tables(qk_norm: bool, bias: bool, tied: bool) -> Vec<RuleTable> {
     let mut t = vec![
-        gguf(GGUF_BASE),
+        gguf(GGUF_ATTN),
         gguf(if tied { GGUF_HEAD_TIED } else { GGUF_HEAD }),
-        st(ST_BASE),
+        st(ST_ATTN),
         st(if tied { ST_HEAD_TIED } else { ST_HEAD }),
     ];
     if qk_norm {
@@ -509,6 +526,13 @@ fn tables(qk_norm: bool, bias: bool, tied: bool) -> Vec<RuleTable> {
     if bias {
         t.extend([gguf(GGUF_BIAS), st(ST_BIAS)]);
     }
+    t
+}
+
+/// The rule tables for one combination of the variant flags.
+fn tables(qk_norm: bool, bias: bool, tied: bool) -> Vec<RuleTable> {
+    let mut t = attention_tables(qk_norm, bias, tied);
+    t.extend([gguf(GGUF_FFN), st(ST_FFN)]);
     t
 }
 
@@ -527,11 +551,11 @@ pub static LLAMA: Llama = Llama {
     matchers: [const { OnceLock::new() }; 8],
 };
 
-fn flag(hp: &HyperParams, key: &str) -> bool {
+pub(super) fn flag(hp: &HyperParams, key: &str) -> bool {
     matches!(hp.extra.get(key), Some(HParamValue::Bool(true)))
 }
 
-fn float(hp: &HyperParams, key: &str) -> Option<f64> {
+pub(super) fn float(hp: &HyperParams, key: &str) -> Option<f64> {
     match hp.extra.get(key) {
         Some(HParamValue::F64(v)) => Some(*v),
         _ => None,
@@ -539,11 +563,11 @@ fn float(hp: &HyperParams, key: &str) -> Option<f64> {
 }
 
 /// `v` at F32 precision, as GGUF stores it and the blocks take it.
-fn f32_precision(v: f64) -> f64 {
+pub(super) fn f32_precision(v: f64) -> f64 {
     f64::from(v as f32)
 }
 
-fn to_f32(v: f64) -> f32 {
+pub(super) fn to_f32(v: f64) -> f32 {
     v as f32
 }
 
@@ -562,7 +586,7 @@ impl Llama {
 }
 
 /// The key's name in `meta`, for an error message.
-fn name(meta: &MetaView<'_>, key: Key) -> String {
+pub(super) fn name(meta: &MetaView<'_>, key: Key) -> String {
     meta.key_name(key)
         .ok()
         .flatten()
@@ -593,7 +617,7 @@ fn opt_f64(
 }
 
 /// Refuses `key` with `reason`.
-fn refuse(meta: &MetaView<'_>, key: Key, reason: impl Into<String>) -> FamilyError {
+pub(super) fn refuse(meta: &MetaView<'_>, key: Key, reason: impl Into<String>) -> FamilyError {
     FamilyError::invalid(name(meta, key), reason)
 }
 
@@ -757,126 +781,9 @@ impl Family for Llama {
     }
 
     fn parse_hparams(&self, meta: &MetaView<'_>) -> Result<HyperParams, FamilyError> {
-        let variant = variant(meta)?;
-        let n_layers = meta.require_u64(K_LAYERS, 1..=u64::from(u16::MAX))?;
-        let hidden = meta.require_u64(K_HIDDEN, 1..=1 << 20)?;
-        let vocab = vocab(meta)?;
-        let n_heads = meta.require_u64(K_HEADS, 1..=u64::from(u16::MAX))?;
-        let n_kv_heads = meta.u64_or(K_KV_HEADS, n_heads, 1..=n_heads)?;
-        if n_heads % n_kv_heads != 0 {
-            return Err(refuse(
-                meta,
-                K_KV_HEADS,
-                format!("{n_kv_heads} KV heads do not divide {n_heads} query heads"),
-            ));
-        }
-        let d_head = match meta.u64(K_D_HEAD)? {
-            Some(_) => meta.require_u64(K_D_HEAD, 1..=u64::from(u16::MAX))?,
-            None if hidden % n_heads == 0 => hidden / n_heads,
-            None => {
-                return Err(refuse(
-                    meta,
-                    K_HEADS,
-                    format!(
-                        "{n_heads} heads do not divide the hidden size {hidden}, and no head dim is given"
-                    ),
-                ));
-            }
-        };
-        if let Some(v) = meta.u64(K_D_HEAD_V)?
-            && v != d_head
-        {
-            return Err(refuse(
-                meta,
-                K_D_HEAD_V,
-                format!("V heads of {v} differ from K heads of {d_head}"),
-            ));
-        }
+        let hp = parse_attention(meta, variant(meta)?)?;
         let d_ffn = meta.require_u64(K_FFN, 1..=1 << 24)?;
-        let eps = meta.require_f64(K_EPS, f64::MIN_POSITIVE..=1.0)?;
-        let theta = match meta.f64(K_THETA)? {
-            Some(_) => meta.require_f64(K_THETA, 1.0..=1e12)?,
-            None => DEFAULT_THETA,
-        };
-        let max_ctx = meta.require_u64(K_CTX, 1..=u64::from(u32::MAX))?;
-
-        // Settings the blocks cannot compute.
-        if let Some(dims) = meta.u64(K_ROPE_DIMS)?
-            && dims != d_head
-        {
-            return Err(refuse(
-                meta,
-                K_ROPE_DIMS,
-                format!("partial rotary ({dims} of {d_head} dims) is not part of this family"),
-            ));
-        }
-        if let Some(p) = meta.f64(K_PARTIAL_ROTARY)?
-            && p != 1.0
-        {
-            return Err(refuse(
-                meta,
-                K_PARTIAL_ROTARY,
-                format!("partial rotary ({p}) is not part of this family"),
-            ));
-        }
-        if let Some(act) = meta.str(K_ACT)?
-            && act != "silu"
-        {
-            return Err(refuse(
-                meta,
-                K_ACT,
-                format!("the activation `{act}` is not part of this family, which is SiLU-gated"),
-            ));
-        }
-        if variant != Variant::Qwen2 && meta.bool(K_ATTN_BIAS)? == Some(true) {
-            return Err(refuse(
-                meta,
-                K_ATTN_BIAS,
-                "a bias on the O projection is not part of the `Gqa` block",
-            ));
-        }
-        if meta.bool(K_MLP_BIAS)? == Some(true) {
-            return Err(refuse(
-                meta,
-                K_MLP_BIAS,
-                "a bias in the FFN is not part of the `DenseFfn` block",
-            ));
-        }
-        let window_in_effect = match variant {
-            Variant::Qwen2 | Variant::Qwen3 => meta.bool(K_USE_WINDOW)? == Some(true),
-            Variant::Llama => meta.u64(K_WINDOW)?.is_some(),
-        } || matches!(meta, MetaView::Gguf(_))
-            && meta.u64(K_WINDOW)?.is_some();
-        if window_in_effect {
-            return Err(refuse(
-                meta,
-                K_WINDOW,
-                "a sliding window needs the `SlidingGqa` block, which this family does not use",
-            ));
-        }
-        let tied = meta.bool(K_TIED)?.unwrap_or(false);
-        let rope = rope_scaling(meta, max_ctx)?;
-
-        let narrow = |n: u64| u32::try_from(n).unwrap_or(u32::MAX);
-        let mut hp = HyperParams::new(
-            u16::try_from(n_layers).unwrap_or(u16::MAX),
-            narrow(hidden),
-            narrow(vocab),
-        )
-        .with(N_HEADS, HParamValue::U64(n_heads))
-        .with(N_KV_HEADS, HParamValue::U64(n_kv_heads))
-        .with(D_HEAD, HParamValue::U64(d_head))
-        .with(D_FFN, HParamValue::U64(d_ffn))
-        .with(RMS_EPS, HParamValue::F64(f32_precision(eps)))
-        .with(ROPE_THETA, HParamValue::F64(f32_precision(theta)))
-        .with(MAX_CTX, HParamValue::U64(max_ctx))
-        .with(QK_NORM, HParamValue::Bool(variant == Variant::Qwen3))
-        .with(QKV_BIAS, HParamValue::Bool(variant == Variant::Qwen2))
-        .with(TIED_EMBEDDINGS, HParamValue::Bool(tied));
-        for (k, v) in rope {
-            hp = hp.with(k, v);
-        }
-        Ok(hp)
+        Ok(hp.with(D_FFN, HParamValue::U64(d_ffn)))
     }
 
     fn classify(&self, name: &str, shape: &[u64], hp: &HyperParams) -> Classification {
@@ -884,30 +791,7 @@ impl Family for Llama {
     }
 
     fn kv_formula(&self, hp: &HyperParams, source: KvSource) -> KvFormula {
-        let kv_heads = hp
-            .count(N_KV_HEADS)
-            .and_then(|n| u32::try_from(n).ok())
-            .unwrap_or(0);
-        let d_head = hp
-            .count(D_HEAD)
-            .and_then(|n| u32::try_from(n).ok())
-            .unwrap_or(0);
-        let mut kv = KvFormula::new(
-            vec![LayerKv::gqa(kv_heads, d_head, None); usize::from(hp.n_layers)],
-            KvDTypeRule::source_default(source),
-        );
-        // RFC-0042 §4.2's rule with no declared cache and no family requirement: the source's
-        // dtype on every layer. It cannot fail on these inputs; the line above is its value.
-        let rule = KvDTypeRule {
-            source,
-            declared_cache: None,
-            family: None,
-            family_layers: Vec::new(),
-        };
-        if let Ok(dtype) = rule.reference() {
-            kv.dtype = dtype;
-        }
-        kv
+        gqa_kv_formula(hp, source)
     }
 
     fn required_ops(&self, hp: &HyperParams) -> OpSet {
@@ -920,6 +804,165 @@ impl Family for Llama {
         ops.extend(head_params(hp).ops());
         ops
     }
+}
+
+/// The hyperparameters of everything but the FFN, read and range-checked for `variant`: the
+/// shared fields, the attention block's, RoPE and tied embeddings. `qwen_moe` reads its
+/// attention with it as [`Variant::Qwen3`].
+///
+/// # Errors
+///
+/// [`FamilyError::HyperParamInvalid`] for a missing or out-of-range key, or a setting the
+/// `Gqa` block cannot compute.
+pub(super) fn parse_attention(
+    meta: &MetaView<'_>,
+    variant: Variant,
+) -> Result<HyperParams, FamilyError> {
+    let n_layers = meta.require_u64(K_LAYERS, 1..=u64::from(u16::MAX))?;
+    let hidden = meta.require_u64(K_HIDDEN, 1..=1 << 20)?;
+    let vocab = vocab(meta)?;
+    let n_heads = meta.require_u64(K_HEADS, 1..=u64::from(u16::MAX))?;
+    let n_kv_heads = meta.u64_or(K_KV_HEADS, n_heads, 1..=n_heads)?;
+    if n_heads % n_kv_heads != 0 {
+        return Err(refuse(
+            meta,
+            K_KV_HEADS,
+            format!("{n_kv_heads} KV heads do not divide {n_heads} query heads"),
+        ));
+    }
+    let d_head = match meta.u64(K_D_HEAD)? {
+        Some(_) => meta.require_u64(K_D_HEAD, 1..=u64::from(u16::MAX))?,
+        None if hidden % n_heads == 0 => hidden / n_heads,
+        None => {
+            return Err(refuse(
+                meta,
+                K_HEADS,
+                format!(
+                    "{n_heads} heads do not divide the hidden size {hidden}, and no head dim is given"
+                ),
+            ));
+        }
+    };
+    if let Some(v) = meta.u64(K_D_HEAD_V)?
+        && v != d_head
+    {
+        return Err(refuse(
+            meta,
+            K_D_HEAD_V,
+            format!("V heads of {v} differ from K heads of {d_head}"),
+        ));
+    }
+    let eps = meta.require_f64(K_EPS, f64::MIN_POSITIVE..=1.0)?;
+    let theta = match meta.f64(K_THETA)? {
+        Some(_) => meta.require_f64(K_THETA, 1.0..=1e12)?,
+        None => DEFAULT_THETA,
+    };
+    let max_ctx = meta.require_u64(K_CTX, 1..=u64::from(u32::MAX))?;
+
+    // Settings the blocks cannot compute.
+    if let Some(dims) = meta.u64(K_ROPE_DIMS)?
+        && dims != d_head
+    {
+        return Err(refuse(
+            meta,
+            K_ROPE_DIMS,
+            format!("partial rotary ({dims} of {d_head} dims) is not part of this family"),
+        ));
+    }
+    if let Some(p) = meta.f64(K_PARTIAL_ROTARY)?
+        && p != 1.0
+    {
+        return Err(refuse(
+            meta,
+            K_PARTIAL_ROTARY,
+            format!("partial rotary ({p}) is not part of this family"),
+        ));
+    }
+    if let Some(act) = meta.str(K_ACT)?
+        && act != "silu"
+    {
+        return Err(refuse(
+            meta,
+            K_ACT,
+            format!("the activation `{act}` is not part of this family, which is SiLU-gated"),
+        ));
+    }
+    if variant != Variant::Qwen2 && meta.bool(K_ATTN_BIAS)? == Some(true) {
+        return Err(refuse(
+            meta,
+            K_ATTN_BIAS,
+            "a bias on the O projection is not part of the `Gqa` block",
+        ));
+    }
+    if meta.bool(K_MLP_BIAS)? == Some(true) {
+        return Err(refuse(
+            meta,
+            K_MLP_BIAS,
+            "a bias in the FFN is not part of the `DenseFfn` block",
+        ));
+    }
+    let window_in_effect = match variant {
+        Variant::Qwen2 | Variant::Qwen3 => meta.bool(K_USE_WINDOW)? == Some(true),
+        Variant::Llama => meta.u64(K_WINDOW)?.is_some(),
+    } || matches!(meta, MetaView::Gguf(_)) && meta.u64(K_WINDOW)?.is_some();
+    if window_in_effect {
+        return Err(refuse(
+            meta,
+            K_WINDOW,
+            "a sliding window needs the `SlidingGqa` block, which this family does not use",
+        ));
+    }
+    let tied = meta.bool(K_TIED)?.unwrap_or(false);
+    let rope = rope_scaling(meta, max_ctx)?;
+
+    let narrow = |n: u64| u32::try_from(n).unwrap_or(u32::MAX);
+    let mut hp = HyperParams::new(
+        u16::try_from(n_layers).unwrap_or(u16::MAX),
+        narrow(hidden),
+        narrow(vocab),
+    )
+    .with(N_HEADS, HParamValue::U64(n_heads))
+    .with(N_KV_HEADS, HParamValue::U64(n_kv_heads))
+    .with(D_HEAD, HParamValue::U64(d_head))
+    .with(RMS_EPS, HParamValue::F64(f32_precision(eps)))
+    .with(ROPE_THETA, HParamValue::F64(f32_precision(theta)))
+    .with(MAX_CTX, HParamValue::U64(max_ctx))
+    .with(QK_NORM, HParamValue::Bool(variant == Variant::Qwen3))
+    .with(QKV_BIAS, HParamValue::Bool(variant == Variant::Qwen2))
+    .with(TIED_EMBEDDINGS, HParamValue::Bool(tied));
+    for (k, v) in rope {
+        hp = hp.with(k, v);
+    }
+    Ok(hp)
+}
+
+/// One `PerToken` entry of `2 · n_kv_heads · d_head` elements per layer, in the dtype
+/// RFC-0042 §4.2's rule gives for `source` (COMP-E13-T06): the KV of a `Gqa` layer.
+pub(super) fn gqa_kv_formula(hp: &HyperParams, source: KvSource) -> KvFormula {
+    let kv_heads = hp
+        .count(N_KV_HEADS)
+        .and_then(|n| u32::try_from(n).ok())
+        .unwrap_or(0);
+    let d_head = hp
+        .count(D_HEAD)
+        .and_then(|n| u32::try_from(n).ok())
+        .unwrap_or(0);
+    let mut kv = KvFormula::new(
+        vec![LayerKv::gqa(kv_heads, d_head, None); usize::from(hp.n_layers)],
+        KvDTypeRule::source_default(source),
+    );
+    // RFC-0042 §4.2's rule with no declared cache and no family requirement: the source's
+    // dtype on every layer. It cannot fail on these inputs; the line above is its value.
+    let rule = KvDTypeRule {
+        source,
+        declared_cache: None,
+        family: None,
+        family_layers: Vec::new(),
+    };
+    if let Ok(dtype) = rule.reference() {
+        kv.dtype = dtype;
+    }
+    kv
 }
 
 // ---- Block parameters --------------------------------------------------------------------------
@@ -1102,4 +1145,4 @@ pub fn chat_format(spec: &TokenizerSpec) -> Result<ChatFormat, ChatFormatError> 
 }
 
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;

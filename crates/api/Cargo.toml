@@ -17,11 +17,12 @@ syntropy-net = { path = "../net" }
 # `/v1/syntropy/version` reports.
 syntropy-ipc = { path = "../ipc", features = ["async"] }
 # The HTTP server (RFC-0050 §1.1, PROD-E2-T01): hyper's HTTP/1.1 and HTTP/2 connections, its tokio
-# glue and `auto` builder, and the response bodies. tokio's `net` gives the TCP listeners.
+# glue and `auto` builder, and the response bodies. tokio's `net` gives the TCP listeners, and its
+# `sync` the channels native generate streams its events through (PROD-E4-T13).
 http-body-util.workspace = true
 hyper.workspace = true
 hyper-util.workspace = true
-tokio = { workspace = true, features = ["net"] }
+tokio = { workspace = true, features = ["net", "sync"] }
 # The rings' ends, which the pipeline holds.
 syntropy-spsc = { path = "../spsc" }
 # The local CA (PROD-E5-T03): certificates, the leaf resolver, validity times and the stored CA.
@@ -33,6 +34,8 @@ x509-parser.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
+# The token-ID validator's property test (PROD-E2-T20).
+proptest.workspace = true
 # The fake runner the pipeline's tests run against (QUAL-E3-T18), and its `SimClock`.
 syntropy-testkit = { path = "../testkit" }
 # Parses `api.tls` values in the unit tests.

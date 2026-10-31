@@ -227,6 +227,8 @@ Token IDs reach unsafe device code: the sampler indexes per-sequence count table
 
 A request with an ID outside the range fails with 400 `token_id_out_of_range`, naming the field, the first offending position and `vocab_limit`. Nothing is clamped or dropped silently. The check costs one pass over the IDs and sits inside the pre-`SequenceOpen` budget (Performance). Debug kernels keep bounds assertions as a second line (RFC-0040); they are not the defence.
 
+*Note 2026-10-31 (PROD-E2-T20, as built).* `syntropy_api::pipeline::check_token_ids` is the one validator. It takes a `TokenField`, the field's IDs and `vocab_limit`, and returns `TokenIdOutOfRange { field, position, id, vocab_limit }` for the first ID that is not below the limit. `TokenField` names the native `tokens`, `teacher.tokens`, `logit_bias`, `stop_token_ids`, a legacy completions `prompt`, an embeddings `input`, a grammar's token set (`constraint`), and the rendered prompt. `check_request` runs it after stage 5 and before routing: first on the native `tokens` at the client's positions, then on the `logit_bias` keys in the order listed, then on the rendered prompt, which a tokenizer that disagrees with the manifest would fail. The other fields are checked by their endpoints' tasks with the same function. `ModelInfo::vocab_limit` carries the limit from stage 3, and `vocab_limit()` computes `min(embedding rows, LM-head rows, sampler table size)`. Deriving the three sizes from `ModelManifest` is COMP-E10-T16's: the census does not yet mark which `RowLookup` table is the token embedding. `ApiError::TokenIdOutOfRange` carries the error; its class is `InvalidRequest`, and its code is `token_id_out_of_range`, number 33 in §12's registry.
+
 ### 3. API shapes
 
 Each subsection lists what the front end reads and what the encoder writes. A field not listed is handled by §3.6. Every ignored field is named in a `Syntropy-Warning` response header (`Syntropy-Warning: ignored=user,metadata`), so clients can discover gaps without the request failing.
@@ -1020,6 +1022,17 @@ The native API is HTTP/JSON plus SSE under `/v1/syntropy/` (ADR-0503). Its reque
 Native messages may carry `cache_control` like Anthropic content blocks, marking the prefix up to them as shareable (§9.5). Every token ID in `tokens` and `sampling.logit_bias`, and every stop token ID, is range-checked (§2.3).
 
 The non-streaming response contains `choices[]` (text, reasoning, tool calls, token IDs when asked, logprobs, stop reason), `usage`, and every `SyntropyMeta` field (§10) as first-class fields, plus `trace_id` when the request was traced. A streaming response can be re-attached within the detach grace at `GET /v1/syntropy/generate/{sequence}/events` with `Last-Event-ID` (§5.5, M3).
+
+*Note 2026-10-31 (PROD-E4-T13, as built).* `syntropy_api::native` serves the M0 subset that the benchmark driver needs. PROD-E4-T02 opens the full endpoint in M1. Until then:
+- **Gate.** The route answers only while `debug.bench_api` is on, through §13.6's loopback predicate (`DebugSection::allows`). Otherwise it gives the same 404 `unsupported_endpoint` as a path with no route.
+- **Request.** `model`, `tokens`, `sampling.temperature`, `sampling.seed`, `sampling.max_tokens`, `stream` and `return_tokens`, with `?format=ndjson`.
+- **Refusals.** `messages`, `prompt`, `stream: false` and SSE get 400 `unsupported_feature`. Any other field gets 400 `invalid_request`. A body over `api.max_body`'s default of 32 MiB gets 413 `request_too_large`.
+- **Range check.** `tokens` passes §2.3's check in `Ingress::start`, before routing.
+- **Stream.** The events are `started`, `text`, `done` and `error`, each with `id: "<sequence>:<n>"`.
+- **Sequence ID text.** A sequence ID is written `<ingress short ID as 16 hex digits>-<boot>-<n>`, a form this RFC had not fixed.
+- **Token IDs.** With `return_tokens`, each `text` event carries the `tokens` that released its text, so the IDs across a stream add up to `done.usage.completion_tokens`.
+- **Pipeline changes.** For this, §2.1's `GenEvent` gains `Tokens { choice, tokens }`, which the pipeline sends after each entry's text when `Generation::return_tokens` is on, and `StreamMode` gains `Ndjson`.
+- **Driver.** `native::drive` runs on the thread that owns the runner's `Ingress`. It starts queued requests and polls every live generation without sleeping while one is live, so a token reaches its stream as soon as it reaches `local_tokens`.
 
 #### 13.2 Models
 
