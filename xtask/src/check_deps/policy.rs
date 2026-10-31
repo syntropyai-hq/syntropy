@@ -567,8 +567,29 @@ pub fn unsafe_module(name: &str) -> Option<&'static UnsafeModule> {
 /// as its artefact is built.
 pub const RELEASE_CRATES: &[&str] = &["cli", "kernels-cuda", "kernels-hip", "kernels-vulkan"];
 
-/// Rule 10: test-only features, which never reach a release.
+/// Rule 10: test-only features, which never reach a release. The `dev` and `test-release` build
+/// profiles turn these on (RFC-0062 §4.4).
 pub const TEST_FEATURES: &[&str] = &["fault-injection", "debug-taps", "guards"];
+
+/// Rule 10: test-only features that no build profile turns on, because only a dev-dependency asks
+/// for one. `test-relay` is `net`'s: iroh's test relay server, for the forced-relay tests of the
+/// crates above `net` (RFC-0001 §4.2 rule 10, note of 2026-10-22).
+pub const DEV_ONLY_FEATURES: &[&str] = &["test-relay"];
+
+/// Rule 10: whether `feature` is test-only, so that no release reaches it and no crate turns it
+/// on by default.
+pub fn is_test_only(feature: &str) -> bool {
+    TEST_FEATURES.contains(&feature) || DEV_ONLY_FEATURES.contains(&feature)
+}
+
+/// Rule 10: every test-only feature.
+pub fn test_only_features() -> Vec<&'static str> {
+    TEST_FEATURES
+        .iter()
+        .chain(DEV_ONLY_FEATURES)
+        .copied()
+        .collect()
+}
 
 /// Whether `name` is a `kernels-*` crate.
 pub fn is_provider(name: &str) -> bool {

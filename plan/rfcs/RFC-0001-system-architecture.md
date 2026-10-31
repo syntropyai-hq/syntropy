@@ -387,6 +387,7 @@ One Cargo workspace, Rust 2024 edition (ADR-0001). Every crate is prefixed `synt
 | 2 | `text` | tokenizers, chat templates, detokenization, stop sequences, tool-call and reasoning parsers, grammar-to-token-mask compiler | `manifest` | 0050 |
 | 2 | `probe` | device enumeration, startup microbenchmarks, live-sample aggregation, drift detection | `kernels`, `io`, `net` | 0010 |
 | 2 | `store` | Hub range reads, BLAKE3 chunk store, P2P distribution, pack builder, GC, persisted session blobs | `manifest`, `io`, `net` | 0041 (session blobs: 0022) |
+| 2 | `netprobe` | the field network probe for alpha testers (DIST-E4-T15): the standalone `syntropy-netprobe` binary, run between two of a tester's machines, which times echoes over `net::endpoint` and writes one report the tester submits by hand (ADR-0510). No `unsafe`: it reads interfaces and Wi-Fi details through the platform's tools (added 2026-10-22, note below) | `core`, `net`, `io` (`OsEntropy` for its node key); outside the workspace, `tokio` as its runtime | 0030 |
 | 3 | `exec` | lowers the graph to per-stage step programs; per-device dispatchers; CPU compute pool; doorbells; graph capture | `graph`, `kernels`, `tier` | 0012 (provider contract: 0040) |
 | 3 | `cluster` | discovery, invites, SWIM membership, coordinator lease, event log, pure `apply()`, snapshots, re-placement triggers | `net`, `manifest`, `solver` | 0030 (re-placement and recovery: 0033) |
 | 4 | `sched` | step scheduler: continuous batching, chunked prefill, verify windows, drafting, acceptance, sampler (with token-level stop sets and grammar masks), activation history | `exec`, `tier`, `graph`, `text` | 0012 |
@@ -408,6 +409,7 @@ One Cargo workspace, Rust 2024 edition (ADR-0001). Every crate is prefixed `synt
 *Note 2026-10-27 (amendment, §18.41):* `api` depends on `spsc`. The ingress pipeline (RFC-0050 §2, PROD-E2-T02) holds the daemon side's `local_sequences` producer and `local_tokens` consumer, which `ipc`'s region hands out as `spsc`'s shared ring ends, and it names their types. The `unsafe` stays in `spsc` and `ipc` (rule 8). Layer 4 may depend on layer 1 (rule 2), and `api` is not a compute crate (rule 3).
 
 *Note 2026-10-27 (amendment, §18.42):* `cli` depends on `cluster`, `net` and `sched` for their configuration sections. `config show --resolved`, `config check` and `config path` (RFC-0054 §2.2, §8) resolve over the binary's section registry, which holds every section of the crates the binary links; `cluster`, `net` and `sched` declare theirs, and `cli` is the one crate above all three. All three edges point to lower layers (rule 2).
+*Note 2026-10-22 (amendment, §18.24):* `netprobe` joins layer 2. DIST-E4-T15's probe is a binary that alpha testers run before the product ships, so it is neither a `cli` subcommand (`cli` is the product's single binary) nor a bin target in `net`, which would put a runtime's `main` in a layer-1 library. It reaches iroh only through `net` (rule 6), takes its node key from `io`'s `OsEntropy`, and no crate depends on it.
 
 Packaging, installers, backend modules and update channels (RFC-0052) and CI (RFC-0062) live outside the crate graph, in `packaging/` and `.github/`. A backend module is a directory beside the core binary of the same version holding one provider library and its vendor redistributables (ADR-0507, RFC-0052 §4.3).
 
@@ -436,6 +438,7 @@ These are enforced in CI by a `cargo metadata` check (RFC-0062), not by review.
 9. **`testkit` is a dev-dependency only.** No production crate depends on it.
    - *Note 2026-10-21:* the same holds for `bench`, the other crate on §4.1's dev-only row ("—").
 10. **Test-only features never reach a release.** Any crate may declare the cargo features `fault-injection`, `debug-taps` and `guards`. Release artefacts are built without them, and the L0 `check-deps` job enforces it (RFC-0060 §3.6, RFC-0062 §12.1).
+   - *Note 2026-10-22 (amendment, §18.24):* `test-relay` is a fourth test-only feature, declared by `net` alone. It exposes iroh's test relay server and an endpoint that trusts its self-signed certificate (`net::endpoint::test_relay`), so the tests of crates above `net`, which rule 6 keeps from naming iroh, can force a relayed path. Only dev-dependencies turn it on, so no build profile of RFC-0062 §4.4 does, and those keep their three features. The `check-deps` checks refuse it in a release build and among a crate's default features, like the other three.
 
 ## 5. Core types and interfaces
 
@@ -2982,6 +2985,15 @@ RFC-0060 §5.5 (amendment A4) defines the teacher-forced tap types that §5.8's 
 | Change | Sections touched | Reason |
 |---|---|---|
 | `SequenceControl`, `SequenceOpen`, `SequenceMeta`, `TokenFrame`, `TokenEntry`, `FinishReason` and `TraceContext` live in `core`, not `net`; `net` encodes them without defining them, and keeps its zero-copy views under names of their own (`Token<'a>`, `TokenEntryView<'a>`) | §5.8 (dated note), §5.13; RFC-0053 §3.2 (dated note) | rule 3 (§4.2) keeps `exec` and `sched` off `net`, and the head's and tail's step loops read these types from the M0 rings (DIST-E1-T14, which defines them). For the maintainers to confirm |
+
+### 18.24 The field probe's crate and the test relay feature (2026-10-22)
+
+DIST-E4-T15 builds the field network probe for alpha testers.
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| `netprobe` joins layer 2, depending on `net` and `io` | §4.1 (row and dated note); `ci/layers.toml` | the probe ships to testers before the product; `cli` is the product's single binary, and a bin target in `net` would put a runtime's `main` in a layer-1 library |
+| `test-relay` is a test-only feature of `net` | §4.2 rule 10 (dated note) | the probe's forced-relay test needs a relay server, and rule 6 keeps every crate but `net` from naming iroh, whose test relay it is |
 
 ### 18.25 The `NetPool` adapter's `unsafe` (2026-10-23)
 

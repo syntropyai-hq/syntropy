@@ -83,14 +83,14 @@ pub fn rule_10(manifest: &Path, graph: &Graph) -> Outcome {
                 continue;
             }
             for feature in features {
-                if policy::TEST_FEATURES.contains(&feature) && seen.insert((package, feature)) {
+                if policy::is_test_only(feature) && seen.insert((package, feature)) {
                     let short = package.strip_prefix(PREFIX).unwrap_or(package);
                     findings.push(Finding::new(
                         Rule::Numbered(10),
                         format!(
                             "the release build of `{name}` enables `{short}/{feature}`; release \
                              artefacts are built without {}",
-                            list(policy::TEST_FEATURES, "or")
+                            list(&policy::test_only_features(), "or")
                         ),
                     ));
                 }
@@ -154,7 +154,7 @@ pub fn default_features(graph: &Graph) -> Vec<Finding> {
                 let Some(next @ (next_at, next_feature)) = target else {
                     continue;
                 };
-                if !policy::TEST_FEATURES.contains(&next_feature) {
+                if !policy::is_test_only(next_feature) {
                     if seen.insert(next) {
                         parent.insert(next, (node, entry));
                         queue.push_back(next);
@@ -602,6 +602,34 @@ mod tests {
                  features are never default features, or every dependent that keeps default \
                  features would build with them",
             ]
+        );
+    }
+
+    #[test]
+    fn a_dev_only_feature_among_a_crates_defaults_is_reported() {
+        // `test-relay` is no build profile's, but rule 10 keeps it out of defaults all the same
+        // (RFC-0001 §4.2 rule 10, note of 2026-10-22).
+        let graph = Graph::test(&["net"], &[], &[]).with_features(
+            "net",
+            &[
+                ("default", &["test-relay"]),
+                ("test-relay", &["iroh/test-utils"]),
+            ],
+            &[],
+        );
+        assert_eq!(
+            defaults(&graph),
+            [
+                "rule 10: `net` turns on `test-relay` by default (default → test-relay); test-only \
+              features are never default features, or every dependent that keeps default \
+              features would build with them"
+            ]
+        );
+        assert!(policy::is_test_only("test-relay"));
+        assert!(!policy::TEST_FEATURES.contains(&"test-relay"));
+        assert_eq!(
+            policy::test_only_features(),
+            ["fault-injection", "debug-taps", "guards", "test-relay"]
         );
     }
 
