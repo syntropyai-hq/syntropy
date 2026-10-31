@@ -4,3 +4,8 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
+
+[dependencies]
+cudarc.workspace = true
+syntropy-core = { path = "../core" }
+syntropy-kernels = { path = "../kernels" }

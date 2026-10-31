@@ -58,6 +58,10 @@ license = "MIT OR Apache-2.0"
 publish = false
 
 [workspace.dependencies]
+# The CUDA driver API for `syntropy-kernels-cuda` (RFC-0040 §7.1): `libcuda` is loaded at run
+# time, never linked, so a host without the driver builds and runs CPU-only. Only the driver
+# API: the runtime libraries, cuBLAS and NVRTC are not used (RFC-0040 §10.3).
+cudarc = { version = "0.19.10", default-features = false, features = ["std", "driver", "dynamic-loading", "cuda-13040"] }
 # Structured events for async and other non-hot code (RFC-0053 §4.1). Hot threads never use it
 # (the `hot-threads` lint step). Without default features: no `attributes` proc macro.
 tracing = { version = "0.1.44", default-features = false, features = ["std"] }
