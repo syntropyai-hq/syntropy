@@ -1463,3 +1463,12 @@ The R9 pass over the remaining areas. Each criterion below uses a harness, a pro
 | PLC-E9-T23 → PLC-E9-T09 | PLC-E9-T23 | R9 | "sampled output passes PLC-E9-T09's harness" with a project-synthetic draft head (M3 → M1a) |
 | DIST-E6-T03 → PLC-E2-T11 | DIST-E6-T03 | R9 | "plugging a cable produces exactly one `InterfacesChanged` and new probes (PLC-E2-T11) within 3 s"; the L1 link probes are PLC-E2-T11's; both are M2 |
 | TIER-E9-T04 → COMP-E5-T02 | TIER-E9-T04 | R9 | "on the CUDA rig with a Q4_K pack and an i-quant pack, the fitted split's layer time is within 5% of the best fixed split"; CUDA i-quant GEMV is COMP-E5-T02's, and the row reached no CUDA kernel beyond `Timestamp`; both are M1a |
+
+## DXGI leaves PLC-E1-T04 for its own M0a task (2026-10-31)
+
+PLC-E1-T04's criteria use NVML and IOKit only, and none of its development evidence reaches a Windows host with a GPU, so the DXGI adapters it listed would have closed without a test that runs them. PLC-E1-T07's criterion "on Windows D2 never exceeds the DXGI budget" reads the DXGI local budget that E2 produces, so the DXGI part keeps an M0a producer of its own. Narrowing PLC-E1-T04's task text needs a maintainer's sign-off on the change that closes it (#91).
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| New PLC-E1-T19 (M0a), "DXGI adapters with local budget and LUID for E2 (split from PLC-E1-T04)" → PLC-E1-T04; PLC-E1-T04's task text drops the DXGI adapters | PLC-E1-T04, PLC-E1-T19 | R3b, R9 | the DXGI part moves with a fixture test through the trait and development evidence on a Windows host with a GPU. It stays M0a because PLC-E1-T07 (M0a) uses its budget |
+| PLC-E1-T07 → PLC-E1-T19 | PLC-E1-T07 | R9 | "on Windows D2 never exceeds the DXGI budget" uses the local budget PLC-E1-T19 produces; before the split it came through PLC-E1-T04 |
