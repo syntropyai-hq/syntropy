@@ -18,7 +18,9 @@ use crate::sme2::Sme2;
 ///
 /// Every level has `Gemv` (COMP-E3-T03, [`crate::gemv`]): its own SIMD kernels at `X86V3`,
 /// `X86V4`, `Arm82Dot` and `Arm86I8mm`, the next level down's at `X86V4Amx` and `Arm92Sme2`,
-/// and the portable kernels at `X86V2` and `Arm80`. The later kernel tasks add their entries in
+/// and the portable kernels at `X86V2` and `Arm80`. `MoeGrouped` at the `CPU` site
+/// (COMP-E3-T05, [`crate::moe`]) is built on those kernels, at the same levels. The later
+/// kernel tasks add their entries in
 /// [`DispatchTable::for_level`].
 ///
 /// It has no `PartialEq`: function-pointer equality is not reliable across codegen units.
@@ -38,6 +40,7 @@ impl DispatchTable {
         // where it has none, and never above what the live host runs.
         let mut ops = BTreeMap::new();
         ops.insert(OpKind::Gemv, crate::gemv::entry::kernel(isa));
+        ops.insert(OpKind::MoeGrouped, crate::moe::entry::kernel(isa));
         Self {
             isa,
             ops,
