@@ -30,6 +30,13 @@ yaml-rust2.workspace = true
 # publishers list SHA-256 digests (QUAL-E16-T30). The workspace's version, already in the build
 # through `syntropy-manifest`.
 sha2.workspace = true
+# The fixture store's S3 backend (QUAL-E7-T15, RFC-0060 §12.3): `reqwest`'s blocking client over
+# `rustls` on `ring` with the platform's verifier. A dev-only second user of ADR-0432's HTTP stack,
+# approved by the maintainers on 2026-11-07 (ADR-0432's revision note). SigV4 signing is HMAC-SHA256
+# over `sha2`, so no signing crate.
+reqwest.workspace = true
+rustls.workspace = true
+rustls-platform-verifier.workspace = true
 
 [dev-dependencies]
 # The cache cap property of QUAL-E7-T05 (pre-approved crate).

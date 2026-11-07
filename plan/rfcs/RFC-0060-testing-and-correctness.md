@@ -1479,6 +1479,8 @@ baseline_report = "…"        # ggml-CPU ParityReport (§4.1)
 - **Access** (from M0). The bucket is private. Public read is granted object by object, only to project-synthetic fixtures and to fixtures under a permissive licence, each with its licence file published beside it. Everything else, gated objects and Llama-family files included, is readable only with the lab credential, and is never redistributed. Draft heads are not produced in v1, so the bucket holds none.
 - **Retention.** References and fixtures cited by any release's `fixtures.toml` are kept indefinitely. Others are kept for 180 days after their last reference.
 
+*Note 2026-11-07 (QUAL-E7-T15): the S3 backend.* `cargo xtask fixtures --store s3+https://<host>/<bucket>` reads and writes the bucket. With no credential set, every request is anonymous. With the lab credential (`SYNTROPY_FIXTURES_S3_ACCESS_KEY_ID` and `SYNTROPY_FIXTURES_S3_SECRET_ACCESS_KEY`), requests are SigV4-signed. `import` writes each object and its licence file with the access the rule above gives its manifest entry: public read for a project-synthetic fixture (`source = { synthetic = … }`) or one under a permissive licence, and private for a gated fixture, a Llama-family file, or anything else. `exists` reports a failed request as an error, never as absent. The local and S3 backends pass one test suite written over `&dyn Store`. The client is ADR-0432's HTTP stack, used by `xtask` under that ADR's revision of 2026-11-07.
+
 #### 12.4 Golden data
 
 | Data | Content | Used by |

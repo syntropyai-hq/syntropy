@@ -305,7 +305,7 @@ fn rule_6(graph: &Graph) -> Vec<Finding> {
         };
         for start in graph.members() {
             let name = graph.short(start);
-            if name == system.only_in {
+            if name == system.only_in || system.also_in.contains(&name) {
                 continue;
             }
             if let Some(links) = graph.package(start).links.as_deref()
