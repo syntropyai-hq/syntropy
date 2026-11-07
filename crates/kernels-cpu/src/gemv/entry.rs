@@ -1,6 +1,17 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! The `Gemv` op on the CPU provider: the [`Kernel`] each level's dispatch table holds.
+//! The `Gemv`, `Gemm` and `Logits` ops on the CPU provider: the [`Kernel`] each level's
+//! dispatch table holds for each (COMP-E3-T03, COMP-E3-T22).
+//!
+//! The three kinds compute one value, `y[r][o] = Σ_k W[o][k] · x[r][k]`, which
+//! `kernels::reference` defines once for `Gemv` and `Gemm` and the ggml provider maps to one
+//! `mul_mat` for all three (RFC-0040 §8.2). They differ in the bucket a provider prepares:
+//! `Gemv` for decode and verify rows, `Gemm` for prefill buckets above 16 rows, `Logits` for
+//! the LM head, whose dims are `[n_vocab, hidden]`. The family graph puts the final norm in
+//! its own `RmsNorm` before `Logits` (RFC-0043 §3.3), so `Logits` here is the head product
+//! alone, as in the ggml mapping. A `Gemm` bucket runs the same kernels, 8 activation rows per
+//! weight pass ([`ROW_GROUP`](super::ROW_GROUP)), so its output equals `Gemv`'s on the same
+//! rows bit for bit.
 //!
 //! Operands, as the ggml provider's `Gemv` mapping takes them (RFC-0040 §8.2):
 //!
@@ -38,7 +49,7 @@ pub(crate) fn kernel(isa: CpuIsa) -> Kernel {
 }
 
 /// The weight type of a scheme this kernel takes.
-fn weight_type(s: QuantScheme) -> Option<WeightType> {
+pub(crate) fn weight_type(s: QuantScheme) -> Option<WeightType> {
     match s {
         QuantScheme::Plain(DType::F16) => Some(WeightType::F16),
         QuantScheme::Plain(DType::BF16) => Some(WeightType::Bf16),
@@ -49,7 +60,16 @@ fn weight_type(s: QuantScheme) -> Option<WeightType> {
 
 /// `(weight type, n_out, k_in)` of a key and shape this kernel takes.
 fn shape_of(key: &OpKey, shape: &ShapeSig) -> Option<(WeightType, usize, usize)> {
-    if key.op != OpKind::Gemv || key.variant != 0 || key.layout != LayoutVersion::SOURCE {
+    if !matches!(key.op, OpKind::Gemv | OpKind::Gemm | OpKind::Logits) {
+        return None;
+    }
+    weight_shape(key, shape)
+}
+
+/// `(weight type, n_out, k_in)` of a key whose op takes one weight matrix `[n_out, k_in]` as
+/// `schemes[0]`, with F32 activations and output: the `Gemv` family and `GateUpAct`.
+pub(crate) fn weight_shape(key: &OpKey, shape: &ShapeSig) -> Option<(WeightType, usize, usize)> {
+    if key.variant != 0 || key.layout != LayoutVersion::SOURCE {
         return None;
     }
     let (&weight, rest) = key.schemes.split_first()?;
@@ -79,6 +99,11 @@ fn plan(key: &OpKey, shape: &ShapeSig) -> Option<Plan> {
 fn caps(key: &OpKey, shape: &ShapeSig) -> Option<OpCaps> {
     let (ty, _, _) = shape_of(key, shape)?;
     let plan = plan(key, shape)?;
+    Some(matmul_caps(ty, plan.workspace))
+}
+
+/// The capabilities of a product over weights of `ty` with `workspace` bytes of scratch.
+pub(crate) fn matmul_caps(ty: WeightType, workspace: Bytes) -> OpCaps {
     let (accumulate, act_in) = match ty.act() {
         ActKind::F32 => (AccumKind::F32, syntropy_core::ActQuant::None),
         // The `Q8_0` and `Q4_0` sums run over one 32-element block, `Q4_K`'s over one
@@ -92,8 +117,8 @@ fn caps(key: &OpKey, shape: &ShapeSig) -> Option<OpCaps> {
             syntropy_core::ActQuant::Q8K256,
         ),
     };
-    Some(OpCaps {
-        workspace: plan.workspace,
+    OpCaps {
+        workspace,
         est: None,
         layout: LayoutVersion::SOURCE,
         // A launch is one call on the stream's thread, with no allocation and no wait.
@@ -112,11 +137,11 @@ fn caps(key: &OpKey, shape: &ShapeSig) -> Option<OpCaps> {
         // certification (RFC-0040 §10.2), so until then they run uncertified.
         kernel_hash: Blake3([0; 32]),
         source_key: Blake3([0; 32]),
-    })
+    }
 }
 
 /// The packed F32 `[rows, n]` tensor a slot must be, at the slot's own buffer.
-fn packed(a: &TensorArg, rows: u32, n: usize) -> bool {
+pub(crate) fn packed(a: &TensorArg, rows: u32, n: usize) -> bool {
     u32::try_from(n)
         .is_ok_and(|n| TensorArg::packed(a.buf, DType::F32, [rows, n, 1, 1]).as_ref() == Some(a))
 }
@@ -125,23 +150,23 @@ fn check(plan: &Plan, args: &OpArgs<'_>) -> Result<(), Error> {
     let ty = plan
         .weight
         .and_then(weight_type)
-        .ok_or_else(|| internal("Gemv: no weight scheme in the plan".to_owned()))?;
+        .ok_or_else(|| internal("matrix product: no weight scheme in the plan".to_owned()))?;
     let (n_out, k_in) = (plan.dims[0] as usize, plan.dims[1] as usize);
     let ([x], [y], [w], []) = (args.inputs, args.outputs, args.weights, args.statics) else {
         return Err(internal(
-            "Gemv binds one input, one output, one weight and no constants".to_owned(),
+            "a matrix product binds one input, one output, one weight and no constants".to_owned(),
         ));
     };
     if !packed(x, plan.rows, k_in) || !packed(y, plan.rows, n_out) {
         return Err(internal(format!(
-            "Gemv: x must be packed F32 [{}, {k_in}] and y packed F32 [{}, {n_out}]",
+            "matrix product: x must be packed F32 [{}, {k_in}] and y packed F32 [{}, {n_out}]",
             plan.rows, plan.rows
         )));
     }
     let need = (k_in / ty.block_elems() * ty.block_bytes()) as u64 * n_out as u64;
     if w.len.0 < need {
         return Err(internal(format!(
-            "Gemv: the weight view holds {} bytes, the matrix {need}",
+            "matrix product: the weight view holds {} bytes, the matrix {need}",
             w.len.0
         )));
     }
@@ -166,7 +191,7 @@ fn run_for(level: Level) -> KernelFn {
 /// Runs one launch at `level`.
 fn run(level: Level, l: &Launch<'_>) -> Result<(), Error> {
     let plan = l.plan();
-    let fail = |what: &str| internal(format!("Gemv: {what}"));
+    let fail = |what: &str| internal(format!("matrix product: {what}"));
     let ty = plan
         .weight
         .and_then(weight_type)
