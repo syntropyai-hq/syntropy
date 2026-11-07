@@ -63,7 +63,9 @@ fn ten_thousand_steady_state_steps_allocate_nothing() {
         },
         doorbell_slots: 4,
         capture: true,
-        deterministic: true,
+        // Stand-in kernels declare no capabilities, which a device opened deterministic
+        // refuses (RFC-0040 §3.3).
+        deterministic: false,
         power: PowerHint::Mains,
     };
     let dev = DeviceId {
@@ -170,7 +172,9 @@ fn a_runner_on_its_own_thread_allocates_nothing() {
         },
         doorbell_slots: 4,
         capture: true,
-        deterministic: true,
+        // Stand-in kernels declare no capabilities, which a device opened deterministic
+        // refuses (RFC-0040 §3.3).
+        deterministic: false,
         power: PowerHint::Mains,
     };
     let dev = DeviceId {

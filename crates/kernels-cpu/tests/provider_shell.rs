@@ -35,7 +35,9 @@ fn options(doorbells: u32) -> OpenOptions {
         },
         doorbell_slots: doorbells,
         capture: true,
-        deterministic: true,
+        // Stand-in kernels declare no capabilities, which a device opened deterministic
+        // refuses (RFC-0040 §3.3).
+        deterministic: false,
         power: PowerHint::Mains,
     }
 }

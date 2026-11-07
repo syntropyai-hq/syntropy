@@ -58,6 +58,9 @@ pub(crate) struct CpuDevice {
     /// The NUMA node the device is.
     pub(crate) node: u16,
     pub(crate) table: DispatchTable,
+    /// `OpenOptions::deterministic`: `prepare` takes only kernels whose capabilities declare a
+    /// reduction order independent of the thread count and timing (RFC-0040 §3.3).
+    pub(crate) deterministic: bool,
     pub(crate) doorbells: Doorbells,
     pub(crate) health: Arc<Health>,
     pub(crate) streams: RefCell<Vec<StreamState>>,
@@ -74,10 +77,16 @@ pub(crate) struct CpuDevice {
 }
 
 impl CpuDevice {
-    pub(crate) fn new(node: u16, table: DispatchTable, doorbells: Doorbells) -> CpuDevice {
+    pub(crate) fn new(
+        node: u16,
+        table: DispatchTable,
+        deterministic: bool,
+        doorbells: Doorbells,
+    ) -> CpuDevice {
         CpuDevice {
             node,
             table,
+            deterministic,
             doorbells,
             health: Arc::default(),
             streams: RefCell::new(Vec::new()),

@@ -363,6 +363,14 @@ COMP-E3-T03 (M0a) asks for op conformance "for every scheme and level", and `X86
 |---|---|---|---|
 | COMP-E3-T03's criterion keeps op conformance at `X86V3`, `Arm82Dot` and `Arm86I8mm` (QUAL-E4-T06); the `X86V4` leg is QUAL-E4-T07's, on the lab AVX-512 host | COMP-E3-T03, QUAL-E4-T07 | R9 | a criterion must run on hardware the task can reach when it closes. No M0a host has AVX-512, and QUAL-E4-T07 already runs the CPU provider's conformance on the AVX-512 host and depends on COMP-E3-T03 through QUAL-E4-T06 |
 
+## COMP-E3-T09: the later M0 CPU ops' thread-count check moves to QUAL-E4-T06 (2026-11-07)
+
+COMP-E3-T09 (M0a) asks for outputs "bit-identical for 1, 2, 4 and all cores on every op used by the M0 families", and it depends only on COMP-E3-T03. When it lands, the CPU provider has one op, `Gemv`. The other M0 CPU ops come with COMP-E3-T05, COMP-E3-T08, COMP-E3-T21 and COMP-E3-T22, which COMP-E3-T09 does not reach. Edges from COMP-E3-T09 to them would hold the fake provider (QUAL-E3-T12) behind every CPU kernel. COMP-E3-T09 keeps the check for `Gemv`, builds the thread-count harness, and makes a device opened `deterministic` refuse a kernel that does not declare itself deterministic. QUAL-E4-T06 (M0a) already depends on every CPU M0 op task and runs their conformance, so it runs each of those ops under the harness. This is a plan correction under R9. The lead approved it under the maintainer's standing instruction, and it is listed here for the maintainers' sign-off on the PR.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| COMP-E3-T09's criterion covers the ops the CPU provider has when it lands (`Gemv`) and adds the `deterministic` refusal; QUAL-E4-T06 gains "every CPU op those families use gives bit-identical outputs on 1, 2, 4 and all cores under COMP-E3-T09's thread-count harness" and the edge QUAL-E4-T06 → COMP-E3-T09 | COMP-E3-T09, QUAL-E4-T06 | R9 | the criterion names ops from tasks COMP-E3-T09 does not reach. QUAL-E4-T06 depends on all of them, and COMP-E3-T09 depends only on COMP-E3-T03, so the new edge makes no cycle. Both are M0a |
+
 ## COMP-E17-T03: RFC-0060 corpus leg moves to the corpus import (2026-10-31)
 
 COMP-E17-T03 (M0a) asked for token-exact GGUF conversions "on the tokenizer corpus", which is RFC-0060's corpus. QUAL-E5-T22 publishes that corpus and its token streams, and it depends on COMP-E17-T03, so an edge from COMP-E17-T03 would make a cycle. COMP-E17-T03 keeps the check on a project-written corpus in its own crate, run on the publisher's GGUF files of both M0 nightly checkpoints. The rerun on the published corpus goes with the import. The `llama` family's M0 checkpoint is Qwen3-0.6B (RFC-0060 §12.2), and Llama-3.2-1B is lab-only, so the criterion's "M0 families" needs no gated file. Review of #2054.
