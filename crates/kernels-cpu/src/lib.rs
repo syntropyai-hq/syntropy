@@ -7,8 +7,11 @@
 //! - [`isa`]: the ISA level a CPU device runs at, decided by one pure function of recorded
 //!   detection inputs and the `features.disable` kill switches, and the thin OS shim that
 //!   records those inputs on the live host (ADR-0405 decision 3).
-//! - [`dispatch`]: the per-op function-pointer table for one level, which the provider's
-//!   `open` installs after [`isa::table_for_class`] checks the class.
+//! - [`dispatch`]: the per-op table of [`Kernel`]s for one level, which the provider's `open`
+//!   installs after [`isa::table_for_class`] checks the class.
+//! - [`launch`]: what a launch carries to its stream: the prepared op's [`Plan`] and its
+//!   operands, resolved to host memory when the launch reaches the ring, at once or at each
+//!   replay of a capture (COMP-E3-T03).
 //! - [`provider`]: [`CpuProvider`], the provider's shell (COMP-E3-T02): one device per NUMA
 //!   domain, host memory, streams as work queues ([`stream`]), events as atomics, doorbells
 //!   ([`doorbell`]), the device-triggered wake ([`wake`]), op-list capture and replay, and
@@ -18,7 +21,10 @@
 //!   `src/sme2/*.S`, reachable only through an [`Sme2`] token that an `Arm92Sme2` table on an
 //!   SME2 host holds (ADR-0402 item 3).
 //!
-//! The other kernels come with later tasks, starting with COMP-E3-T03.
+//! - [`gemv`]: decode GEMV over GGUF `Q4_K`, `Q8_0`, `Q4_0`, `BF16` and `F16` weights at each
+//!   level, and the `Gemv` op every dispatch table holds (COMP-E3-T03).
+//!
+//! The other kernels come with later tasks.
 //!
 //! `unsafe` is allowed in this crate (RFC-0001 §4.2 rule 8). Every `unsafe` block and impl carries
 //! a `// SAFETY:` comment that states its invariant (ADR-0001 item 4).
@@ -36,18 +42,21 @@
 mod device;
 pub mod dispatch;
 pub mod doorbell;
+pub mod gemv;
 pub mod isa;
+pub mod launch;
 pub mod provider;
 pub mod sme2;
 pub mod stream;
 pub mod wake;
 
-pub use dispatch::{DispatchTable, KernelFn};
+pub use dispatch::DispatchTable;
 pub use doorbell::{Doorbells, FLAGS_PER_PAGE};
 pub use isa::{
     AmxPermission, ArmInputs, Detection, IsaInputs, KillSwitches, MacSysctls, X86Feature,
     X86Features, X86Inputs, detect, inputs, select, table_for_class,
 };
+pub use launch::{HostSpan, HostTensor, Kernel, KernelFn, Launch, Plan};
 pub use provider::CpuProvider;
 pub use sme2::Sme2;
 pub use stream::{Parks, Run, STREAM_CAPACITY, StreamRunner};

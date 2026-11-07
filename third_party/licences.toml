@@ -5,7 +5,8 @@
 # Every file under `third_party/` and every `crates/kernels-*/vendor/` tree gets its own entry,
 # licence and notice files included. A vendored tree such as ggml's gets one entry per file it
 # carries, never one entry for the directory, so the notices can name each file's licence. This
-# file and the lock files beside it (such as `ggml.lock`) are Syntropy's own and need no entry.
+# file and the lock and patch files beside it (such as `ggml.lock` and `ggml.patch`) are Syntropy's
+# own and need no entry.
 #
 # `cargo xtask third-party` checks this file in `lint`: every vendored file is listed, every
 # entry names an existing file, its licence is an SPDX expression the allow list in `deny.toml`
@@ -74,3 +75,567 @@ upstream = "https://github.com/trezor/python-mnemonic"
 version = "b57a5ad77a981e743f4167ab2f7927a55c1e82a8"
 license = "MIT"
 notice = "third_party/bip39/LICENSE"
+
+# The ggml tensor library (ADR-0002; RFC-0040 §8.1; COMP-E7-T01): the files `third_party/ggml.lock`
+# lists, at its upstream commit, all under ggml's MIT licence. The files `third_party/ggml.patch`
+# changes differ from upstream as its header describes; `ggml.lock` records the tree hashes
+# before and after.
+[[file]]
+path = "third_party/ggml/LICENSE"
+upstream = "https://github.com/ggml-org/ggml"
+version = "a05c9922613c6a2230dbb1d0de679519ecafb4f0"
+license = "MIT"
+notice = "third_party/ggml/LICENSE"
+
+[[file]]
+path = "third_party/ggml/include/ggml-alloc.h"
+upstream = "https://github.com/ggml-org/ggml"
+version = "a05c9922613c6a2230dbb1d0de679519ecafb4f0"
+license = "MIT"
+notice = "third_party/ggml/LICENSE"
+
+[[file]]
+path = "third_party/ggml/include/ggml-backend.h"
+upstream = "https://github.com/ggml-org/ggml"
+version = "a05c9922613c6a2230dbb1d0de679519ecafb4f0"
+license = "MIT"
+notice = "third_party/ggml/LICENSE"
+
+[[file]]
+path = "third_party/ggml/include/ggml-blas.h"
+upstream = "https://github.com/ggml-org/ggml"
+version = "a05c9922613c6a2230dbb1d0de679519ecafb4f0"
+license = "MIT"
+notice = "third_party/ggml/LICENSE"
+
+[[file]]
+path = "third_party/ggml/include/ggml-cann.h"
+upstream = "https://github.com/ggml-org/ggml"
+version = "a05c9922613c6a2230dbb1d0de679519ecafb4f0"
+license = "MIT"
+notice = "third_party/ggml/LICENSE"
+
+[[file]]
+path = "third_party/ggml/include/ggml-cpp.h"
+upstream = "https://github.com/ggml-org/ggml"
+version = "a05c9922613c6a2230dbb1d0de679519ecafb4f0"
+license = "MIT"
+notice = "third_party/ggml/LICENSE"
+
+[[file]]
+path = "third_party/ggml/include/ggml-cpu.h"
+upstream = "https://github.com/ggml-org/ggml"
+version = "a05c9922613c6a2230dbb1d0de679519ecafb4f0"
+license = "MIT"
+notice = "third_party/ggml/LICENSE"
+
+[[file]]
+path = "third_party/ggml/include/ggml-cuda.h"
+upstream = "https://github.com/ggml-org/ggml"
+version = "a05c9922613c6a2230dbb1d0de679519ecafb4f0"
+license = "MIT"
+notice = "third_party/ggml/LICENSE"
+
+[[file]]
+path = "third_party/ggml/include/ggml-et.h"
+upstream = "https://github.com/ggml-org/ggml"
+version = "a05c9922613c6a2230dbb1d0de679519ecafb4f0"
+license = "MIT"
+notice = "third_party/ggml/LICENSE"
+
+[[file]]
+path = "third_party/ggml/include/ggml-hexagon.h"
+upstream = "https://github.com/ggml-org/ggml"
+version = "a05c9922613c6a2230dbb1d0de679519ecafb4f0"
+license = "MIT"
+notice = "third_party/ggml/LICENSE"
+
+[[file]]
+path = "third_party/ggml/include/ggml-metal.h"
+upstream = "https://github.com/ggml-org/ggml"
+version = "a05c9922613c6a2230dbb1d0de679519ecafb4f0"
+license = "MIT"
+notice = "third_party/ggml/LICENSE"
+
+[[file]]
+path = "third_party/ggml/include/ggml-opencl.h"
+upstream = "https://github.com/ggml-org/ggml"
+version = "a05c9922613c6a2230dbb1d0de679519ecafb4f0"
+license = "MIT"
+notice = "third_party/ggml/LICENSE"
+
+[[file]]
+path = "third_party/ggml/include/ggml-openvino.h"
+upstream = "https://github.com/ggml-org/ggml"
+version = "a05c9922613c6a2230dbb1d0de679519ecafb4f0"
+license = "MIT"
+notice = "third_party/ggml/LICENSE"
+
+[[file]]
+path = "third_party/ggml/include/ggml-opt.h"
+upstream = "https://github.com/ggml-org/ggml"
+version = "a05c9922613c6a2230dbb1d0de679519ecafb4f0"
+license = "MIT"
+notice = "third_party/ggml/LICENSE"
+
+[[file]]
+path = "third_party/ggml/include/ggml-rpc.h"
+upstream = "https://github.com/ggml-org/ggml"
+version = "a05c9922613c6a2230dbb1d0de679519ecafb4f0"
+license = "MIT"
+notice = "third_party/ggml/LICENSE"
+
+[[file]]
+path = "third_party/ggml/include/ggml-sycl.h"
+upstream = "https://github.com/ggml-org/ggml"
+version = "a05c9922613c6a2230dbb1d0de679519ecafb4f0"
+license = "MIT"
+notice = "third_party/ggml/LICENSE"
+
+[[file]]
+path = "third_party/ggml/include/ggml-virtgpu.h"
+upstream = "https://github.com/ggml-org/ggml"
+version = "a05c9922613c6a2230dbb1d0de679519ecafb4f0"
+license = "MIT"
+notice = "third_party/ggml/LICENSE"
+
+[[file]]
+path = "third_party/ggml/include/ggml-vulkan.h"
+upstream = "https://github.com/ggml-org/ggml"
+version = "a05c9922613c6a2230dbb1d0de679519ecafb4f0"
+license = "MIT"
+notice = "third_party/ggml/LICENSE"
+
+[[file]]
+path = "third_party/ggml/include/ggml-webgpu.h"
+upstream = "https://github.com/ggml-org/ggml"
+version = "a05c9922613c6a2230dbb1d0de679519ecafb4f0"
+license = "MIT"
+notice = "third_party/ggml/LICENSE"
+
+[[file]]
+path = "third_party/ggml/include/ggml-zdnn.h"
+upstream = "https://github.com/ggml-org/ggml"
+version = "a05c9922613c6a2230dbb1d0de679519ecafb4f0"
+license = "MIT"
+notice = "third_party/ggml/LICENSE"
+
+[[file]]
+path = "third_party/ggml/include/ggml-zendnn.h"
+upstream = "https://github.com/ggml-org/ggml"
+version = "a05c9922613c6a2230dbb1d0de679519ecafb4f0"
+license = "MIT"
+notice = "third_party/ggml/LICENSE"
+
+[[file]]
+path = "third_party/ggml/include/ggml.h"
+upstream = "https://github.com/ggml-org/ggml"
+version = "a05c9922613c6a2230dbb1d0de679519ecafb4f0"
+license = "MIT"
+notice = "third_party/ggml/LICENSE"
+
+[[file]]
+path = "third_party/ggml/include/gguf.h"
+upstream = "https://github.com/ggml-org/ggml"
+version = "a05c9922613c6a2230dbb1d0de679519ecafb4f0"
+license = "MIT"
+notice = "third_party/ggml/LICENSE"
+
+[[file]]
+path = "third_party/ggml/src/ggml-alloc.c"
+upstream = "https://github.com/ggml-org/ggml"
+version = "a05c9922613c6a2230dbb1d0de679519ecafb4f0"
+license = "MIT"
+notice = "third_party/ggml/LICENSE"
+
+[[file]]
+path = "third_party/ggml/src/ggml-backend-dl.cpp"
+upstream = "https://github.com/ggml-org/ggml"
+version = "a05c9922613c6a2230dbb1d0de679519ecafb4f0"
+license = "MIT"
+notice = "third_party/ggml/LICENSE"
+
+[[file]]
+path = "third_party/ggml/src/ggml-backend-dl.h"
+upstream = "https://github.com/ggml-org/ggml"
+version = "a05c9922613c6a2230dbb1d0de679519ecafb4f0"
+license = "MIT"
+notice = "third_party/ggml/LICENSE"
+
+[[file]]
+path = "third_party/ggml/src/ggml-backend-impl.h"
+upstream = "https://github.com/ggml-org/ggml"
+version = "a05c9922613c6a2230dbb1d0de679519ecafb4f0"
+license = "MIT"
+notice = "third_party/ggml/LICENSE"
+
+[[file]]
+path = "third_party/ggml/src/ggml-backend-meta.cpp"
+upstream = "https://github.com/ggml-org/ggml"
+version = "a05c9922613c6a2230dbb1d0de679519ecafb4f0"
+license = "MIT"
+notice = "third_party/ggml/LICENSE"
+
+[[file]]
+path = "third_party/ggml/src/ggml-backend-reg.cpp"
+upstream = "https://github.com/ggml-org/ggml"
+version = "a05c9922613c6a2230dbb1d0de679519ecafb4f0"
+license = "MIT"
+notice = "third_party/ggml/LICENSE"
+
+[[file]]
+path = "third_party/ggml/src/ggml-backend.cpp"
+upstream = "https://github.com/ggml-org/ggml"
+version = "a05c9922613c6a2230dbb1d0de679519ecafb4f0"
+license = "MIT"
+notice = "third_party/ggml/LICENSE"
+
+[[file]]
+path = "third_party/ggml/src/ggml-common.h"
+upstream = "https://github.com/ggml-org/ggml"
+version = "a05c9922613c6a2230dbb1d0de679519ecafb4f0"
+license = "MIT"
+notice = "third_party/ggml/LICENSE"
+
+[[file]]
+path = "third_party/ggml/src/ggml-cpu/amx/amx.cpp"
+upstream = "https://github.com/ggml-org/ggml"
+version = "a05c9922613c6a2230dbb1d0de679519ecafb4f0"
+license = "MIT"
+notice = "third_party/ggml/LICENSE"
+
+[[file]]
+path = "third_party/ggml/src/ggml-cpu/amx/amx.h"
+upstream = "https://github.com/ggml-org/ggml"
+version = "a05c9922613c6a2230dbb1d0de679519ecafb4f0"
+license = "MIT"
+notice = "third_party/ggml/LICENSE"
+
+[[file]]
+path = "third_party/ggml/src/ggml-cpu/amx/common.h"
+upstream = "https://github.com/ggml-org/ggml"
+version = "a05c9922613c6a2230dbb1d0de679519ecafb4f0"
+license = "MIT"
+notice = "third_party/ggml/LICENSE"
+
+[[file]]
+path = "third_party/ggml/src/ggml-cpu/amx/mmq.cpp"
+upstream = "https://github.com/ggml-org/ggml"
+version = "a05c9922613c6a2230dbb1d0de679519ecafb4f0"
+license = "MIT"
+notice = "third_party/ggml/LICENSE"
+
+[[file]]
+path = "third_party/ggml/src/ggml-cpu/amx/mmq.h"
+upstream = "https://github.com/ggml-org/ggml"
+version = "a05c9922613c6a2230dbb1d0de679519ecafb4f0"
+license = "MIT"
+notice = "third_party/ggml/LICENSE"
+
+[[file]]
+path = "third_party/ggml/src/ggml-cpu/arch-fallback.h"
+upstream = "https://github.com/ggml-org/ggml"
+version = "a05c9922613c6a2230dbb1d0de679519ecafb4f0"
+license = "MIT"
+notice = "third_party/ggml/LICENSE"
+
+[[file]]
+path = "third_party/ggml/src/ggml-cpu/arch/arm/cpu-feats.cpp"
+upstream = "https://github.com/ggml-org/ggml"
+version = "a05c9922613c6a2230dbb1d0de679519ecafb4f0"
+license = "MIT"
+notice = "third_party/ggml/LICENSE"
+
+[[file]]
+path = "third_party/ggml/src/ggml-cpu/arch/arm/quants.c"
+upstream = "https://github.com/ggml-org/ggml"
+version = "a05c9922613c6a2230dbb1d0de679519ecafb4f0"
+license = "MIT"
+notice = "third_party/ggml/LICENSE"
+
+[[file]]
+path = "third_party/ggml/src/ggml-cpu/arch/arm/repack.cpp"
+upstream = "https://github.com/ggml-org/ggml"
+version = "a05c9922613c6a2230dbb1d0de679519ecafb4f0"
+license = "MIT"
+notice = "third_party/ggml/LICENSE"
+
+[[file]]
+path = "third_party/ggml/src/ggml-cpu/arch/x86/cpu-feats.cpp"
+upstream = "https://github.com/ggml-org/ggml"
+version = "a05c9922613c6a2230dbb1d0de679519ecafb4f0"
+license = "MIT"
+notice = "third_party/ggml/LICENSE"
+
+[[file]]
+path = "third_party/ggml/src/ggml-cpu/arch/x86/quants.c"
+upstream = "https://github.com/ggml-org/ggml"
+version = "a05c9922613c6a2230dbb1d0de679519ecafb4f0"
+license = "MIT"
+notice = "third_party/ggml/LICENSE"
+
+[[file]]
+path = "third_party/ggml/src/ggml-cpu/arch/x86/repack.cpp"
+upstream = "https://github.com/ggml-org/ggml"
+version = "a05c9922613c6a2230dbb1d0de679519ecafb4f0"
+license = "MIT"
+notice = "third_party/ggml/LICENSE"
+
+[[file]]
+path = "third_party/ggml/src/ggml-cpu/binary-ops.cpp"
+upstream = "https://github.com/ggml-org/ggml"
+version = "a05c9922613c6a2230dbb1d0de679519ecafb4f0"
+license = "MIT"
+notice = "third_party/ggml/LICENSE"
+
+[[file]]
+path = "third_party/ggml/src/ggml-cpu/binary-ops.h"
+upstream = "https://github.com/ggml-org/ggml"
+version = "a05c9922613c6a2230dbb1d0de679519ecafb4f0"
+license = "MIT"
+notice = "third_party/ggml/LICENSE"
+
+[[file]]
+path = "third_party/ggml/src/ggml-cpu/common.h"
+upstream = "https://github.com/ggml-org/ggml"
+version = "a05c9922613c6a2230dbb1d0de679519ecafb4f0"
+license = "MIT"
+notice = "third_party/ggml/LICENSE"
+
+[[file]]
+path = "third_party/ggml/src/ggml-cpu/ggml-cpu-impl.h"
+upstream = "https://github.com/ggml-org/ggml"
+version = "a05c9922613c6a2230dbb1d0de679519ecafb4f0"
+license = "MIT"
+notice = "third_party/ggml/LICENSE"
+
+[[file]]
+path = "third_party/ggml/src/ggml-cpu/ggml-cpu.c"
+upstream = "https://github.com/ggml-org/ggml"
+version = "a05c9922613c6a2230dbb1d0de679519ecafb4f0"
+license = "MIT"
+notice = "third_party/ggml/LICENSE"
+
+[[file]]
+path = "third_party/ggml/src/ggml-cpu/ggml-cpu.cpp"
+upstream = "https://github.com/ggml-org/ggml"
+version = "a05c9922613c6a2230dbb1d0de679519ecafb4f0"
+license = "MIT"
+notice = "third_party/ggml/LICENSE"
+
+[[file]]
+path = "third_party/ggml/src/ggml-cpu/hbm.cpp"
+upstream = "https://github.com/ggml-org/ggml"
+version = "a05c9922613c6a2230dbb1d0de679519ecafb4f0"
+license = "MIT"
+notice = "third_party/ggml/LICENSE"
+
+[[file]]
+path = "third_party/ggml/src/ggml-cpu/hbm.h"
+upstream = "https://github.com/ggml-org/ggml"
+version = "a05c9922613c6a2230dbb1d0de679519ecafb4f0"
+license = "MIT"
+notice = "third_party/ggml/LICENSE"
+
+[[file]]
+path = "third_party/ggml/src/ggml-cpu/ops.cpp"
+upstream = "https://github.com/ggml-org/ggml"
+version = "a05c9922613c6a2230dbb1d0de679519ecafb4f0"
+license = "MIT"
+notice = "third_party/ggml/LICENSE"
+
+[[file]]
+path = "third_party/ggml/src/ggml-cpu/ops.h"
+upstream = "https://github.com/ggml-org/ggml"
+version = "a05c9922613c6a2230dbb1d0de679519ecafb4f0"
+license = "MIT"
+notice = "third_party/ggml/LICENSE"
+
+[[file]]
+path = "third_party/ggml/src/ggml-cpu/quants.c"
+upstream = "https://github.com/ggml-org/ggml"
+version = "a05c9922613c6a2230dbb1d0de679519ecafb4f0"
+license = "MIT"
+notice = "third_party/ggml/LICENSE"
+
+[[file]]
+path = "third_party/ggml/src/ggml-cpu/quants.h"
+upstream = "https://github.com/ggml-org/ggml"
+version = "a05c9922613c6a2230dbb1d0de679519ecafb4f0"
+license = "MIT"
+notice = "third_party/ggml/LICENSE"
+
+[[file]]
+path = "third_party/ggml/src/ggml-cpu/repack.cpp"
+upstream = "https://github.com/ggml-org/ggml"
+version = "a05c9922613c6a2230dbb1d0de679519ecafb4f0"
+license = "MIT"
+notice = "third_party/ggml/LICENSE"
+
+[[file]]
+path = "third_party/ggml/src/ggml-cpu/repack.h"
+upstream = "https://github.com/ggml-org/ggml"
+version = "a05c9922613c6a2230dbb1d0de679519ecafb4f0"
+license = "MIT"
+notice = "third_party/ggml/LICENSE"
+
+[[file]]
+path = "third_party/ggml/src/ggml-cpu/simd-gemm.h"
+upstream = "https://github.com/ggml-org/ggml"
+version = "a05c9922613c6a2230dbb1d0de679519ecafb4f0"
+license = "MIT"
+notice = "third_party/ggml/LICENSE"
+
+[[file]]
+path = "third_party/ggml/src/ggml-cpu/simd-mappings.h"
+upstream = "https://github.com/ggml-org/ggml"
+version = "a05c9922613c6a2230dbb1d0de679519ecafb4f0"
+license = "MIT"
+notice = "third_party/ggml/LICENSE"
+
+[[file]]
+path = "third_party/ggml/src/ggml-cpu/tiled/tiled-kernel.cpp"
+upstream = "https://github.com/ggml-org/ggml"
+version = "a05c9922613c6a2230dbb1d0de679519ecafb4f0"
+license = "MIT"
+notice = "third_party/ggml/LICENSE"
+
+[[file]]
+path = "third_party/ggml/src/ggml-cpu/tiled/tiled-kernel.h"
+upstream = "https://github.com/ggml-org/ggml"
+version = "a05c9922613c6a2230dbb1d0de679519ecafb4f0"
+license = "MIT"
+notice = "third_party/ggml/LICENSE"
+
+[[file]]
+path = "third_party/ggml/src/ggml-cpu/tiled/tiled.cpp"
+upstream = "https://github.com/ggml-org/ggml"
+version = "a05c9922613c6a2230dbb1d0de679519ecafb4f0"
+license = "MIT"
+notice = "third_party/ggml/LICENSE"
+
+[[file]]
+path = "third_party/ggml/src/ggml-cpu/tiled/tiled.h"
+upstream = "https://github.com/ggml-org/ggml"
+version = "a05c9922613c6a2230dbb1d0de679519ecafb4f0"
+license = "MIT"
+notice = "third_party/ggml/LICENSE"
+
+[[file]]
+path = "third_party/ggml/src/ggml-cpu/traits.cpp"
+upstream = "https://github.com/ggml-org/ggml"
+version = "a05c9922613c6a2230dbb1d0de679519ecafb4f0"
+license = "MIT"
+notice = "third_party/ggml/LICENSE"
+
+[[file]]
+path = "third_party/ggml/src/ggml-cpu/traits.h"
+upstream = "https://github.com/ggml-org/ggml"
+version = "a05c9922613c6a2230dbb1d0de679519ecafb4f0"
+license = "MIT"
+notice = "third_party/ggml/LICENSE"
+
+[[file]]
+path = "third_party/ggml/src/ggml-cpu/unary-ops.cpp"
+upstream = "https://github.com/ggml-org/ggml"
+version = "a05c9922613c6a2230dbb1d0de679519ecafb4f0"
+license = "MIT"
+notice = "third_party/ggml/LICENSE"
+
+[[file]]
+path = "third_party/ggml/src/ggml-cpu/unary-ops.h"
+upstream = "https://github.com/ggml-org/ggml"
+version = "a05c9922613c6a2230dbb1d0de679519ecafb4f0"
+license = "MIT"
+notice = "third_party/ggml/LICENSE"
+
+[[file]]
+path = "third_party/ggml/src/ggml-cpu/vec.cpp"
+upstream = "https://github.com/ggml-org/ggml"
+version = "a05c9922613c6a2230dbb1d0de679519ecafb4f0"
+license = "MIT"
+notice = "third_party/ggml/LICENSE"
+
+[[file]]
+path = "third_party/ggml/src/ggml-cpu/vec.h"
+upstream = "https://github.com/ggml-org/ggml"
+version = "a05c9922613c6a2230dbb1d0de679519ecafb4f0"
+license = "MIT"
+notice = "third_party/ggml/LICENSE"
+
+[[file]]
+path = "third_party/ggml/src/ggml-feats.h"
+upstream = "https://github.com/ggml-org/ggml"
+version = "a05c9922613c6a2230dbb1d0de679519ecafb4f0"
+license = "MIT"
+notice = "third_party/ggml/LICENSE"
+
+[[file]]
+path = "third_party/ggml/src/ggml-impl.h"
+upstream = "https://github.com/ggml-org/ggml"
+version = "a05c9922613c6a2230dbb1d0de679519ecafb4f0"
+license = "MIT"
+notice = "third_party/ggml/LICENSE"
+
+[[file]]
+path = "third_party/ggml/src/ggml-opt.cpp"
+upstream = "https://github.com/ggml-org/ggml"
+version = "a05c9922613c6a2230dbb1d0de679519ecafb4f0"
+license = "MIT"
+notice = "third_party/ggml/LICENSE"
+
+[[file]]
+path = "third_party/ggml/src/ggml-quants.c"
+upstream = "https://github.com/ggml-org/ggml"
+version = "a05c9922613c6a2230dbb1d0de679519ecafb4f0"
+license = "MIT"
+notice = "third_party/ggml/LICENSE"
+
+[[file]]
+path = "third_party/ggml/src/ggml-quants.h"
+upstream = "https://github.com/ggml-org/ggml"
+version = "a05c9922613c6a2230dbb1d0de679519ecafb4f0"
+license = "MIT"
+notice = "third_party/ggml/LICENSE"
+
+[[file]]
+path = "third_party/ggml/src/ggml-threading.cpp"
+upstream = "https://github.com/ggml-org/ggml"
+version = "a05c9922613c6a2230dbb1d0de679519ecafb4f0"
+license = "MIT"
+notice = "third_party/ggml/LICENSE"
+
+[[file]]
+path = "third_party/ggml/src/ggml-threading.h"
+upstream = "https://github.com/ggml-org/ggml"
+version = "a05c9922613c6a2230dbb1d0de679519ecafb4f0"
+license = "MIT"
+notice = "third_party/ggml/LICENSE"
+
+[[file]]
+path = "third_party/ggml/src/ggml-version.h.in"
+upstream = "https://github.com/ggml-org/ggml"
+version = "a05c9922613c6a2230dbb1d0de679519ecafb4f0"
+license = "MIT"
+notice = "third_party/ggml/LICENSE"
+
+[[file]]
+path = "third_party/ggml/src/ggml.c"
+upstream = "https://github.com/ggml-org/ggml"
+version = "a05c9922613c6a2230dbb1d0de679519ecafb4f0"
+license = "MIT"
+notice = "third_party/ggml/LICENSE"
+
+[[file]]
+path = "third_party/ggml/src/ggml.cpp"
+upstream = "https://github.com/ggml-org/ggml"
+version = "a05c9922613c6a2230dbb1d0de679519ecafb4f0"
+license = "MIT"
+notice = "third_party/ggml/LICENSE"
+
+[[file]]
+path = "third_party/ggml/src/gguf.cpp"
+upstream = "https://github.com/ggml-org/ggml"
+version = "a05c9922613c6a2230dbb1d0de679519ecafb4f0"
+license = "MIT"
+notice = "third_party/ggml/LICENSE"

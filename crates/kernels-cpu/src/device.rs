@@ -18,8 +18,9 @@ use syntropy_core::{Bytes, ErrorClass};
 use syntropy_kernels::{Error, ErrorCode, StreamPriority};
 use syntropy_spsc::{Producer, PushError};
 
-use crate::dispatch::{DispatchTable, KernelFn};
+use crate::dispatch::DispatchTable;
 use crate::doorbell::Doorbells;
+use crate::launch::{Kernel, Plan};
 use crate::stream::{EventState, Health, Item, STREAM_CAPACITY, StreamRunner, StreamShared};
 use crate::wake::CpuWaker;
 
@@ -63,7 +64,8 @@ pub(crate) struct CpuDevice {
     pub(crate) events: RefCell<Vec<Arc<EventState>>>,
     pub(crate) buffers: RefCell<BTreeMap<u64, HostBuf>>,
     pub(crate) next_handle: Cell<u64>,
-    pub(crate) prepared: RefCell<Vec<KernelFn>>,
+    /// Each prepared op's kernel and plan, by `PreparedOp::handle`.
+    pub(crate) prepared: RefCell<Vec<(Kernel, Plan)>>,
     pub(crate) graphs: RefCell<Vec<Vec<Item>>>,
     pub(crate) wakers: RefCell<Vec<Arc<CpuWaker>>>,
     /// Memory `free` released while a stream still had items queued, which may hold its
@@ -191,10 +193,16 @@ impl CpuDevice {
         }
     }
 
-    /// The item to put on a ring now: a copy's buffers resolved to addresses, which fails for a
-    /// buffer freed since the item was captured, and an event's generation taken.
+    /// The item to put on a ring now: a copy's or a launch's buffers resolved to addresses,
+    /// which fails for a buffer freed since the item was captured, and an event's generation
+    /// taken.
     fn resolve(&self, item: Item) -> Result<Item, Error> {
         match item {
+            Item::LaunchRef { kernel, plan, args } => Ok(Item::Launch {
+                kernel,
+                plan,
+                args: args.resolve(|s| self.range(s.buffer, s.offset, s.bytes))?,
+            }),
             Item::CopyRef { src, dst } => Ok(Item::Copy {
                 src: self.range(src.buffer, src.offset, src.bytes)?,
                 dst: self.range(dst.buffer, dst.offset, dst.bytes)?,
@@ -206,14 +214,20 @@ impl CpuDevice {
     }
 
     /// Checks, before a replay pushes anything, that `list` can go onto stream `index` whole:
-    /// every captured copy's buffers still exist and cover it, and the ring has room for every
-    /// item. Allocation-free. The room is counted conservatively: an item a runner has taken
-    /// but not finished still counts as queued.
+    /// every captured copy's and launch's buffers still exist and cover it, and the ring has
+    /// room for every item. Allocation-free. The room is counted conservatively: an item a
+    /// runner has taken but not finished still counts as queued.
     pub(crate) fn check_replay(&self, index: u64, list: &[Item]) -> Result<(), Error> {
         for item in list {
-            if let Item::CopyRef { src, dst } = item {
-                self.range(src.buffer, src.offset, src.bytes)?;
-                self.range(dst.buffer, dst.offset, dst.bytes)?;
+            match item {
+                Item::CopyRef { src, dst } => {
+                    self.range(src.buffer, src.offset, src.bytes)?;
+                    self.range(dst.buffer, dst.offset, dst.bytes)?;
+                }
+                Item::LaunchRef { args, .. } => {
+                    args.resolve(|s| self.range(s.buffer, s.offset, s.bytes))?;
+                }
+                _ => {}
             }
         }
         let streams = self.streams.borrow();

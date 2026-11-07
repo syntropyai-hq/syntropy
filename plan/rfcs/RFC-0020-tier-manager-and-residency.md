@@ -288,6 +288,14 @@ pub enum TierCommand {
 
 *Note 2026-10-22 (OQ-IO-27, OQ-IO-28):* `plan_arenas` takes the accepted layouts as an argument, `AcceptedLayouts`: a map from (op key, device) to the `LayoutVersion`s each op accepts, which the runner builds from `KernelProvider::query` before the call. `plan_arenas` stays pure and makes §7.3's check itself. `LedgerGrant` is plain data in `core` (RFC-0001 §3.5), and the ledger check is a separate pure check of an `ArenaPlan` against it in `Fetching` (§12).
 
+*Note 2026-10-31 (TIER-E1-T02, `plan_arenas` as built):* `syntropy_tier::arena::plan` holds `plan_arenas`, and `budget::check_ledger` the ledger check; `TierManager` exposes both. The module docs give the rules arena by arena. The parts this section leaves open are settled as follows.
+- **No `layouts` argument yet.** `plan_arenas` takes (plan, stages, census, profile, config). The `AcceptedLayouts` argument of the note of 2026-10-22, and §7.3's multi-site layout check that uses it, move to TIER-E1-T12 (M1a). Their inputs, the layout pass (COMP-E2-T13), the pack build's layout choice (COMP-E11-T05) and the `per_site_layout` marking (PLC-E6-T15), are all M1a work, and M0 plans have no `per_site_layout` group. The maintainers approved the move on TIER-E1-T02's issue (#245). Until TIER-E1-T12 lands, nothing checks that a copy's layout is one its readers accept.
+- **Device arenas are `Locked`.** `Vram` and `Unified` arenas carry `PinClass::Locked`, never `DmaPinned`, so `DmaPinned` always means a host range registered for DMA in a `HostPinned` tier.
+- **Errors.** `plan_arenas` returns `ArenaPlanError`, not `Error`: every refusal is an inconsistency between the plan, the census and the profile, a solver or runner bug, and §15 publishes no code for it. The ledger check returns `TIER_LEDGER_EXCEEDED` (`Capacity`, retry on a new plan), with the tier, the reserved bytes and the granted bytes in its context. A tier with no grant line is granted nothing. The headroom of a budget line is not charged to the grant.
+- **Plan bytes per tier.** For every tier the arenas' `max_bytes` sum to the plan's bytes on it: each group homed there, rounded up to the 4 KiB extent alignment (RFC-0021 §6), plus every `ExpertCacheBudget`, `KvBudget` and scratch entry on the tier, plus the staging sizes below. `TierBudgetLine::reserved` is that sum.
+- **`TierConfig`.** A plain struct with §14's and RFC-0021 §14's defaults until TIER-E1-T09 registers the keys. `IoStaging` is `io.stage_slots` slots of `io.stage_slot` per GPU that holds an arena, in the `HostPinned` tier of the GPU's NUMA domain. `ExpertStaging` takes explicit byte sizes per GPU with a `Vram` expert cache, one in VRAM and one in `HostPinned` (the latter only when experts reach VRAM from an `Nvme` home or from a `HostPageable` cache, RFC-0023 §3); 0 means absent until RFC-0023's sizing is built. `Graphs` (COMP-E4-T05), `NetPool` (TIER-E2-T21) and `History` (TIER-E2-T22) are not emitted yet; no task builds `RowCache` yet (issue #2050).
+- **`nvme_extents` stays empty.** The extents come from the pack sidecar (COMP-E11-T06), which is not an input; the census holds source extents only. Nothing is homed on `Nvme` in M0.
+
 Supporting types used across RFC-0020 to RFC-0023:
 
 ```rust
@@ -938,6 +946,22 @@ Domain `Tier`. Codes are never reused (RFC-0001 §10.4).
 | `TIER_VRAM_BUDGET_LOST` (11) | `Drift` | another program's use leaves the non-elastic arenas over the OS budget (§8.5) | re-plan |
 
 A runner never reads model bytes from a slot whose state is not `Resident`, so none of these failures can produce wrong output: they cost time, or they stop the runner.
+
+*Note 2026-10-31 (TIER-E1-T02): the `Tier` domain.* The codes above are codes of `Domain::Tier`, 0x0700–0x07FF, the next free range after `Exec`'s (RFC-0012 §13). Code n of the table above is 0x0700 + n, so each keeps its published number. `core::error::codes::tier` lists them under the names below, which follow the other domains' CamelCase form. Codes are never reused (RFC-0001 §10.4). How they reach an API client is RFC-0050 §12.1's note of the same date.
+
+| Code | Name | Class | Above as |
+|---|---|---|---|
+| 0x0701 | `LedgerExceeded` | `Capacity` | TIER_LEDGER_EXCEEDED (1) |
+| 0x0702 | `VramShort` | `Capacity` | TIER_VRAM_SHORT (2) |
+| 0x0703 | `VramEcReduced` | `Drift` | TIER_VRAM_EC_REDUCED (3) |
+| 0x0704 | `HostReserve` | `Capacity` | TIER_HOST_RESERVE (4) |
+| 0x0705 | `PinDegraded` | `Drift` | TIER_PIN_DEGRADED (5) |
+| 0x0706 | `RegisterUnsupported` | `Unsupported` | TIER_REGISTER_UNSUPPORTED (6) |
+| 0x0707 | `VmmUnsupported` | `Unsupported` | TIER_VMM_UNSUPPORTED (7) |
+| 0x0708 | `StaleHandle` | `Internal` | TIER_STALE_HANDLE (8) |
+| 0x0709 | `PressureExhausted` | `Drift` | TIER_PRESSURE_EXHAUSTED (9) |
+| 0x070A | `NumaBind` | `Transient` | TIER_NUMA_BIND (10) |
+| 0x070B | `VramBudgetLost` | `Drift` | TIER_VRAM_BUDGET_LOST (11) |
 
 ### 16. Per-platform matrix
 

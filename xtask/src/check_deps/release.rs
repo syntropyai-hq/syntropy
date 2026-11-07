@@ -269,6 +269,9 @@ struct Linked {
     libraries: Vec<(String, &'static str)>,
     /// The symbols the loader binds for it.
     symbols: Vec<String>,
+    /// The symbols it exports to the loader: defined `.dynsym` entries, the PE export directory,
+    /// or the Mach-O external symbols defined in a section.
+    exports: Vec<String>,
 }
 
 impl Linked {
@@ -340,6 +343,7 @@ impl From<elf::Dynamic> for Linked {
                 .map(|lib| (lib, "needs"))
                 .collect(),
             symbols: dynamic.symbols,
+            exports: dynamic.exports,
         }
     }
 }
@@ -352,6 +356,7 @@ impl From<pe::Imports> for Linked {
             format: Format::Pe,
             libraries: imported.chain(delayed).collect(),
             symbols: imports.symbols,
+            exports: imports.exports,
         }
     }
 }
@@ -375,6 +380,7 @@ impl From<macho::Loads> for Linked {
                 })
                 .collect(),
             symbols: loads.symbols,
+            exports: loads.exports,
         }
     }
 }
@@ -507,6 +513,27 @@ fn build_core_binary(manifest: &Path, features: Features) -> Result<PathBuf, Str
 /// one per vendor whose symbols it binds.
 fn vendor_findings(linked: &Linked) -> Vec<Finding> {
     let mut findings = Vec::new();
+    // The core links its own static copy of ggml with every symbol hidden (ADR-0403 item 6;
+    // COMP-E7-T01): none may reach its dynamic symbol table.
+    let ggml: Vec<&str> = linked
+        .exports
+        .iter()
+        .map(String::as_str)
+        .filter(|symbol| policy::is_ggml_symbol(symbol))
+        .collect();
+    if !ggml.is_empty() {
+        let mut shown = ggml[..ggml.len().min(5)].join(", ");
+        if ggml.len() > 5 {
+            shown.push_str(&format!(" and {} more", ggml.len() - 5));
+        }
+        findings.push(Finding::new(
+            Rule::Numbered(7),
+            format!(
+                "the core binary exports ggml symbols: {shown}; its static ggml copy must keep \
+                 every symbol hidden (ADR-0403 item 6)"
+            ),
+        ));
+    }
     for (library, how) in &linked.libraries {
         if linked.allows(library) {
             continue;
@@ -821,6 +848,7 @@ mod tests {
                 "_Unwind_Resume".into(),
                 "_ZN4core3fmt5write17h0123456789abcdefE".into(),
             ],
+            exports: vec![],
         };
         assert_eq!(messages(dynamic), Vec::<String>::new());
     }
@@ -837,6 +865,7 @@ mod tests {
                 "libunknown-gpu.so".into(),
             ],
             symbols: vec![],
+            exports: vec![],
         };
         assert_eq!(
             messages(dynamic),
@@ -868,6 +897,7 @@ mod tests {
                 "rcclGetVersion".into(),
                 "miopenCreate".into(),
             ],
+            exports: vec![],
         };
         assert_eq!(
             messages(dynamic),
@@ -900,6 +930,7 @@ mod tests {
                 "vkCreateInstance".into(),
                 "malloc".into(),
             ],
+            exports: vec![],
         };
         assert_eq!(
             messages(dynamic),
@@ -917,6 +948,43 @@ mod tests {
                  backend modules",
             ]
         );
+    }
+
+    /// The core's static ggml copy keeps every symbol hidden: an exported `ggml_` or `gguf_`
+    /// symbol fails, and an imported one is not an export (COMP-E7-T01).
+    #[test]
+    fn an_exported_ggml_symbol_fails() {
+        let dynamic = elf::Dynamic {
+            needed: vec!["libc.so.6".into()],
+            symbols: vec![
+                "malloc".into(),
+                "ggml_init".into(),
+                "gguf_init_empty".into(),
+            ],
+            exports: vec!["ggml_init".into(), "gguf_init_empty".into()],
+        };
+        assert_eq!(
+            messages(dynamic),
+            [
+                "rule 7: the core binary exports ggml symbols: ggml_init, gguf_init_empty; its \
+              static ggml copy must keep every symbol hidden (ADR-0403 item 6)"
+            ]
+        );
+        let imported = elf::Dynamic {
+            needed: vec!["libc.so.6".into()],
+            symbols: vec!["ggml_init".into()],
+            exports: vec![],
+        };
+        assert_eq!(messages(imported), Vec::<String>::new());
+        let pe = pe::fixture::build_with_exports(true, &[], &[], true, &["ggml_free"]);
+        assert_eq!(
+            read_messages(&pe),
+            [
+                "rule 7: the core binary exports ggml symbols: ggml_free; its static ggml copy must \
+              keep every symbol hidden (ADR-0403 item 6)"
+            ]
+        );
+        assert!(policy::is_ggml_symbol("gguf_get_key") && !policy::is_ggml_symbol("myggml_x"));
     }
 
     fn read_messages(bytes: &[u8]) -> Vec<String> {

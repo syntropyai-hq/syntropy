@@ -251,6 +251,18 @@ fn the_rules_reject_what_they_cannot_mean() {
         "is not a task ID",
     );
     one(
+        "[job.x]\nrunner = \"hosted\"\nwhen = \"always\"\npaused = \"M1a\"\n",
+        "is not an ADR ID",
+    );
+    one(
+        "[job.x]\nrunner = \"hosted\"\nwhen = \"always\"\nplanned = \"QUAL-E5-T06\"\npaused = \"ADR-0626\"\n",
+        "only a hosted job with a suite can be paused",
+    );
+    one(
+        "[job.hw-x]\nrunner = \"lab\"\nwhen = \"direct\"\npaths = [\"a\"]\npaused = \"ADR-0626\"\n",
+        "only a hosted job with a suite can be paused",
+    );
+    one(
         "[job.Lint]\nrunner = \"hosted\"\nwhen = \"always\"\n",
         "lowercase words",
     );
@@ -389,6 +401,47 @@ fn the_rules_pick_the_jobs() {
         run(&[".gitattributes"], &[]).0,
         list(&["hosted-l3", "hosted-test", "lint"])
     );
+}
+
+#[test]
+fn a_paused_job_is_reported_but_never_listed() {
+    let (_tree, workspace) = workspace();
+    let config = Config::parse(&format!(
+        "{RULES}\n[job.hosted-test-macos-windows]\nrunner = \"hosted\"\nwhen = \"closure\"\n\
+         paused = \"ADR-0626\"\n"
+    ))
+    .expect("the rules parse");
+    let found = affected(
+        &config,
+        &workspace,
+        &paths(&["crates/core/src/lib.rs"]),
+        &names(&[]),
+    );
+    assert_eq!(found.jobs, paths(&["hosted-l3", "hosted-test", "lint"]));
+    assert_eq!(
+        found.paused,
+        [(
+            "hosted-test-macos-windows".to_owned(),
+            "ADR-0626".to_owned()
+        )]
+    );
+    assert!(
+        report(&found, &config).contains(
+            &"hosted-test-macos-windows: would run (the closure holds 4 crates), but it is \
+              paused: ADR-0626"
+                .to_owned()
+        ),
+        "{:?}",
+        report(&found, &config)
+    );
+    // Nor does a path no rule knows, which runs every other hosted job.
+    let found = affected(
+        &config,
+        &workspace,
+        &paths(&[".gitattributes"]),
+        &names(&[]),
+    );
+    assert!(!found.jobs.contains(&"hosted-test-macos-windows".to_owned()));
 }
 
 #[test]

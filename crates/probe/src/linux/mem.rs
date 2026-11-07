@@ -3,6 +3,9 @@
 //! Memory facts: `/proc/meminfo`, the cgroup memory limit, the memory-lock limit and
 //! `CAP_IPC_LOCK`, and transparent huge pages.
 
+use syntropy_core::budget::NodeMem;
+use syntropy_core::units::Bytes;
+
 use super::env::CgroupVersion;
 use super::{at, parse, read, read_opt};
 use crate::error::EnumError;
@@ -156,6 +159,24 @@ fn cgroup(fs: &dyn HostFs) -> Result<(CgroupVersion, Option<u64>), EnumError> {
         depth -= 1;
     }
     Ok((version, best))
+}
+
+/// One domain's reclaimable memory from a `meminfo` file: a node's
+/// (`Node <n> Active(file): …`) or, on a kernel without NUMA, `/proc/meminfo`. Every key is
+/// required: the kernel has printed them in both files since long before ADR-0020's 5.15
+/// floor, so an absent one is a malformed file, not a zero.
+pub(super) fn node_mem(path: &str, text: &str) -> Result<NodeMem, EnumError> {
+    let key = |k: &str| -> Result<Bytes, EnumError> {
+        at(path, parse::meminfo_kb(text, k))?
+            .map(Bytes)
+            .ok_or_else(|| EnumError::malformed(path, format!("no {k}")))
+    };
+    Ok(NodeMem {
+        mem_free: key("MemFree")?,
+        active_file: key("Active(file)")?,
+        inactive_file: key("Inactive(file)")?,
+        sreclaimable: key("SReclaimable")?,
+    })
 }
 
 /// The THP size when the policy lets this process use huge pages without privilege.

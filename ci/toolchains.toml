@@ -7,10 +7,25 @@
 # `ci/images/cuda-13/Dockerfile`, so the two cannot drift apart. A checksum is the SHA-256 the
 # publisher lists: NVIDIA's `redistrib_13.4.3.json` and Kitware's `cmake-4.4.4-SHA-256.txt`.
 #
-# A pin whose value cannot be known before the environment runs carries `verified = false` and no
-# value: the Windows MSVC toolset and the macOS Xcode and Metal compiler come with the hosted
-# runner image. The version-print job reports what each runner has (RFC-0062 §4.1); a later change
-# pins it from that report.
+# The Windows MSVC toolchain and the macOS Xcode come with the hosted runner images that `pr.yml`
+# names, `windows-2025` and `macos-26`. Their pins come from each image's own report, the readme in
+# actions/runner-images at the tag of the image the version-print job ran on, or, where the report
+# does not give a version, from that job's print on the runner (RFC-0062 §4.1; QUAL-E16-T30, PR
+# #2002, jobs 124315799952 and 124315799909 on 2026-10-30):
+# - `windows-2025` serves the "Windows Server 2025 with Visual Studio 2026" image (runner-images
+#   issue 14017, which announced the move for June 2026 and closed on 2026-07-06; the job's log
+#   names `windows-2025-vs2026`, image 20261030.294.1): images/windows/Windows2025-VS2026-Readme.md
+#   at tag win25-vs2026/20261030.294 (commit 0dfe95c53f99).
+# - `macos-26` served image 20261013.0424.1: images/macos/macos-26-arm64-Readme.md at tag
+#   macos-26-arm64/20261013.0424 (commit 49bfbe040355).
+#
+# A hosted image update can change these. The jobs then fail, and the pin is bumped from the new
+# image's report and print.
+#
+# The Windows image carries no CUDA compiler, and its CMake varies with the image version (4.4.4
+# on 20261021.278.1, 4.4.5 on 20261030.294.1). The macOS image carries a Homebrew CMake. So both
+# jobs fetch Kitware's 4.4.4 archives at the pin and check their checksums before they run them,
+# whatever the image holds (QUAL-E16-T30).
 
 format = 1
 
@@ -24,8 +39,8 @@ source_date_epoch = 1792454400
 # ADR-0020's floor.
 glibc = "2.35"
 # The BuildKit image of the `docker-container` builder that `cargo xtask ci toolchains-linux`
-# creates for the OCI export, by digest, so the builder that makes the byte-identical comparison
-# is pinned too. buildx's default `docker` driver cannot export an OCI archive.
+# creates for the image export, by digest, so the builder that makes the byte-identical
+# comparison is pinned too. buildx's default `docker` driver cannot export an image tarball.
 buildkit = "moby/buildkit:v0.34.1@sha256:99368f3e46177c6405b9740e4461d91cee004128daeecca78d4ceac50ec1da5c"
 
 [linux.compiler]
@@ -96,14 +111,31 @@ version = "13.3.4.3.1"
 sha256 = "17d0ca1592c0dfc974a5fc39f470a6b7bae40da239e3e19bd0752017735acbca"
 
 [windows.msvc]
-verified = false
+# Visual Studio's servicing line: "Visual Studio Enterprise 2026 | 18.11.12328.437" in the report
+# of image 20261030.294.1, and 18.11.12315.225 in that of 20261021.278.1 (tag
+# win25-vs2026/20261021.278, commit ca1c9228ba0c). The label served both on 2026-10-30, so the pin
+# is the line both share; the toolset and `cl` below stay exact (RFC-0062 §4.2, note 2026-10-31).
+visual_studio = "18.11"
+# The report lists neither the default toolset nor `cl`'s version; job 124315799952 printed both.
+toolset = "14.51.36231"
+cl = "19.51.36260"
 
 [macos.cmake]
 version = "4.4.4"
 sha256 = "4b7b73704b1db9b374e5c9ab8e17ac6148b817b6396ee75cd94a852cbac9d305"
 
 [macos.xcode]
-verified = false
+# "26.6 (default) | 17F113" in the image report.
+version = "26.6"
+build = "17F113"
+# The report lists "Clang/LLVM 21.0.0"; job 124315799909 printed the full version.
+clang = "21.0.0 (clang-2100.1.1.101)"
 
+# From Xcode 26 the Metal toolchain is a component of its own, and the report does not list it.
+# When the image lacks it, `toolchains-macos` fetches it with `xcodebuild -downloadComponent
+# MetalToolchain`, and says so in its log. That download has no checksum pin of ours: Apple serves
+# it as a signed Xcode component, under the same trust root as Xcode itself, and publishes no
+# digest to pin. The job checks the compiler's printed version against this pin instead. Job
+# 124315799909 printed it, with the toolchain already on the image.
 [macos.metal]
-verified = false
+version = "32023.883 (metalfe-32023.883)"

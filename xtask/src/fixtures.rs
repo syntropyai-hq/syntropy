@@ -8,13 +8,15 @@
 //! - [`store`]: the [`store::Store`] trait, the local-directory backend, and publishing an object
 //!   with its licence file beside it;
 //! - [`cache`]: the runner-local LRU cache with a size cap, which verifies every object before it
-//!   hands out a path.
+//!   hands out a path;
+//! - [`lint`]: `lint`'s `fixtures` step, the licence rule and pinned sources (QUAL-E7-T06).
 //!
 //! A hash mismatch is fatal ([`store::Error::Integrity`]): bytes that are not the expected ones
 //! are never used. The S3 backend and the public-read access rule need the bucket, which is a
 //! Maintainer action, and are a separate task.
 
 pub mod cache;
+pub mod lint;
 pub mod manifest;
 pub mod store;
 
@@ -99,6 +101,9 @@ pub fn run(
             let cache = Cache::open(PathBuf::from(need(&args.cache, "--cache")?), cap)
                 .map_err(|e| e.to_string())?;
             for f in manifest.fixtures.iter().filter(|f| selected(&f.name)) {
+                if skip_unimported(f, args, out)? {
+                    continue;
+                }
                 let key = f.key().map_err(|e| format!("{}: {e}", f.name))?;
                 let path = cache
                     .fetch(&store, &key, f.bytes)
@@ -108,6 +113,9 @@ pub fn run(
         }
         Action::Verify => {
             for f in manifest.fixtures.iter().filter(|f| selected(&f.name)) {
+                if skip_unimported(f, args, out)? {
+                    continue;
+                }
                 let key = f.key().map_err(|e| format!("{}: {e}", f.name))?;
                 store::verify(&store, &key, f.bytes).map_err(|e| format!("{}: {e}", f.name))?;
                 writeln!(out, "{}: ok", f.name).map_err(io_err)?;
@@ -131,6 +139,24 @@ pub fn run(
         }
     }
     Ok(())
+}
+
+/// Whether `fetch` or `verify` over the whole manifest passes over `f`: a `lab` fixture recorded but
+/// not yet imported has no `blake3`, such as a checkpoint's weights that wait for the lab store
+/// (QUAL-E7-T06). A `nightly` fixture is never skipped: the `fixtures` lint step requires it to be
+/// imported, and a run over the manifest fails on one that is not. Named with `--name`, an
+/// un-imported fixture is an error, so a run never uses an empty hash.
+fn skip_unimported(
+    f: &manifest::Fixture,
+    args: &Args,
+    out: &mut dyn Write,
+) -> Result<bool, String> {
+    if f.tier == manifest::Tier::Lab && f.blake3.is_empty() && args.name.is_none() {
+        writeln!(out, "{}: not imported yet, skipped", f.name).map_err(io_err)?;
+        Ok(true)
+    } else {
+        Ok(false)
+    }
 }
 
 fn need(value: &Option<String>, option: &str) -> Result<String, String> {

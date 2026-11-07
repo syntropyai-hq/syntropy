@@ -168,6 +168,25 @@ Modules on the config's `ignore` list stay in their stored dtype. Scale, zero-po
 11. summary = census::summarize(&manifest, &boundaries)            -- §3.3; boundaries from the family's graph
 ```
 
+*Note 2026-10-31 (COMP-E10-T07): where the builder lives, and the census as built.*
+- **The builder is `syntropy_graph::census::build`, not `manifest::census::build`.**
+  - It resolves the family through `graph::families()`. `graph` is layer 2 and `manifest` layer 1 (RFC-0001 §4.1), so `manifest` cannot call it.
+  - The types stay in `syntropy_manifest::census`: `TensorRecord`, `TensorGroup`, `ClassTotals`, `TensorCensus` and `ModelManifest`.
+  - `build_in` takes a `Registry`, so tests run the builder with families of their own.
+- **Family resolution fails closed twice.** Names that no family accepts are `UnknownFamily` (1). Names that resolve to more than one family, such as `architectures[0]` to one and `model_type` to another, are refused with the same code, rather than resolved by their order.
+- **Missing tensors.** Before the manifest is returned, the census checks:
+  - every decoder layer has a classified tensor;
+  - the model has a token embedding;
+  - a MoE layer has `n_experts` routed experts, each with the tensors expert 0 has.
+
+  A failure is `HeaderInvalid` (6), as is a stacked tensor that does not slice.
+- **Step 6 and the M0 schemes.** The M0 schemes have no auxiliary extents: GGUF scales are inline, and BF16 has none. So `aux` is empty. A safetensors tensor stored as FP8, FP6 or FP4 is `UnknownQuant` (4) until its `quantization_config` scheme and its scale binding land with their task. Steps 9 and 11 and the siblings also come with their tasks.
+- **`read_per_token` inputs.**
+  - A lookup table's row is its bytes over its outermost dimension.
+  - The expert prior reads the `top_k` and `n_experts` extra hyperparameters (`hparams::TOP_K`, `hparams::N_EXPERTS`).
+- **Totals.** `ClassTotals` sums groups, so a tied embedding counts once as `RowLookup` and once as `Head`, as the two stages that hold it do. `TensorCensus::record_bytes` counts each record once. It is what RFC-0060 §7.2 check 1 compares with the source's tensor bytes, less the ignored tensors.
+- **Storage.** A stored manifest is an 8-byte tag, `SYNMAN01`, then postcard compressed with zstd level 3 [target]. Decoding is bounded at 256 MiB [target]. A stored `TokenizerSpec` keeps its parts only, and its ID is computed again on reading.
+
 #### 3.1 Grouping rules
 
 RFC-0001 §5.3 fixes the grouping: one group per (layer, mixer), per (layer, dense FFN), per (layer, expert), per lookup table, one for the head, one per router. This RFC adds the details:
@@ -282,7 +301,7 @@ Disk usage is accounted in allocated blocks, not file lengths.
 - **Completion.** With every chunk held, `Blob::complete` hashes the file; a match sets the complete byte, and a mismatch is `FileDigestMismatch` (8): it clears the complete byte, then evicts every chunk, so nothing of the file is served and the blob still opens for the refetch, once the caller revokes its table.
 - **Not yet.** Writes are buffered positional writes, each synced, until `syntropy-io` offers the direct-I/O write path of ADR-0013 decision 1. Blobs on read-only roots are not opened yet. Two leftovers of a crash in chunk-file mode are not freed: a chunk file renamed into place whose ID never reached the inventory, and a `chunks/<xx>/<id>.part` file whose write did not finish. COMP-E11-T09's sweep must cover `chunks/` for them.
 
-**Revision note, 2026-10-30 (COMP-E11-T23): the punch after a write is bounded.** The punch of the unheld runs beside a written chunk (note above) reaches at most `PUNCH_WINDOW_BYTES`, 32 MiB [chosen], on each side of the chunk, and stops sooner at the nearest held chunk or the file's end. It used to scan to the nearest held chunk, so in an ascending fetch every write scanned to the end of the file: about 1.25 × 10¹¹ bit tests over a 500 K-chunk file [estimate, the review of #1965: Σ over k of (500 K − k)]. A write now tests at most the chunks within the window, 18 at 4 MiB chunks, whatever the file's length. The window covers every gap APFS was seen to fill: on the hosted `macos-26` runner an 8 MiB gap below a write was filled, and 24 MiB and 32 MiB gaps were not [measured, hosted macos-26, APFS, commit 318a01c]. A range may end inside an unheld chunk at the window's edge, which punches no held byte.
+**Revision note, 2026-10-30 (COMP-E11-T23): the punch after a write is bounded.** The punch of the unheld runs beside a written chunk (note above) reaches at most `PUNCH_WINDOW_BYTES`, 32 MiB [chosen], on each side of the chunk, and stops sooner at the nearest held chunk or the file's end. It used to scan to the nearest held chunk, so in an ascending fetch every write scanned to the end of the file: about 1.25 × 10¹¹ bit tests over a 500 K-chunk file [estimate, the review of #1965: Σ over k of (500 K − k)]. A write now tests at most the chunks within the window, 18 at 4 MiB chunks, whatever the file's length. The window covers every gap APFS was seen to fill: on the hosted `macos-26` runner an 8 MiB gap below a write was filled, and 24 MiB and 32 MiB gaps were not [measured, hosted macos-26, APFS, commit 318a01c, job 123386874383's `apfs_allocation_table`: in a 64 MiB file, a 4 KiB write at 8 MiB left 8,404,992 bytes allocated (row A), a second 4 KiB write about 24 MiB past it added only its own 16 KiB (row G, 8,421,376), and a lone write at 32 MiB left 16,384 (row C)]. A range may end inside an unheld chunk at the window's edge, which punches no held byte.
 
 #### 4.3 Local models, indexed in place
 

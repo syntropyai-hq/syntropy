@@ -32,6 +32,13 @@
 //!   DIST-E8-T04's. Of the `Activation` items, types 1–7, only `TRACE` is accepted;
 //! - splitting a step into parts: [`Token`] reads and writes `part_index` and `part_count`.
 //!
+//! An entry's `logprob_k` is 0 for no logprobs, 1 to 127 for that many alternatives per token,
+//! and [`LOGPROB_CHOSEN_ONLY`] (0x80) for the chosen tokens' logprobs alone, `core`'s
+//! `LogprobBlock { k: 0 }` (RFC-0031 §6.5, revised 2026-10-31; OQ-NET-35). Any other value with
+//! bit 7 set is refused. 0x80 is a new value of an existing field, which a receiver built before
+//! it would misread, so the encoder writes it only on a channel that negotiated capability bit
+//! 16 ([`capability::CHOSEN_LOGPROBS`](super::capability::CHOSEN_LOGPROBS)).
+//!
 //! Neither direction allocates: a decoded frame borrows its entries and items from the frame's
 //! bytes, and an encoded one is written straight into the caller's buffer.
 //! [`TokenEntryView::to_entry`] and [`TokenEntryBytes`] build `core`'s owned types, so they
@@ -47,8 +54,36 @@ use super::activation::{
     ABSENT, Side, SideItem, SideItems, TraceContext, TreeArea, TreeNode, get16, get32, get64,
     read_tlv,
 };
+use super::embedding::capability;
 use super::error::FrameError;
 use super::header::{self, ALIGN, Flags, Frame, FrameSpec, FrameType, HEADER_LEN};
+
+/// `logprob_k`'s value for the chosen tokens' logprobs with no alternatives (RFC-0031 §6.5,
+/// revised 2026-10-31). Sent only on a channel that negotiated
+/// [`capability::CHOSEN_LOGPROBS`].
+pub const LOGPROB_CHOSEN_ONLY: u8 = 0x80;
+
+/// The alternatives per token that a `logprob_k` stands for: `k` for 0 to 127, 0 for
+/// [`LOGPROB_CHOSEN_ONLY`], and `None` for any other value with bit 7 set.
+fn alternatives(logprob_k: u8) -> Option<usize> {
+    match logprob_k {
+        LOGPROB_CHOSEN_ONLY => Some(0),
+        k if k & LOGPROB_CHOSEN_ONLY != 0 => None,
+        k => Some(usize::from(k)),
+    }
+}
+
+/// The logprob bytes of `n_tokens` tokens at `logprob_k`: none for 0, else per token the
+/// chosen token's f32 and `alternatives` (id u32, logprob f32) pairs. `None` for a refused
+/// `logprob_k`.
+fn logprobs_len(n_tokens: usize, logprob_k: u8) -> Option<usize> {
+    let alternatives = alternatives(logprob_k)?;
+    Some(if logprob_k == 0 {
+        0
+    } else {
+        n_tokens * (4 + 8 * alternatives)
+    })
+}
 
 /// The extension's fixed part, before the TLVs.
 pub const TOKEN_FIXED_LEN: usize = 16;
@@ -128,10 +163,11 @@ pub struct TokenEntryView<'a> {
     /// The accepted tokens, a u32 each: one for plain decode, 1..=γ+1 after a verify window.
     pub tokens: &'a [u8],
     pub finish: Option<FinishReason>,
-    /// Top-k alternatives per token; 0 for no logprobs.
+    /// Top-k alternatives per token, 1 to 127; 0 for no logprobs; [`LOGPROB_CHOSEN_ONLY`] for
+    /// the chosen tokens' logprobs alone.
     pub logprob_k: u8,
-    /// Per token: the chosen token's logprob as an f32, then `logprob_k` × (id u32, logprob
-    /// f32). Empty when `logprob_k` is 0.
+    /// Per token: the chosen token's logprob as an f32, then its alternatives as (id u32,
+    /// logprob f32), none for [`LOGPROB_CHOSEN_ONLY`]. Empty when `logprob_k` is 0.
     pub logprobs: &'a [u8],
     /// The approximate knobs that touched these tokens; empty in exact mode (RFC-0001 §11.3).
     pub approx: ApproxFlags,
@@ -167,9 +203,10 @@ impl TokenEntryView<'_> {
         word(self.draft, index)
     }
 
-    /// The logprob bytes per token: the chosen token's, then `logprob_k` alternatives.
-    fn logprob_stride(&self) -> usize {
-        4 + 8 * usize::from(self.logprob_k)
+    /// Whether the entry carries [`LOGPROB_CHOSEN_ONLY`], which needs
+    /// [`capability::CHOSEN_LOGPROBS`] on the channel.
+    fn chosen_only(&self) -> bool {
+        self.logprob_k == LOGPROB_CHOSEN_ONLY
     }
 
     /// The bytes this entry takes in a frame, padding included, with or without its draft and
@@ -198,11 +235,8 @@ impl TokenEntryView<'_> {
                 });
             }
         }
-        let logprobs = if self.logprob_k == 0 {
-            0
-        } else {
-            self.n_tokens() * self.logprob_stride()
-        };
+        let logprobs = logprobs_len(self.n_tokens(), self.logprob_k)
+            .ok_or_else(|| bad("logprob_k", self.logprob_k))?;
         if self.logprobs.len() != logprobs {
             return Err(inconsistent(
                 "logprobs len",
@@ -257,16 +291,17 @@ impl TokenEntryView<'_> {
                 len: self.tap.len(),
             });
         }
+        let k = alternatives(self.logprob_k).ok_or_else(|| bad("logprob_k", self.logprob_k))?;
         let logprobs = (self.logprob_k > 0).then(|| {
-            let k = usize::from(self.logprob_k);
             let n = self.n_tokens();
             let mut block = LogprobBlock {
-                k: self.logprob_k,
+                // 0 to 127, so it fits.
+                k: k as u8,
                 chosen: Vec::with_capacity(n),
                 top_ids: Vec::with_capacity(n * k),
                 top_logprobs: Vec::with_capacity(n * k),
             };
-            for token in self.logprobs.chunks_exact(self.logprob_stride()) {
+            for token in self.logprobs.chunks_exact(4 + 8 * k) {
                 block
                     .chosen
                     .push(f32::from_le_bytes([token[0], token[1], token[2], token[3]]));
@@ -308,9 +343,10 @@ fn words(bytes: &[u8]) -> impl Iterator<Item = u32> + '_ {
 /// An owned [`TokenEntry`]'s arrays as wire bytes, so that a [`TokenEntryView`] borrowing them
 /// can be encoded: build one with [`TokenEntryBytes::new`], then encode
 /// [`TokenEntryBytes::view`]. A tap is refused with [`FrameError::TapNotEncoded`] until its
-/// codec exists (DIST-E8-T06), a [`LogprobBlock`] with `k = 0` with
-/// [`FrameError::ChosenLogprobsOnly`] until RFC-0031 §6.5 has a form for it (OQ-NET-35), and one
-/// whose lengths disagree with its `k` and the entry's tokens as inconsistent.
+/// codec exists (DIST-E8-T06). A [`LogprobBlock`] with `k = 0` becomes
+/// [`LOGPROB_CHOSEN_ONLY`], which only a channel with [`capability::CHOSEN_LOGPROBS`] is sent; a
+/// `k` above 127, which `logprob_k` cannot carry, is refused, and so is a block whose lengths
+/// disagree with its `k` and the entry's tokens.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TokenEntryBytes {
     seq: SequenceId,
@@ -341,10 +377,8 @@ impl TokenEntryBytes {
         };
         let (logprob_k, logprobs) = match &entry.logprobs {
             None => (0, Vec::new()),
-            Some(block) if block.k == 0 => {
-                return Err(FrameError::ChosenLogprobsOnly {
-                    n_tokens: block.chosen.len(),
-                });
+            Some(block) if block.k & LOGPROB_CHOSEN_ONLY != 0 => {
+                return Err(bad("logprob_k", block.k));
             }
             Some(block) => {
                 let k = usize::from(block.k);
@@ -364,7 +398,12 @@ impl TokenEntryBytes {
                         out.extend(block.top_logprobs[j].to_le_bytes());
                     }
                 }
-                (block.k, out)
+                let wire = if block.k == 0 {
+                    LOGPROB_CHOSEN_ONLY
+                } else {
+                    block.k
+                };
+                (wire, out)
             }
         };
         Ok(TokenEntryBytes {
@@ -452,11 +491,7 @@ fn read_entry(
         ));
     }
     let nodes = if tree && n_draft > 0 { n_draft } else { 0 };
-    let logprobs = if logprob_k == 0 {
-        0
-    } else {
-        n_tokens * (4 + 8 * usize::from(logprob_k))
-    };
+    let logprobs = logprobs_len(n_tokens, logprob_k).ok_or_else(|| bad("logprob_k", logprob_k))?;
     let lens = [4 * n_tokens, 4 * n_draft, 4 * nodes, logprobs, tap_len];
     let body = lens
         .iter()
@@ -605,9 +640,9 @@ impl fmt::Debug for Entries<'_> {
     }
 }
 
-/// The header fields of an unsealed `Token` frame. `flags` bit0 `HAS_TRACE` is set from the
-/// `TRACE` items the copy carries, as the lengths and CRCs follow from the frame; `ENCRYPTED`
-/// is the AEAD layer's.
+/// The header fields of an unsealed `Token` frame, and the channel's negotiated capabilities.
+/// `flags` bit0 `HAS_TRACE` is set from the `TRACE` items the copy carries, as the lengths and
+/// CRCs follow from the frame; `ENCRYPTED` is the AEAD layer's.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct TokenSpec {
     pub wire_minor: u8,
@@ -616,6 +651,10 @@ pub struct TokenSpec {
     pub epoch: PlanEpoch,
     pub step: u64,
     pub chan_seq: u64,
+    /// The channel's negotiated capabilities (RFC-0031 §10), not written to the frame. An entry
+    /// with [`LOGPROB_CHOSEN_ONLY`] is written only when they hold
+    /// [`capability::CHOSEN_LOGPROBS`].
+    pub capabilities: u64,
 }
 
 /// A `Token` frame as it travels: one copy of a step, or one part of it.
@@ -804,6 +843,18 @@ impl Contents<'_, '_> {
                 .any(|entry| !entry.draft.is_empty() && entry.draft_tree.is_none())
         {
             return Err(bad("draft_tree", 0u64));
+        }
+        // A peer that did not advertise bit 16 would size the entry by `logprob_k` and refuse it.
+        if spec.capabilities & capability::CHOSEN_LOGPROBS == 0
+            && self
+                .entries
+                .iter()
+                .any(|entry| self.keeps(&entry) && entry.chosen_only())
+        {
+            return Err(FrameError::CapabilityNotNegotiated {
+                ftype: FrameType::Token,
+                capability: capability::CHOSEN_LOGPROBS,
+            });
         }
         let (ext, payload) = self.lens();
         let ext_len = ext.next_multiple_of(ALIGN);
@@ -1144,6 +1195,7 @@ mod tests {
             epoch: PlanEpoch { term: 1, seq: 1 },
             step: 3,
             chan_seq: 1,
+            capabilities: 0,
         }
     }
 

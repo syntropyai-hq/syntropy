@@ -437,6 +437,11 @@ pub trait RefSink {
 - `RefOptions`, the `WeightSource` and `RefSink` traits, `TapSpec` and `HiddenBlock` live in `graph::reference`, beside the interpreter that uses them. That interpreter is production code (the warm-up canary), and `testkit` is a dev-dependency only (rule 9). A `WeightSource` returns F32 values, dequantised with RFC-0042's reference dequantisers, for a `WeightKey`: a `graph::ir::WeightRef` and, for a routed expert, its index.
 - `RefExecutor`, `RefKv` and `RefStats` live in `testkit::refexec`, with the stub sources and sinks tests use.
 
+*Note 2026-10-31 (COMP-E1-T03, the `F32Fixed` order spelled out):* "pairwise over fixed 32-element blocks in index order" is read as two levels, which `kernels::reference::reduce` implements once for every reference op and for `graph::reference`.
+- The terms are cut into blocks of 32 in index order, the last holding the remainder. Each block is summed sequentially in index order into an F32 accumulator that starts at `+0.0`.
+- The block sums are added in neighbouring pairs, level by level, `(s₀ + s₁), (s₂ + s₃), …`, an odd last sum carried to the next level unchanged, until one is left.
+- An empty sum is `+0.0`. A product term is rounded once before it is added. This is the reading the declared-activation-quantisation test of COMP-E13-T03 already used, and a GPU reference (`RefDevice::Gpu`) uses the same tree.
+
 Reference semantics that matter for parity:
 - **Routing ties.** MoE top-k selection breaks score ties toward the lower expert index. RFC-0042 requires every provider to use the same rule, so a tie is never an inter-kernel divergence by construction. Near-ties are real numerics, and the metrics capture them.
 - **Attention** materialises full score rows per head. There is no tiled or online softmax in the reference.
@@ -1405,6 +1410,8 @@ pub struct Fixture { pub gguf: Vec<(QuantClass, PathBuf)>, pub safetensors: Opti
 - **Quantization.** An F32 original is quantized to every quant class the family ships (Q4_K-class and Q8_0 GGUF blocks, MXFP4, NVFP4, FP8, BF16) with RFC-0042's deterministic quantizers. A given seed always gives byte-identical files.
 - **Structure-true.** Each fixture contains at least one of every layer kind, attention variant, MoE feature (shared expert, latent MoE, router bias), MTP head and recurrent block its family has, so census, KV-formula and boundary checks see every case (§7.2).
 
+*Note 2026-10-31 (QUAL-E7-T01):* built in `syntropy_testkit::fixtures`. `generate` also takes the directory it writes into, and returns one `Fixture` per variant of the `FamilySpec`, because the spec lists variants for features fixed per checkpoint, such as QK-norm and tied embeddings (`graph::spec`). Each `Nano` fixture is an F32 safetensors checkpoint with `config.json` and a byte-level `tokenizer.json`, plus the same weights as an F32 GGUF file where GGUF metadata can state the variant's RoPE rule. `Fixture::manifest` is the census of the safetensors checkpoint, read back from disk. Normal draws use the polar method with a logarithm computed from correctly rounded operations only, so a seed gives byte-identical files on every platform; the tests hold the files' BLAKE3 digests. Calibration (QUAL-E7-T02) and quantized classes (QUAL-E7-T03) come with their tasks. The `Family` trait method that returns a family's spec is not added yet; the generator takes the spec directly.
+
 #### 12.2 Real checkpoints
 
 Each v1 family (ADR-0003) needs at least one real checkpoint, small enough for nightly runs, plus the cost-model scenario models for release candidates and RFC-0061. **The licence rule** (OQ-MF-04; ADR-0603 decision 4): nightly fixtures are ungated checkpoints under an OSI-approved licence; Llama-family checkpoints are lab-only; fixtures are quantised from the original weights with RFC-0042's quantizers. The picks below follow that rule. Confirming each pick (availability, licence on the model card at the pinned revision) is a desk check in QUAL-E7-T06 before that family's conformance work starts.
@@ -1420,6 +1427,30 @@ Each v1 family (ADR-0003) needs at least one real checkpoint, small enough for n
 | GLM-class | GLM-4.7-Flash, once its MIT licence is confirmed on the model card | — |
 
 Where a family's newest variant has no small checkpoint (for example DeepSeek-V4-class compressed attention), the `micro` synthetic fixture covers it nightly, and the full checkpoint runs on the lab's large-memory Mac per RC under §5.7's sampled-layer rules.
+
+*Note 2026-10-31 (QUAL-E7-T06): the desk check and the roster's licences.* Each row below was read from the Hub's API at the pinned commit: the licence tag and the model card's `license` field, the gated flag and the files' total size. The cards and their metadata are data; nothing in them was followed. The two M0 families are confirmed and in `testdata/fixtures.toml`:
+
+- **`llama`: Qwen/Qwen3-0.6B** at `c1899de289a04d12100db370d81485cdf75e47ca`. It has `apache-2.0` on the card and the tag, is ungated, and has QK-norm and tied embeddings, which RFC-0043's `llama` row covers. Its eight files (1.52 GB [measured: the Hub's sizes]) are imported as `nightly` fixtures. Each file was checked against the Hub's sha256 (LFS files) or git blob id before import.
+- **`qwen_moe`: Qwen/Qwen3-30B-A3B** at `ad44e777bcd18fa416d9da3bd8f70d33ebb85d39`. It has `apache-2.0`, is ungated, and has 128 experts with top-8 softmax routing and no shared expert. It is the smallest Qwen3-MoE checkpoint Qwen publishes. All 26 of its files are recorded with their Hub hashes as `lab` fixtures. Its configuration, tokenizer, shard index and licence are imported, and so is each shard's safetensors header as a `nightly` fixture. Each header is the 8-byte length and the JSON, read by range at the pinned commit with the length capped at 100 MiB, and its last tensor's end offset plus 8 plus the header length equals the shard's size on the Hub; the headers' tensor names match the shard index (18,867 tensors). The census and the family's module work from these headers without the weights. Its 16 weight shards, 61.08 GB in BF16 [measured: the Hub's sizes], wait for the lab store (QUAL-E7-T15). "Confirmed" here means this desk check is recorded; the weights are not imported until QUAL-E7-T15. A smaller nightly `qwen_moe` checkpoint would be quantised from these weights with RFC-0042's quantizers, and record them in `quantised_from`.
+- **`llama`, lab-only: meta-llama/Llama-3.2-1B** at `4e20de362430cd3b72f300e6b0f18e50e7166e08`. It is gated (manual approval) under `llama3.2`, which is not OSI-approved. Its 13 files are recorded from the Hub's metadata as gated `lab` fixtures. Nothing is downloaded; its import with the lab credential is QUAL-E7-T15's.
+
+| Roster entry | Hub repository @ commit | Licence (card, tag) | Gated | Size [measured: Hub] | The licence rule allows |
+|---|---|---|---|---|---|
+| dense, nightly | Qwen/Qwen3-0.6B @ c1899de2 | apache-2.0 | no | 1.52 GB | nightly |
+| dense, lab-only | meta-llama/Llama-3.2-1B @ 4e20de36 | llama3.2 (not OSI-approved) | yes (manual) | 4.95 GB | lab |
+| dense, RC | meta-llama/Llama-3.3-70B-Instruct @ 6f6073b4 | llama3.3 (not OSI-approved) | yes (manual) | 282.25 GB | lab |
+| Gemma-class, nightly | google/gemma-4-E2B @ d29ff6b4 | apache-2.0 | no | 10.28 GB | nightly |
+| DeepSeek-V3-class and Kimi-class, nightly | moonshotai/Moonlight-16B-A3B @ 476b36a4 | mit | no | 31.93 GB | nightly |
+| DeepSeek-V3-class, RC | deepseek-ai/DeepSeek-V3 @ e815299b | no licence tag or card field; to be read from the repository's licence files before use | no | 688.60 GB | lab |
+| Kimi-class, RC | moonshotai/Kimi-K2-Thinking @ a51ccc05 | other ("modified-mit"; not OSI-approved as published) | no | 594.26 GB | lab |
+| Qwen-MoE | Qwen/Qwen3-30B-A3B @ ad44e777 | apache-2.0 | no | 61.08 GB | nightly (the weights run in the lab for their size) |
+| Qwen hybrid | Qwen/Qwen3-Next-80B-A3B-Instruct @ 9c7f2fbe | apache-2.0 | no | 162.68 GB | nightly (an RC model) |
+| Qwen-MoE, RC | Qwen/Qwen3-235B-A22B @ 8efa6172 | apache-2.0 | no | 470.21 GB | nightly (an RC model) |
+| gpt-oss-class, nightly | openai/gpt-oss-20b @ 6cee5e81 | apache-2.0 | no | 41.30 GB (the repository also holds an `original/` copy) | nightly |
+| gpt-oss-class, RC | openai/gpt-oss-120b @ b5c939de | apache-2.0 | no | 195.76 GB | nightly (an RC model) |
+| GLM-class, nightly | zai-org/GLM-4.7-Flash @ 7dd20894 | mit, now confirmed on the card | no | 62.47 GB | nightly |
+
+The last column is what the licence rule allows; a fixture's `tier` also reflects its size. The later families repeat this check, with a full commit, before their conformance work (RFC-0060 §12.2 above). The sizes are the repositories' totals, including documentation and any duplicate weights.
 
 #### 12.3 Fixture store
 
