@@ -15,12 +15,15 @@
 //! (QUAL-E8-T03). With the `transport` feature it holds `SimTransport` (QUAL-E8-T04): RFC-0031's
 //! `Transport` and `Channel` over the fabric, in a `SimNet`. [`fake_runner`] is the stub runner
 //! ingress is tested against (QUAL-E3-T18): it serves a real region's `local_sequences` and
-//! `local_tokens` rings. The other fakes and the cluster model are planned.
+//! `local_tokens` rings. [`fake_kernels`] is `FakeKernelProvider` in `Numeric` mode and the
+//! `FakeDeviceSpec` that times its virtual device timeline (QUAL-E3-T12, RFC-0060 §8.4). The
+//! other fakes and the cluster model are planned.
 
 mod clock;
 mod dist;
 mod entropy;
 mod fabric;
+pub mod fake_kernels;
 #[cfg(any(target_os = "linux", target_vendor = "apple", windows))]
 pub mod fake_runner;
 pub mod presets;
@@ -38,6 +41,7 @@ pub use fabric::{
     INITIAL_RTT, LinkModel, MAX_ACK_DELAY, PTO_GRANULARITY, Preset, RttEstimate, Sent, SimFabric,
     Split,
 };
+pub use fake_kernels::{FakeDeviceSpec, FakeKernelProvider, FakeMode, FakeSpecError, FakeTierSpec};
 pub use ticks::SimTicks;
 pub use trace::{Hex, TraceEvent, TraceHasher};
 #[cfg(feature = "transport")]

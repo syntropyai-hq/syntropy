@@ -7,8 +7,9 @@
 //! (RFC-0001 §4.2 rule 9). So far it holds the hot-path guards of RFC-0060 §3.5,
 //! [`guards::CountingAlloc`] and [`guards::alloc_count_this_thread`]; the simulator's clock,
 //! entropy and world core, and the fake runner that ingress is tested against
-//! ([`sim::fake_runner`], QUAL-E3-T18), in [`sim`]; and the stubs of the reference interpreter's
-//! contract ([`refexec`], RFC-0060 §4.1); and the synthetic `Nano` fixture generator
+//! ([`sim::fake_runner`], QUAL-E3-T18), and `FakeKernelProvider` in `Numeric` mode with its
+//! virtual device timeline ([`sim::fake_kernels`], QUAL-E3-T12), in [`sim`]; and the stubs of
+//! the reference interpreter's contract ([`refexec`], RFC-0060 §4.1); and the synthetic `Nano` fixture generator
 //! ([`fixtures`], RFC-0060 §12.1). The rest is planned.
 //!
 //! `unsafe` is denied in this crate, not forbidden, for one reason: a global allocator is an

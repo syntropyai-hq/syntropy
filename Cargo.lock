@@ -4294,6 +4294,7 @@ dependencies = [
  "syntropy-graph",
  "syntropy-ipc",
  "syntropy-kernels",
+ "syntropy-kernels-cpu",
  "syntropy-manifest",
  "syntropy-net",
  "syntropy-spsc",
