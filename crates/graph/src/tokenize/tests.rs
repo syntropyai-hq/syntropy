@@ -1159,3 +1159,69 @@ fn end_of_turn_adds_the_end_of_text_token_only_for_a_chat_eos() {
     let s = spec(&spm_kvs(&spm_vocab(true)));
     assert_eq!(s.specials().end_of_turn, [2]);
 }
+
+/// [`qwen_like`] laid out as the measured Qwen3 GGUF headers are: 151,936 tokens, with
+/// `<|endoftext|>`, `<|im_start|>` and `<|im_end|>` at 151643–151645 and marked control, BOS
+/// and padding 151643, a chat template, and the unused tail marked unused (type 5). Normal
+/// filler tokens stand in for the rest of the vocabulary.
+fn qwen3_layout(eos: u32) -> Vec<(String, Kv)> {
+    const N: usize = 151_936;
+    const ENDOFTEXT: usize = 151_643;
+    let mut kvs = qwen_like();
+    let get =
+        |kvs: &[(String, Kv)], key: &str| kvs.iter().find(|(k, _)| k == key).unwrap().1.clone();
+    let (Kv::Strs(tokens), Kv::I32s(types)) = (get(&kvs, TOKENS), get(&kvs, TOKEN_TYPE)) else {
+        unreachable!()
+    };
+    let n = added_id(0) as usize;
+    let fill = ENDOFTEXT - n;
+    let mut t: Vec<String> = tokens[..n].to_vec();
+    let mut ty: Vec<i32> = types[..n].to_vec();
+    t.extend((0..fill).map(|i| format!("filler{i}")));
+    ty.extend(std::iter::repeat_n(1, fill));
+    t.extend_from_slice(&tokens[n..]);
+    ty.extend_from_slice(&types[n..]);
+    let tail = N - t.len();
+    t.extend((0..tail).map(|i| format!("[PAD{i}]")));
+    ty.extend(std::iter::repeat_n(5, tail));
+    assert_eq!(t[ENDOFTEXT], "<|endoftext|>");
+    assert_eq!(t[ENDOFTEXT + 2], "<|im_end|>");
+    set(&mut kvs, TOKENS, Kv::Strs(t));
+    set(&mut kvs, TOKEN_TYPE, Kv::I32s(ty));
+    set(&mut kvs, BOS_ID, Kv::U32(151_643));
+    set(&mut kvs, PAD_ID, Kv::U32(151_643));
+    set(&mut kvs, EOS_ID, Kv::U32(eos));
+    set(&mut kvs, CHAT_TEMPLATE, Kv::Str("{{ messages }}".into()));
+    kvs
+}
+
+/// The end-of-turn set on the measured Qwen3 headers' layout, against each publisher's
+/// `generation_config.json` `eos_token_id` list. The base checkpoint's GGUF carries a chat
+/// template too, so only EOS's spelling tells the two apart (RFC-0043 §8.3).
+#[test]
+fn end_of_turn_on_the_measured_qwen3_layouts_matches_the_publishers_lists() {
+    // Qwen3-0.6B-Base (and Qwen3-30B-A3B-Base): EOS `<|endoftext|>`; the list is 151643.
+    assert_eq!(
+        spec(&qwen3_layout(151_643)).specials().end_of_turn,
+        [151_643]
+    );
+    // Qwen3-0.6B (and Qwen3-30B-A3B): EOS `<|im_end|>`; the list is [151645, 151643].
+    assert_eq!(
+        spec(&qwen3_layout(151_645)).specials().end_of_turn,
+        [151_643, 151_645]
+    );
+
+    let with_type = |eos: u32, id: usize, ty: i32| {
+        let mut kvs = qwen3_layout(eos);
+        let pos = kvs.iter().position(|(k, _)| k == TOKEN_TYPE).unwrap();
+        let Kv::I32s(types) = &mut kvs[pos].1 else {
+            unreachable!()
+        };
+        types[id] = ty;
+        spec(&kvs).specials().end_of_turn.clone()
+    };
+    // Only a control token is added: `<|endoftext|>` as a user-defined token is not.
+    assert_eq!(with_type(151_645, 151_643, 4), [151_645]);
+    // EOS must itself be control: a user-defined `<|im_end|>` EOS adds nothing.
+    assert_eq!(with_type(151_645, 151_645, 4), [151_645]);
+}
