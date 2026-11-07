@@ -16,6 +16,11 @@ serde.workspace = true
 # `float_roundtrip` parses every float to the nearest value, so a stored measurement reads back
 # bit for bit (RFC-0061 §2.2: results are JSON, and gates recompute from them).
 serde_json = { workspace = true, features = ["float_roundtrip"] }
+# The prompt set's item hashes (RFC-0061 §3.1): SHA-256, which the selection script computes with
+# Python's standard library.
+sha2.workspace = true
+# The tokenizer engine, for exact-length prompt construction per tokenizer (RFC-0061 §3.1).
+syntropy-text = { path = "../text" }
 # The rig inventory, the scenario files and the SC map are TOML (RFC-0061 §4.1, §4.2, §6.3).
 toml.workspace = true
 

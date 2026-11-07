@@ -10,6 +10,8 @@
 //!   and the `scenario_version` rule (RFC-0061 §4.1);
 //! - [`sc_map`]: `bench/sc-map.toml`, which maps every success criterion to its scenarios, and
 //!   renders RFC-0061 §4.2's table (RFC-0061 §4.2);
+//! - [`prompts`]: `bench-prompts-v1`, the prompt set drawn from the parity corpus sources, and
+//!   exact-length prompt construction per tokenizer (RFC-0061 §3.1);
 //! - [`specs`]: the spec database of RFC-0061 §5.3, the `W_peak` per path it gives a rig, and the
 //!   probe sanity check.
 //!
@@ -18,6 +20,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod prompts;
 pub mod rigs;
 pub mod sc_map;
 pub mod scenario;

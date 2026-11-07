@@ -203,6 +203,12 @@ Results are JSON. Per-step traces are stored beside them in a columnar file, com
 #### 3.1 Prompts and generation
 
 - **Prompt set.** Prompts come from `bench-prompts-v1`, a versioned set drawn from the same licensed sources as the parity corpus (RFC-0060 §5.2), split into `chat`, `code`, `long` and `agent` (multi-turn with a shared prefix). For each model's tokenizer, the harness builds prompts of exactly `prompt_tokens` tokens by concatenating set items and cutting at a token boundary. The same model therefore always sees the same token sequence for a given key.
+  - *As built, 2026-11-07 (QUAL-E12-T05).*
+    - **Selection.** `bench/prompts/select.py` applies the set's selection rules to the corpus sources at their pinned revisions. It writes `bench/prompts/bench-prompts-v1.toml`, which records each item's source, locator, licence and the SHA-256 of its text. The text is not in git: the script writes it to a directory that `syntropy_bench::prompts::DirStore` reads, and the store refuses text whose hash differs.
+    - **Items.** v1 has 24 `chat` items (Taskmaster-1), 8 `agent` items (Taskmaster-1's spoken dialogs, with each turn's length) and 10 `code` items (one file from each code source). `long` items wait for the corpus import's death-year rule (QUAL-E12-T20).
+    - **Construction.** `syntropy_bench::prompts::Builder` tokenizes each item, followed by the separator, on its own. It concatenates the token streams in manifest order, cycling when they run out, and takes the first `prompt_tokens`. So a shorter prompt is a prefix of a longer one.
+    - **Nonce.** The `Cold` nonce is 8 tokens of the `chat` stream at an offset set by the repetition.
+    - **Agent.** `agent_turns` replays an `agent` item, and each turn's prompt extends the previous one.
 - **Generation.** Greedy (temperature 0) with `ignore_eos = true`, so every repetition generates exactly `gen_tokens` tokens. It uses the benchmark field of `POST /v1/syntropy/generate`, `bench: { ignore_eos: true, gen_tokens: N }` (RFC-0050 §13.6), which is accepted only on loopback with `debug.bench_api` set. Speculative scenarios use natural prompts and greedy decoding, so the acceptance rate reflects content, and `a` is reported.
 - **Prefix state.** `Cold` scenarios prepend a per-repetition nonce of 8 tokens, drawn from the prompt set, so no repetition hits the prefix cache or a previous repetition's session. `Warm` scenarios (SC-19, SC-20) run the agent pattern: turn n+1 extends turn n's full context.
 
