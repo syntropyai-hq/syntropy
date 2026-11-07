@@ -4308,6 +4308,7 @@ dependencies = [
  "serde",
  "serde_json",
  "syntropy-core",
+ "syntropy-testkit",
  "tokenizers",
 ]
 
