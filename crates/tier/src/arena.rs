@@ -2,13 +2,15 @@
 
 //! Arena layout: purposes, pin classes, registrations, slot geometry and the per-runner
 //! [`ArenaPlan`] (RFC-0020 §2, §3), which [`plan::plan_arenas`] derives from the plan
-//! (TIER-E1-T02). Construction per tier kind, segment mapping and the slot allocators come in
-//! later tasks (RFC-0020 §4, §8; TIER-E1-T07).
+//! (TIER-E1-T02). [`build`] allocates them at `Loading`: `Vram` arenas as fixed slabs and
+//! `HostPageable` arenas as anonymous ranges (RFC-0020 §4; TIER-E1-T07). Segment mapping and
+//! the slot allocators come in later tasks (RFC-0020 §8).
 //!
 //! This is one of the two modules where RFC-0020 §1 allows `unsafe`. It holds none yet, so it
 //! keeps the crate-level `deny(unsafe_code)`; the task that adds the first `unsafe` block lifts
 //! it here with a scoped `allow`.
 
+pub mod build;
 pub mod plan;
 
 use bitflags::bitflags;
