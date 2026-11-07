@@ -102,6 +102,10 @@ pub struct System {
     pub links: &'static [&'static str],
     /// The one workspace crate allowed to reach it.
     pub only_in: &'static str,
+    /// Dev-only tools allowed to reach it as well, outside the crate graph, each with a
+    /// maintainer's approval recorded in the ADR that names the system: `xtask` for ADR-0432's
+    /// HTTP stack (its revision of 2026-11-07). Empty for every other system.
+    pub also_in: &'static [&'static str],
     /// Whether only a member's own normal or build dependency on a binding counts. Set for a
     /// system whose binding most crates reach through other packages, such as `getrandom` under
     /// the TLS stack and test crates: the rule then names the one crate that depends on it
@@ -132,6 +136,7 @@ pub const SYSTEMS: &[System] = &[
         ],
         links: &[],
         only_in: "net",
+        also_in: &[],
         direct_only: false,
     },
     System {
@@ -139,6 +144,7 @@ pub const SYSTEMS: &[System] = &[
         packages: &["ibverbs", "ibverbs-sys", "rdma-sys"],
         links: &[],
         only_in: "net",
+        also_in: &[],
         direct_only: false,
     },
     System {
@@ -146,6 +152,7 @@ pub const SYSTEMS: &[System] = &[
         packages: &["io-uring", "tokio-uring", "glommio", "monoio"],
         links: &[],
         only_in: "io",
+        also_in: &[],
         direct_only: false,
     },
     System {
@@ -153,6 +160,7 @@ pub const SYSTEMS: &[System] = &[
         packages: &["highs", "highs-sys"],
         links: &[],
         only_in: "solver",
+        also_in: &[],
         direct_only: false,
     },
     System {
@@ -160,6 +168,7 @@ pub const SYSTEMS: &[System] = &[
         packages: &["ggml"],
         links: &["ggml"],
         only_in: "kernels-ggml",
+        also_in: &[],
         direct_only: false,
     },
     System {
@@ -167,6 +176,7 @@ pub const SYSTEMS: &[System] = &[
         packages: &["cudarc", "cust"],
         links: &["cuda"],
         only_in: "kernels-cuda",
+        also_in: &[],
         direct_only: false,
     },
     System {
@@ -174,6 +184,7 @@ pub const SYSTEMS: &[System] = &[
         packages: &["ash", "vulkano"],
         links: &[],
         only_in: "kernels-vulkan",
+        also_in: &[],
         direct_only: false,
     },
     System {
@@ -181,6 +192,7 @@ pub const SYSTEMS: &[System] = &[
         packages: &["metal", "objc2-metal"],
         links: &[],
         only_in: "kernels-metal",
+        also_in: &[],
         direct_only: false,
     },
     // ADR-0022 decision 3: `OsEntropy` in `io` is the one crate that names the OS CSPRNG.
@@ -189,6 +201,7 @@ pub const SYSTEMS: &[System] = &[
         packages: &["getrandom"],
         links: &[],
         only_in: "io",
+        also_in: &[],
         direct_only: true,
     },
 ];

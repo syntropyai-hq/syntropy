@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use super::cache::Cache;
 use super::manifest::{self, Manifest};
-use super::store::{self, Error, Key, LocalStore, Prefix, Store};
+use super::store::{self, Access, Error, Key, LocalStore, Prefix, Store};
 use super::{Action, Args, run};
 
 fn scratch(name: &str) -> PathBuf {
@@ -28,7 +28,8 @@ fn put(dir: &Path, store: &LocalStore, data: &[u8]) -> Key {
     let licence = dir.join("in.licence");
     fs::write(&file, data).unwrap();
     fs::write(&licence, "MIT").unwrap();
-    let (hash, bytes) = store::publish(store, Prefix::Fixtures, &file, &licence).unwrap();
+    let (hash, bytes) =
+        store::publish(store, Prefix::Fixtures, &file, &licence, Access::Public).unwrap();
     assert_eq!(
         (hash.as_str(), bytes),
         (hex(data).as_str(), data.len() as u64)
@@ -213,12 +214,13 @@ fn publishing_without_a_licence_file_is_refused_and_writes_nothing() {
     let empty = dir.join("empty.licence");
     fs::write(&empty, "").unwrap();
     for licence in [&missing, &empty] {
-        let err = store::publish(&store, Prefix::Fixtures, &file, licence).unwrap_err();
+        let err =
+            store::publish(&store, Prefix::Fixtures, &file, licence, Access::Public).unwrap_err();
         assert!(matches!(err, Error::LicenceMissing(_)), "{err}");
     }
     let key = Key::new(Prefix::Fixtures, &hex(b"data")).unwrap();
-    assert!(!store.exists(&key));
-    assert!(!store.exists(&key.licence()));
+    assert!(!store.exists(&key).unwrap());
+    assert!(!store.exists(&key.licence()).unwrap());
 }
 
 #[test]
@@ -226,8 +228,8 @@ fn publishing_puts_the_licence_beside_the_object() {
     let dir = scratch("beside");
     let store = LocalStore::new(dir.join("store"));
     let key = put(&dir, &store, b"data");
-    assert!(store.exists(&key));
-    assert!(store.exists(&key.licence()));
+    assert!(store.exists(&key).unwrap());
+    assert!(store.exists(&key.licence()).unwrap());
     assert_eq!(
         key.licence().to_string(),
         format!("fixtures/{}.licence", hex(b"data"))

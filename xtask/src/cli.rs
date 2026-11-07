@@ -50,8 +50,11 @@ Commands:
                           (RFC-0062 §12.3); with --ref, the list and the file come from <rev>
   instructions --list [--ref <rev>]
                           print the files agents load as instructions or configuration
-  fixtures fetch|import|verify [--manifest <file>] --store <dir> [options]
-                          the fixture store (RFC-0060 §12.3): `fetch` [--name <fixture>]
+  fixtures fetch|import|verify [--manifest <file>] --store <dir|s3+https://host/bucket> [options]
+                          the fixture store (RFC-0060 §12.3), a directory or the bucket
+                          (anonymous unless SYNTROPY_FIXTURES_S3_ACCESS_KEY_ID and
+                          SYNTROPY_FIXTURES_S3_SECRET_ACCESS_KEY hold the lab credential;
+                          SYNTROPY_FIXTURES_S3_REGION, default us-east-1): `fetch` [--name <fixture>]
                           --cache <dir> --cap <bytes> copies verified objects into a capped
                           cache; `import` --name <fixture> --file <file> --licence-file <file>
                           publishes a file and fills its `blake3` and `bytes`; `verify`

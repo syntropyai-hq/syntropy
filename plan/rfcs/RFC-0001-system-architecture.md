@@ -3240,3 +3240,11 @@ COMP-E3-T03 found that two NEON intrinsic families the CPU kernels use do not co
 | Change | Sections touched | Reason |
 |---|---|---|
 | `smmla` (I8MM) and `fcvtl` (F16 to F32) are written as one-instruction `asm!` blocks in `#[target_feature]` functions, not `std::arch` intrinsics | RFC-0040 §7.3 and ADR-0402 item 1 (dated notes) | on 1.99.1 `vmmlaq_s32` is unstable (`stdarch_neon_i8mm`, E0658), and stable Rust has no F16 vector type for `vcvt_f32_f16`. Release builds use stable only (ADR-0001 decision 1). ADR-0402 item 5's re-check moves them to `std::arch` once they stabilise |
+
+### 18.59 `xtask` as a dev-only user of the Hub HTTP stack (2026-11-07)
+
+QUAL-E7-T15 builds the fixture store's S3 backend in `xtask`, and the maintainers approved its use of ADR-0432's HTTP stack.
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| `xtask` depends directly on `reqwest` (blocking, `rustls-no-provider`), `rustls` and `rustls-platform-verifier`. Rule 6's `System` gains `also_in`, the dev-only tools allowed to reach a system besides its `only_in` crate, and ADR-0432's `reqwest` entry lists `xtask` there | §4.2 rule 6 (through ADR-0432's revision of 2026-11-07) | the fixture store client lives in `xtask` (RFC-0060 §12.3), outside the crate graph. One HTTP client for the project instead of a second one; approved by the maintainer devdaviddr on 2026-11-07 |
