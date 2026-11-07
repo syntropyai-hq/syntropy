@@ -6,7 +6,7 @@
 use proptest::prelude::*;
 
 use super::*;
-use crate::reference::norm::rms_norm;
+use crate::reference::norm::{Norm, rms_norm};
 
 const SENTINEL: f32 = -12345.0;
 
@@ -152,8 +152,10 @@ fn rms_norm_edge_rows() {
     assert_eq!(y[1], 0.0);
 }
 
+/// `Logits` is the head product alone: on the output of the final `RmsNorm` it equals
+/// `Gemv`, and composed with `rms_norm` it gives the norm-then-head value (#2069).
 #[test]
-fn logits_is_the_norm_then_the_head() {
+fn logits_is_the_head_product() {
     let g = [1.0, 2.0];
     let norm = Norm {
         weight: &g,
@@ -162,25 +164,20 @@ fn logits_is_the_norm_then_the_head() {
     // Normalised row [0.75, 2.0]; head [[1, 1], [2, -1], [0, 4]].
     let head = [1.0, 1.0, 2.0, -1.0, 0.0, 4.0];
     let head = Matrix::new(&head, 3, 2).unwrap();
-    let mut scratch = [0.0; 2];
+    let mut normed = [SENTINEL; 4];
+    rms_norm(norm, &[3.0, 4.0, 1.0, 1.0], 1, &mut normed).unwrap();
+    assert_eq!(normed[..2], [0.75, 2.0]);
     let mut y = [SENTINEL; 6];
-    logits(norm, head, &[3.0, 4.0, 1.0, 1.0], 1, &mut scratch, &mut y).unwrap();
+    logits(head, &normed, 1, &mut y).unwrap();
     assert_eq!(y, [2.75, -0.5, 8.0, SENTINEL, SENTINEL, SENTINEL]);
+    let mut z = [SENTINEL; 6];
+    gemv(head, &normed, 1, &mut z).unwrap();
+    assert_eq!(y, z);
     assert_eq!(
-        logits(
-            Norm {
-                weight: &[1.0],
-                eps: 0.0
-            },
-            head,
-            &[0.0; 2],
-            1,
-            &mut scratch,
-            &mut y
-        ),
+        logits(head, &[0.0; 1], 1, &mut y),
         Err(OpError::Len {
             op: "Logits",
-            arg: "norm.weight",
+            arg: "x",
             len: 1,
             need: 2
         })
@@ -233,22 +230,7 @@ fn run(op: usize, w: &[f32], n_out: usize, k_in: usize, x: &[f32], rows: usize, 
         0 => gemv(m, x, rows, y).unwrap(),
         1 => gemm(m, x, rows, y).unwrap(),
         2 => gate_up_act(GatedAct::Silu, m, m, x, rows, y).unwrap(),
-        _ => {
-            let g = vec![1.5f32; k_in];
-            let mut scratch = vec![0.0; k_in];
-            logits(
-                Norm {
-                    weight: &g,
-                    eps: 1e-5,
-                },
-                m,
-                x,
-                rows,
-                &mut scratch,
-                y,
-            )
-            .unwrap();
-        }
+        _ => logits(m, x, rows, y).unwrap(),
     }
 }
 

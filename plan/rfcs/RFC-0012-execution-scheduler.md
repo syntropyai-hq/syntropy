@@ -492,6 +492,8 @@ At the tail, after the last layer, the step program runs on the device that hold
 
 Both count tables are updated by the same op that commits accepted tokens, so penalties at the next step see them without a host round trip. A fresh sequence and a resumed one (§8.6) build them from the same tokens, so their penalties agree. The whole pipeline is inside the captured graph.
 
+*Note 2026-11-07 (COMP-E1-T18; #2069):* row 1's "final norm + LM head" is two ops. The final norm is its own `RmsNorm` node, and `Logits` is the head product alone, as `kernels::reference` and every provider define it. Row 2's parts compose in the order RFC-0040 §3.3's note of the same date gives: bias, repetition penalty, frequency and presence penalties, grammar mask, temperature.
+
 #### 8.2 Random numbers
 
 Sampling uses a counter-based generator (Philox4x32-10 class) keyed by `(generated_seed, SequenceId)`, or by `(client_seed, choice_index)` when the request supplies a seed, and indexed by `rng_counter`, a per-sequence draw counter (ADR-0107):

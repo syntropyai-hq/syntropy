@@ -109,3 +109,46 @@ proptest! {
         prop_assert!(ulps(silu(x), want) <= 4.0, "silu({x}) = {}, true {want}", silu(x));
     }
 }
+
+#[test]
+fn ln_is_within_two_ulp_of_the_true_value() {
+    // Every 97th positive bit pattern, subnormals included, and the powers of two.
+    let mut worst = 0.0f64;
+    let powers = (-149..128).map(|k| 2f64.powi(k) as f32);
+    for x in (1..0x7F80_0000u32)
+        .step_by(97)
+        .map(f32::from_bits)
+        .chain(powers)
+    {
+        let want = f64::from(x).ln();
+        let err = ulps(ln(x), want);
+        assert!(
+            err <= 2.0,
+            "ln({x:e}) = {:e}, true {want:e}: {err} ulp",
+            ln(x)
+        );
+        worst = worst.max(err);
+    }
+    assert!(worst > 0.0);
+}
+
+#[test]
+fn ln_edge_cases() {
+    assert_eq!(ln(1.0).to_bits(), 0.0f32.to_bits());
+    assert_eq!(ln(0.0), f32::NEG_INFINITY);
+    assert_eq!(ln(-0.0), f32::NEG_INFINITY);
+    assert_eq!(ln(f32::INFINITY), f32::INFINITY);
+    assert!(ln(-1.0).is_nan());
+    assert!(ln(f32::NEG_INFINITY).is_nan());
+    assert!(ln(-f32::from_bits(1)).is_nan());
+    let nan = f32::from_bits(0x7FC0_1234);
+    assert_eq!(ln(nan).to_bits(), nan.to_bits());
+    assert_eq!(ln(std::f32::consts::E), 1.0);
+    // `ln` and `exp` invert each other to within the two bounds.
+    for x in [-80.0f32, -1.5, -1e-3, 0.25, 1.0, 10.0, 80.0] {
+        assert!(
+            (ln(exp(x)) - x).abs() <= 4.0 * f32::EPSILON * x.abs().max(1.0),
+            "{x}"
+        );
+    }
+}

@@ -19,8 +19,10 @@
 //!   the gate and up products are separate dots, the activation is applied to the rounded gate,
 //!   and the product is rounded once. M0 defines SiLU gating ([`math::silu`]); GELU and the
 //!   clamped SiLU of gpt-oss-class experts are COMP-E1-T04's, and are refused until then.
-//! - **`Logits`** is the final norm and the LM head: each active row is normalised as
-//!   [`rms_norm`](super::norm::rms_norm) defines it, then multiplied by the head as `Gemv`.
+//! - **`Logits`** is the LM head: `Gemv`'s value with a vocabulary-sized output. The final norm
+//!   is its own `RmsNorm` node before it ([`rms_norm`](super::norm::rms_norm)), as the family
+//!   graph emits them (RFC-0043 §3.3) and as every provider maps them (#2069, signed off
+//!   2026-11-07).
 //!
 //! Edge cases. With `rows_active = 0` nothing is written. Rows past `rows_active` are neither read
 //! nor written. With `k_in = 0` every output is the empty sum, `+0.0`. A NaN in a weight row or an
@@ -28,7 +30,6 @@
 //! never clamped (RFC-0042 §4.1 rule 6).
 
 use super::math;
-use super::norm::Norm;
 use super::reduce;
 use super::shape::{Matrix, OpError, at_least};
 use crate::op::GatedAct;
@@ -121,43 +122,20 @@ pub fn gate_up_act(
     Ok(())
 }
 
-/// `Logits`: each of the first `rows_active` rows of `x` normalised by `norm`
-/// ([`rms_norm`](super::norm::rms_norm)), then multiplied by `head` (`[vocab, hidden]`) into `y`
-/// (`vocab` values per row). `scratch` holds one normalised row and is overwritten.
+/// `Logits`: the LM head, `y[r][o] = Σ_k head[o][k] · x[r][k]` for `r < rows_active`, with
+/// `head` `[vocab, hidden]` and `y` `vocab` values per row (module docs). `x` is the output of
+/// the final `RmsNorm`.
 ///
 /// # Errors
 ///
-/// [`OpError::Len`] when `norm`'s width is not `head`'s columns, when `x` or `y` holds fewer than
-/// `rows_active` rows, or when `scratch` is shorter than a row.
+/// As [`gemv`].
 pub fn logits(
-    norm: Norm<'_>,
     head: Matrix<'_>,
     x: &[f32],
     rows_active: usize,
-    scratch: &mut [f32],
     y: &mut [f32],
 ) -> Result<(), OpError> {
-    const OP: &str = "Logits";
-    let (vocab, hidden) = (head.rows(), head.cols());
-    if norm.width() != hidden {
-        return Err(OpError::Len {
-            op: OP,
-            arg: "norm.weight",
-            len: norm.width(),
-            need: hidden,
-        });
-    }
-    at_least(OP, "x", x.len(), rows_active, hidden)?;
-    at_least(OP, "y", y.len(), rows_active, vocab)?;
-    at_least(OP, "scratch", scratch.len(), 1, hidden)?;
-    let h = &mut scratch[..hidden];
-    for r in 0..rows_active {
-        norm.row(&x[r * hidden..(r + 1) * hidden], h);
-        for (o, y) in y[r * vocab..(r + 1) * vocab].iter_mut().enumerate() {
-            *y = reduce::dot(head.row(o), h);
-        }
-    }
-    Ok(())
+    project("Logits", head, x, rows_active, y)
 }
 
 #[cfg(test)]

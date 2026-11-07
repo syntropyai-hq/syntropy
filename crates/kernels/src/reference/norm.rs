@@ -20,7 +20,8 @@
 //! and `0 · ∞` is NaN); a NaN anywhere in the row makes the whole row NaN through `ss`; an
 //! infinite value makes `ss = +∞` and `scale = 0`, so the row is NaN where `x` is infinite and
 //! `±0` elsewhere. Every value of `g` multiplies its own column only.
-//! `Logits` applies this to each row before the LM head ([`logits`](super::linear::logits)).
+//! The final norm is this op, a node of its own before `Logits`, which is the LM head alone
+//! ([`logits`](super::linear::logits)).
 
 use super::reduce;
 use super::shape::{OpError, at_least};

@@ -10,7 +10,9 @@
 //!
 //! [`exp`] is within 2 ulp of the true value over its whole finite range (the unit test measures
 //! it against F64 on every 97th F32 bit pattern). [`silu`] is ggml's form `x / (1 + exp(−x))`.
-//! Further functions (`log`, `tanh`, `erf`) join with the ops that need them.
+//! [`ln`] (COMP-E1-T18, for `TapGather`'s log-sum-exp) is within 2 ulp over every positive F32,
+//! subnormals included (the unit test measures it against F64 on every 97th bit pattern).
+//! Further functions (`tanh`, `erf`) join with the ops that need them.
 
 /// `log2(e)`, rounded to F32.
 const LOG2_E: f32 = std::f32::consts::LOG2_E;
@@ -82,6 +84,9 @@ pub fn exp(x: f32) -> f32 {
 pub fn silu(x: f32) -> f32 {
     x / (1.0 + exp(-x))
 }
+
+mod ln;
+pub use ln::ln;
 
 #[cfg(test)]
 mod tests;
