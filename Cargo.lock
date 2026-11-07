@@ -4234,6 +4234,9 @@ dependencies = [
  "smallvec",
  "syntropy-core",
  "syntropy-ipc",
+ "syntropy-kernels",
+ "syntropy-kernels-cuda",
+ "syntropy-tier",
  "tracing",
 ]
 
