@@ -107,7 +107,7 @@ fn logits_process_refusals_write_nothing() {
     ] {
         let e = logits_process(&[p], 4, &x, 1, &mut y).unwrap_err();
         let ok = match want {
-            "invalid" => matches!(e, OpError::Invalid { .. }),
+            "invalid" => matches!(e, OpError::Param { .. }),
             "range" => matches!(e, OpError::RowOutOfRange { id: 4, rows: 4 }),
             _ => matches!(e, OpError::Len { arg: "mask", .. }),
         };
@@ -127,7 +127,7 @@ fn logits_process_refusals_write_nothing() {
     };
     assert!(matches!(
         logits_process(&[p], 4, &x, 1, &mut y),
-        Err(OpError::Invalid { .. })
+        Err(OpError::Param { .. })
     ));
     let pen = Penalties {
         repetition: 1.0,
@@ -244,7 +244,7 @@ fn sample_seeded_by_hand() {
     for u in [1.0, -0.1, f32::NAN] {
         assert!(matches!(
             sample_seeded(2, &x, &[u], 1, &mut out),
-            Err(OpError::Invalid { .. })
+            Err(OpError::Param { .. })
         ));
     }
 }

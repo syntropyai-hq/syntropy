@@ -73,7 +73,7 @@ pub enum OpError {
     Dequant(DequantError),
     /// A parameter is outside the range the op defines, such as a negative temperature or a
     /// uniform draw outside `[0, 1)` (COMP-E1-T18).
-    Invalid {
+    Param {
         /// The op.
         op: &'static str,
         /// The parameter and its range.
@@ -100,7 +100,7 @@ impl fmt::Display for OpError {
                 write!(f, "row ID {id} is past the table's {rows} rows")
             }
             Self::Dequant(e) => e.fmt(f),
-            Self::Invalid { op, what } => write!(f, "{op}: {what}"),
+            Self::Param { op, what } => write!(f, "{op}: {what}"),
         }
     }
 }

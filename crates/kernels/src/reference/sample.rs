@@ -117,7 +117,7 @@ impl Process<'_> {
 /// # Errors
 ///
 /// [`OpError::Len`] when `x`, `y` or `rows` is short, or a count table or mask does not cover
-/// `vocab`; [`OpError::RowOutOfRange`] for a bias entry past `vocab`; [`OpError::Invalid`] for a
+/// `vocab`; [`OpError::RowOutOfRange`] for a bias entry past `vocab`; [`OpError::Param`] for a
 /// negative or non-finite temperature, or a penalty outside its range. Every row is checked
 /// before any is written.
 pub fn logits_process(
@@ -133,7 +133,7 @@ pub fn logits_process(
     at_least(OP, "rows", rows.len(), rows_active, 1)?;
     for p in &rows[..rows_active] {
         if !(p.temperature.is_finite() && p.temperature >= 0.0) {
-            return Err(OpError::Invalid {
+            return Err(OpError::Param {
                 op: OP,
                 what: "the temperature must be finite and not negative",
             });
@@ -143,7 +143,7 @@ pub fn logits_process(
                 || !pen.presence.is_finite()
                 || !pen.frequency.is_finite()
             {
-                return Err(OpError::Invalid {
+                return Err(OpError::Param {
                     op: OP,
                     what: "the repetition penalty must be positive and every penalty finite",
                 });
@@ -258,7 +258,7 @@ fn softmax_parts(row: &[f32]) -> (f32, f32) {
 ///
 /// # Errors
 ///
-/// [`OpError::Len`] when `x`, `y` or `filters` is short; [`OpError::Invalid`] for a NaN `top_p`
+/// [`OpError::Len`] when `x`, `y` or `filters` is short; [`OpError::Param`] for a NaN `top_p`
 /// or a `min_p` outside `[0, 1]`.
 pub fn top_k_top_p(
     filters: &[Filter],
@@ -275,7 +275,7 @@ pub fn top_k_top_p(
         .iter()
         .any(|f| f.top_p.is_nan() || !(0.0..=1.0).contains(&f.min_p))
     {
-        return Err(OpError::Invalid {
+        return Err(OpError::Param {
             op: OP,
             what: "top_p must not be NaN and min_p must lie in [0, 1]",
         });
@@ -364,7 +364,7 @@ fn check_draw(op: &'static str, u: f32) -> Result<(), OpError> {
     if (0.0..1.0).contains(&u) {
         Ok(())
     } else {
-        Err(OpError::Invalid {
+        Err(OpError::Param {
             op,
             what: "a uniform draw must lie in [0, 1)",
         })
@@ -376,7 +376,7 @@ fn check_draw(op: &'static str, u: f32) -> Result<(), OpError> {
 ///
 /// # Errors
 ///
-/// [`OpError::Len`] when `x`, `u` or `out` is short; [`OpError::Invalid`] for a draw outside
+/// [`OpError::Len`] when `x`, `u` or `out` is short; [`OpError::Param`] for a draw outside
 /// `[0, 1)`.
 pub fn sample_seeded(
     vocab: usize,
@@ -454,7 +454,7 @@ pub struct Verdict {
 /// # Errors
 ///
 /// [`OpError::Len`] when `logits` is short, or `u` runs out before the rules finish;
-/// [`OpError::RowOutOfRange`] for a draft past `vocab`; [`OpError::Invalid`] for a draw outside
+/// [`OpError::RowOutOfRange`] for a draft past `vocab`; [`OpError::Param`] for a draw outside
 /// `[0, 1)`.
 pub fn verify_accept(
     mode: Acceptance,
