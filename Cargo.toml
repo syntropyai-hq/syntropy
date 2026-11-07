@@ -66,6 +66,13 @@ cudarc = { version = "0.19.10", default-features = false, features = ["std", "dr
 # Opens the CUDA driver library by its exact name (RFC-0040 §7.1, note 2026-10-31). The version
 # `cudarc` already brings in.
 libloading = "0.9.0"
+# The chat-template engine (ADR-0431, RFC-0050 §6.1), in `syntropy-text` only: Jinja templates
+# that models ship are rendered by it. Approved by the maintainers on 2026-11-07 (PROD-E3-T10).
+# Pinned exactly: a new version can change a rendering, so a bump is a reviewed change that reruns
+# the rendering goldens. No default features: `builtins` for the filters and tests templates use,
+# `fuel` for the instruction budget, `serde` to pass request values in, `std_collections` for
+# `namespace()` and maps.
+minijinja = { version = "=2.24.0", default-features = false, features = ["builtins", "fuel", "serde", "std_collections"] }
 # Structured events for async and other non-hot code (RFC-0053 §4.1). Hot threads never use it
 # (the `hot-threads` lint step). Without default features: no `attributes` proc macro.
 tracing = { version = "0.1.44", default-features = false, features = ["std"] }

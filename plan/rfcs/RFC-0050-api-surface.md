@@ -514,6 +514,14 @@ Templates render roles, turn boundaries and tool-call scaffolding with special t
 - **Output.** Tool-call and reasoning markers that are special tokens are parsed on token IDs (§6.2, §8.1), so text in the model's output cannot open a call either.
 - **Fuzzing.** The parser fuzz targets (Testing) inject every v1 family's control strings into user, system, tool-result and tool-description content, and check that the token stream holds no special-token ID inside any content span and that no injected marker yields a parsed call or a role change.
 
+*As built, 2026-11-07 (PROD-E3-T10, M0 rendering):*
+- **Engine.** `syntropy_text::template::ChatTemplate` loads a template into `minijinja` 2.24.0 with no default features beyond `builtins`, `fuel`, `serde` and `std_collections`. It renders with `trim_blocks`, `lstrip_blocks`, lenient undefined values, `raise_exception`, `strftime_now` from the request's date (never a clock), a `tojson` that writes as Python's `json.dumps` does, and the Python string methods templates use.
+- **Spans.** Each request value enters wrapped in Unicode noncharacters (U+FDD0, U+FDD1, with U+FDD2 escaping the value's own copies). The string helpers keep that marking through slicing, splitting and stripping. The rendered string is split back into spans, and a marker the template wrote itself is refused.
+- **Goldens.** Renderings match the reference engine byte for byte on recorded conversations: two templates written for the tests run in CI, and the M0 families' shipped template runs from the fixture cache.
+- **Bounds.** A render is bounded by fuel, by nesting depth and by output size. Macros, loop controls (`break`, `continue`), `include`, `import` and `extends` are not built in.
+- **Open gap.** Fuel bounds instructions, not memory: one instruction can build a large string, and the size limit refuses it only after it is built.
+- **Scope.** `messages` only. `tools` and documents come with PROD-E3-T01.
+
 ### 7. Structured output and grammar-constrained decoding
 
 #### 7.1 Constraint kinds

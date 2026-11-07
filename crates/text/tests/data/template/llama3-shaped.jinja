@@ -1,0 +1,24 @@
+{#- Written for Syntropy's tests (MIT OR Apache-2.0): a template laid out like the header-style
+    templates of Llama 3, using `bos_token`, `strftime_now`, `trim`, `upper` and `tojson`. -#}
+{{- bos_token }}
+{%- if messages[0].role == 'system' %}
+    {%- set system = messages[0].content | trim %}
+    {%- set rest = messages[1:] %}
+{%- else %}
+    {%- set system = '' %}
+    {%- set rest = messages %}
+{%- endif %}
+{{- '<|start_header_id|>system<|end_header_id|>\n\n' }}
+{{- 'Today Date: ' + strftime_now('%d %b %Y') + '\n' }}
+{{- 'Turns: ' + (rest | length) | string + '\n\n' }}
+{{- system + '<|eot_id|>' }}
+{%- for message in rest %}
+    {%- if loop.index0 % 2 == 0 and message.role != 'user' %}
+        {{- raise_exception('Conversation roles must alternate user/assistant/user/assistant/...') }}
+    {%- endif %}
+    {{- '<|start_header_id|>' + message.role + '<|end_header_id|>\n\n' + message.content | trim + '<|eot_id|>' }}
+{%- endfor %}
+{%- if add_generation_prompt %}
+    {{- '<|start_header_id|>assistant<|end_header_id|>\n\n' }}
+{%- endif %}
+{{- '' if rest | length < 3 else ('<!-- ' + {'last': rest[-1].content | upper, 'n': rest | length} | tojson + ' -->') }}
