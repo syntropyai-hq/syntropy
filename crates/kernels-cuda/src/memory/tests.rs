@@ -178,6 +178,16 @@ impl crate::stream::StreamDriver for MemFake {
     }
 }
 
+/// Nor any capture call; the capture module's fake answers `open`.
+impl crate::capture::CaptureDriver for MemFake {
+    fn capture_api(
+        &self,
+        _: &MemFakeContext,
+    ) -> Result<Arc<dyn crate::capture::CaptureApi>, crate::stream::StreamFault> {
+        Ok(Arc::new(crate::capture::fake::FakeCapture(Arc::default())))
+    }
+}
+
 fn opts() -> OpenOptions {
     OpenOptions {
         streams: syntropy_kernels::StreamPlan {

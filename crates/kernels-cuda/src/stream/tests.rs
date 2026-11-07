@@ -544,3 +544,46 @@ fn a_failed_restore_surfaces_unless_the_call_itself_failed() {
         "already current: no switch"
     );
 }
+
+/// Each driver call that enqueues work outside a capture is one submission on its stream: a
+/// batch counts its `cuMemcpyBatchAsync` calls, a loop its `cuMemcpyAsync` calls; work enqueued
+/// while the stream is being captured counts nothing (COMP-E4-T05).
+#[test]
+fn submissions_count_driver_calls_per_stream_outside_capture() {
+    for batched in [true, false] {
+        let shared = fake();
+        shared.lock().unwrap().batched = batched;
+        let d = open(&shared, &plan(1, 1, 0, 0));
+        let c = d.stream(StreamPriority::Compute).unwrap();
+        let x = d.stream(StreamPriority::CopyIn).unwrap();
+        let input = pairs(300);
+        let nonempty = input.iter().filter(|p| p.2 > 0).count() as u64;
+        // SAFETY: the fake never dereferences an address.
+        unsafe { d.copy_batch(&x, input.iter().map(|&p| Ok(p))) }.unwrap();
+        let want = if batched {
+            nonempty.div_ceil(BATCH_CHUNK as u64)
+        } else {
+            nonempty
+        };
+        assert_eq!(d.submissions(&x).unwrap(), want, "batched {batched}");
+        assert_eq!(d.submissions(&c).unwrap(), 0);
+
+        // SAFETY: as above.
+        unsafe { d.copy(&c, 0x1000, 0x2000, 64) }.unwrap();
+        assert_eq!(d.submissions(&c).unwrap(), 1);
+        d.set_capturing(&c, true).unwrap();
+        // SAFETY: as above.
+        unsafe { d.copy(&c, 0x1000, 0x2000, 64) }.unwrap();
+        // SAFETY: as above.
+        unsafe { d.copy_batch(&c, input.iter().map(|&p| Ok(p))) }.unwrap();
+        d.submitted(&c, 1);
+        assert_eq!(d.submissions(&c).unwrap(), 1, "captured work was counted");
+        d.set_capturing(&c, false).unwrap();
+        d.submitted(&c, 1);
+        assert_eq!(
+            d.submissions_by_stream(),
+            [(StreamPriority::Compute, 2), (StreamPriority::CopyIn, want)]
+        );
+        assert!(d.submissions(&Stream { handle: 0xdead }).is_err());
+    }
+}

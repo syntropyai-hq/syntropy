@@ -27,6 +27,7 @@
 
 pub mod abi;
 pub mod attn_handoff;
+pub mod capture;
 pub mod delta_ring;
 pub mod device;
 pub mod error;

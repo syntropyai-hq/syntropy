@@ -14,7 +14,12 @@
 //! `stream`, `event`, `record`, `wait`, `poll`, `elapsed`, `synchronize`, `copy` and `copy_batch`
 //! are [`stream`]'s (COMP-E4-T04), and `copy` takes its addresses from [`memory`].
 //!
-//! Capture and the kernels are later tasks (COMP-E4-T05 onwards); until then those methods return
+//! [`capture`] records streams into graphs in thread-local mode, instantiates them (on a helper
+//! thread if the runner wants), replays them, and runs `signal_host` and `wait_host` as stream
+//! memory operations on the doorbell pages (COMP-E4-T05). `OpenOptions::capture = false` is the
+//! `graph_capture` kill switch.
+//!
+//! The kernels are later tasks (COMP-E5-T01 onwards); until then `prepare` and `launch` return
 //! [`unsupported`].
 //!
 //! `unsafe` is allowed in this crate (RFC-0001 §4.2 rule 8). Every `unsafe` block and impl carries
@@ -28,6 +33,7 @@
     reason = "core::Error is RFC-0001 §5.12's struct, 344 B inline [measured: size_of, debug, x86-64 Linux, ce2044ae] (COMP-E13-T15)"
 )]
 
+pub mod capture;
 pub mod describe;
 pub mod driver;
 pub mod memory;
@@ -40,9 +46,12 @@ use syntropy_kernels::{
     AllocRequest, BufferSlice, CapturedGraph, DeviceBuffer, DeviceCtx, DeviceHealth, Error, Event,
     HostFlag, KernelProvider, LayoutVersion, MemoryDomain, OpArgs, OpCaps, OpKey, OpRegistry,
     OpenOptions, PreparedOp, ProviderBuild, ProviderDevice, ProviderId, Registration, ShapeSig,
-    Stream, StreamPriority, unsupported,
+    Stream, StreamPriority, WaitCmp, unsupported,
 };
 
+use crate::capture::{
+    CaptureDriver, DeviceGraphs, GraphStats, Instantiator, PendingGraph, ReadyGraph,
+};
 use crate::describe::{check_driver, describe, driver_text};
 use crate::driver::{Driver, Fault, RawDevice, SystemDriver};
 use crate::memory::{AllocHook, DeviceMemory, HostRanges, MemoryDriver};
@@ -140,8 +149,9 @@ impl<D: Driver> CudaProvider<D> {
 /// An open device: the driver's ordinal, its streams and events, and the retained primary
 /// context, released on drop.
 ///
-/// Fields drop in declaration order: the streams are drained and destroyed, with their events,
-/// before the context is released.
+/// Fields drop in declaration order: the streams are drained and destroyed, with their events;
+/// then the graph executables are destroyed; then the memory is freed; and only then is the
+/// context released.
 #[derive(Debug)]
 pub struct CudaDevice<C> {
     /// The driver's ordinal.
@@ -151,6 +161,9 @@ pub struct CudaDevice<C> {
     /// The device's streams and events. Declared first, so the streams are drained before the
     /// memory they copy is freed.
     pub streams: DeviceStreams,
+    /// The device's graph executables. Declared after the streams, which drain first, and
+    /// before the memory the graphs reference.
+    pub graphs: DeviceGraphs,
     /// What the tier manager allocated. Declared before the context, so whatever is left is
     /// freed before the context is released.
     pub(crate) memory: DeviceMemory,
@@ -178,9 +191,73 @@ where
     pub fn timing_event(&self, ctx: &DeviceCtx) -> Result<Event, Error> {
         self.device(ctx)?.streams.event(true)
     }
+
+    /// Ends the capture of `s` and returns the graph uninstantiated, for an [`Instantiator`] on
+    /// a helper thread (RFC-0012 §7.1). [`KernelProvider::end_capture`] is this, then
+    /// instantiation and [`adopt`](Self::adopt) on the calling thread.
+    pub fn end_capture_pending(&self, ctx: &DeviceCtx, s: &Stream) -> Result<PendingGraph, Error> {
+        let dev = self.device(ctx)?;
+        dev.graphs.end(&dev.streams, s)
+    }
+
+    /// An instantiator for the device's graphs. It is `Send` and holds its own retain of the
+    /// device's primary context.
+    pub fn instantiator(&self, ctx: &DeviceCtx) -> Result<Instantiator, Error> {
+        Ok(self.device(ctx)?.graphs.instantiator())
+    }
+
+    /// Takes an instantiated graph into the device, uploading it on `s` (one submission), and
+    /// returns its handle for `replay`. The dispatcher calls it between steps.
+    pub fn adopt(
+        &self,
+        ctx: &DeviceCtx,
+        s: &Stream,
+        g: ReadyGraph,
+    ) -> Result<CapturedGraph, Error> {
+        let dev = self.device(ctx)?;
+        dev.graphs.adopt(&dev.streams, s, g)
+    }
+
+    /// Destroys a graph: after an invalidating change (`kernels::capture::GraphChange`), or
+    /// when a re-instantiated graph has replaced it.
+    pub fn release_graph(&self, ctx: &DeviceCtx, g: CapturedGraph) -> Result<(), Error> {
+        self.device(ctx)?.graphs.release(g)
+    }
+
+    /// The device's graph instances and the device memory each took (RFC-0040 §4.4), for the
+    /// executor's report at `Warming`.
+    pub fn graph_stats(&self, ctx: &DeviceCtx) -> Result<GraphStats, Error> {
+        Ok(self.device(ctx)?.graphs.stats())
+    }
+
+    /// The submissions made on `s`: driver calls that enqueued work on it outside a capture
+    /// ([`stream`]'s module docs).
+    pub fn submissions(&self, ctx: &DeviceCtx, s: &Stream) -> Result<u64, Error> {
+        self.device(ctx)?.streams.submissions(s)
+    }
+
+    /// The doorbell flag at byte `offset` of `buf`, a `HostMapped` buffer of this device
+    /// ([`memory`]'s module docs).
+    pub fn host_flag(&self, ctx: &DeviceCtx, buf: &DeviceBuffer, offset: u64) -> Option<HostFlag> {
+        self.device(ctx).ok()?.memory.flag(buf.handle, offset)
+    }
+
+    /// The device address of `flag`.
+    fn flag_addr(dev: &CudaDevice<D::Context>, flag: HostFlag) -> Result<u64, Error> {
+        dev.memory.flag_addrs(flag).map(|(d, _)| d).ok_or_else(|| {
+            Error::new(
+                ErrorClass::Internal,
+                ErrorCode::new(syntropy_core::Domain::Kernels, 0),
+                format!(
+                    "no doorbell flag at page {} slot {} on this device",
+                    flag.page, flag.slot
+                ),
+            )
+        })
+    }
 }
 
-impl<D: StreamDriver + MemoryDriver> KernelProvider for CudaProvider<D>
+impl<D: StreamDriver + MemoryDriver + CaptureDriver> KernelProvider for CudaProvider<D>
 where
     D: Send + Sync,
     D::Context: 'static,
@@ -243,11 +320,18 @@ where
             .stream_api(&context)
             .map_err(|f| stream_error(&f))?;
         let streams = DeviceStreams::open(api, &opts.streams)?;
+        let graphs = DeviceGraphs::new(
+            self.driver
+                .capture_api(&context)
+                .map_err(|f| stream_error(&f))?,
+            opts.capture,
+        );
         let memory = self.driver.memory(&context).map_err(|f| driver_error(&f))?;
         Ok(DeviceCtx::new(CudaDevice {
             ordinal: claimed.raw.ordinal,
             record: claimed.record,
             streams,
+            graphs,
             memory: DeviceMemory::new(
                 memory,
                 self.hook.clone(),
@@ -311,8 +395,34 @@ where
         self.device(ctx)?.streams.wait(s, e)
     }
 
-    fn signal_host(&self, _: &DeviceCtx, _: &Stream, _: HostFlag, _: u32) -> Result<(), Error> {
-        Err(unsupported())
+    /// `cuStreamWriteValue32_v2` of `value` to the flag ([`capture`]); a memory-operation node
+    /// with that constant inside a capture.
+    fn signal_host(
+        &self,
+        ctx: &DeviceCtx,
+        s: &Stream,
+        flag: HostFlag,
+        value: u32,
+    ) -> Result<(), Error> {
+        let dev = self.device(ctx)?;
+        let addr = Self::flag_addr(dev, flag)?;
+        dev.graphs.signal(&dev.streams, s, addr, value)
+    }
+
+    /// `cuStreamWaitValue32_v2`, then `cuStreamWriteValue32_v2` of `reset` when given
+    /// ([`capture`]); memory-operation nodes with those constants inside a capture.
+    fn wait_host(
+        &self,
+        ctx: &DeviceCtx,
+        s: &Stream,
+        flag: HostFlag,
+        value: u32,
+        cmp: WaitCmp,
+        reset: Option<u32>,
+    ) -> Result<(), Error> {
+        let dev = self.device(ctx)?;
+        let addr = Self::flag_addr(dev, flag)?;
+        dev.graphs.wait(&dev.streams, s, addr, value, cmp, reset)
     }
 
     fn poll(&self, ctx: &DeviceCtx, e: &Event) -> Result<bool, Error> {
@@ -370,16 +480,25 @@ where
         Err(unsupported())
     }
 
-    fn begin_capture(&self, _: &DeviceCtx, _: &Stream) -> Result<(), Error> {
-        Err(unsupported())
+    /// A thread-local-mode capture of `s` ([`capture`]). `CaptureFailed`, `(Kernels, 7)`, when
+    /// the device was opened with capture off or the driver refuses.
+    fn begin_capture(&self, ctx: &DeviceCtx, s: &Stream) -> Result<(), Error> {
+        let dev = self.device(ctx)?;
+        dev.graphs.begin(&dev.streams, s)
     }
 
-    fn end_capture(&self, _: &DeviceCtx, _: &Stream) -> Result<CapturedGraph, Error> {
-        Err(unsupported())
+    /// Ends the capture, instantiates the graph on this thread and uploads it on `s`.
+    fn end_capture(&self, ctx: &DeviceCtx, s: &Stream) -> Result<CapturedGraph, Error> {
+        let dev = self.device(ctx)?;
+        let pending = dev.graphs.end(&dev.streams, s)?;
+        let ready = dev.graphs.instantiator().instantiate(pending)?;
+        dev.graphs.adopt(&dev.streams, s, ready)
     }
 
-    fn replay(&self, _: &DeviceCtx, _: &Stream, _: &CapturedGraph) -> Result<(), Error> {
-        Err(unsupported())
+    /// One `cuGraphLaunch`: one submission on `s`.
+    fn replay(&self, ctx: &DeviceCtx, s: &Stream, g: &CapturedGraph) -> Result<(), Error> {
+        let dev = self.device(ctx)?;
+        dev.graphs.replay(&dev.streams, s, g)
     }
 
     fn health(&self, _: &DeviceCtx) -> DeviceHealth {

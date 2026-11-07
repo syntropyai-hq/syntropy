@@ -41,10 +41,17 @@
 //! twice. Whatever the tier manager has not freed when the device closes is freed then, before
 //! the primary context is released.
 //!
+//! **Doorbell flags.** A [`HostFlag`] names a 4-byte slot of a 4 KiB
+//! doorbell page (RFC-0040 §4.2). The pages are the `HostMapped` buffers the tier manager
+//! allocates: each buffer's [`DOORBELL_PAGE`]-byte pages are numbered in allocation order on the
+//! device, from 0, and a number is never reused, so freeing one buffer renames no other flag.
+//! [`DeviceMemory::flag`] gives a buffer's flag at an offset, and [`DeviceMemory::flag_addrs`]
+//! gives a flag's device and host addresses for `signal_host` and `wait_host`.
+//!
 //! `free` and `unregister_host` run between steps: `cuMemFree_v2` may synchronise the device,
 //! and the stream rules of RFC-0040 §2.4 keep it off the hot path.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::ffi::{c_uint, c_void};
 use std::fmt;
@@ -58,7 +65,8 @@ use cudarc::driver::sys::{
 use syntropy_core::{Bytes, ErrorClass, ErrorCode, HostRegion};
 use syntropy_kernels::error::codes;
 use syntropy_kernels::{
-    AllocRequest, BufferSlice, DeviceBuffer, DeviceCtx, Error, MemKind, Registration, unsupported,
+    AllocRequest, BufferSlice, DeviceBuffer, DeviceCtx, Error, HostFlag, MemKind, Registration,
+    unsupported,
 };
 
 use crate::driver::{Driver, Fault, PrimaryContext, Status, SystemDriver};
@@ -67,6 +75,9 @@ use crate::{CudaDevice, CudaProvider};
 /// The alignment `cuMemAlloc_v2` gives every allocation: at least 256 bytes (CUDA C++
 /// Programming Guide, "Device Memory Accesses"). A larger `align` is met by padding the slab.
 pub const DEVICE_ALIGN: u64 = 256;
+
+/// The size of one doorbell page, whose 4-byte slots a [`HostFlag`] names (RFC-0040 §4.2).
+pub const DOORBELL_PAGE: u64 = 4096;
 
 /// The smallest host page the provider assumes: 4 KiB.
 pub const MIN_HOST_PAGE: u64 = 4096;
@@ -466,6 +477,10 @@ pub struct DeviceMemory {
     entries: RefCell<BTreeMap<u64, Entry>>,
     /// Registered and imported host ranges: start → (end, handle). They never overlap.
     ranges: RefCell<BTreeMap<u64, (u64, u64)>>,
+    /// Doorbell pages: number → (buffer handle, device address, host address).
+    doorbells: RefCell<BTreeMap<u16, (u64, u64, u64)>>,
+    /// The next doorbell page number; past `u16::MAX`, a buffer gets no page numbers.
+    next_page: Cell<u32>,
 }
 
 impl fmt::Debug for DeviceMemory {
@@ -521,7 +536,54 @@ impl DeviceMemory {
             hook,
             entries: RefCell::new(BTreeMap::new()),
             ranges: RefCell::new(BTreeMap::new()),
+            doorbells: RefCell::new(BTreeMap::new()),
+            next_page: Cell::new(0),
         }
+    }
+
+    /// Numbers the doorbell pages of the `HostMapped` buffer `handle`, `bytes` long at `device`
+    /// and `host`: one page per started [`DOORBELL_PAGE`] bytes, while numbers are left.
+    fn number_pages(&self, handle: u64, device: u64, host: u64, bytes: u64) {
+        let pages = bytes.div_ceil(DOORBELL_PAGE);
+        let first = u64::from(self.next_page.get());
+        let Some(end) = first.checked_add(pages).filter(|&e| e <= 1 << 16) else {
+            return;
+        };
+        let mut doorbells = self.doorbells.borrow_mut();
+        for (k, n) in (first..end).enumerate() {
+            let off = k as u64 * DOORBELL_PAGE;
+            // `n < 1 << 16`, checked above.
+            doorbells.insert(n as u16, (handle, device + off, host + off));
+        }
+        self.next_page.set(end as u32);
+    }
+
+    /// The flag of the `HostMapped` buffer `handle` at byte `offset`, a multiple of 4 inside
+    /// the buffer; `None` for any other handle or offset.
+    pub fn flag(&self, handle: u64, offset: u64) -> Option<HostFlag> {
+        let bytes = self.entries.borrow().get(&handle)?.bytes;
+        if !offset.is_multiple_of(4) || offset >= bytes {
+            return None;
+        }
+        let doorbells = self.doorbells.borrow();
+        let (&first, _) = doorbells.iter().find(|(_, d)| d.0 == handle)?;
+        let page = u16::try_from(u64::from(first) + offset / DOORBELL_PAGE).ok()?;
+        let slot = u16::try_from(offset % DOORBELL_PAGE / 4).ok()?;
+        Some(HostFlag { page, slot })
+    }
+
+    /// The device and host addresses of `flag`; `None` when no live doorbell page has its
+    /// number, or its slot is past the page or past the end of the buffer. One map lookup: no
+    /// allocation, so it runs on the step path.
+    pub fn flag_addrs(&self, flag: HostFlag) -> Option<(u64, u64)> {
+        let off = u64::from(flag.slot) * 4;
+        if off >= DOORBELL_PAGE {
+            return None;
+        }
+        let (handle, device, host) = *self.doorbells.borrow().get(&flag.page)?;
+        let entries = self.entries.borrow();
+        let e = entries.get(&handle)?;
+        (host + off + 4 <= e.host + e.bytes).then_some((device + off, host + off))
     }
 
     fn event(&self, e: MemEvent) {
@@ -628,6 +690,7 @@ impl DeviceMemory {
                     host,
                     bytes,
                 });
+                self.number_pages(handle, device, host, bytes);
                 self.event(MemEvent::Alloc {
                     kind: MemKind::HostMapped,
                     bytes: take,
@@ -738,7 +801,10 @@ impl DeviceMemory {
     fn release(&self, handle: u64, entry: Entry) {
         let _ = match entry.held {
             Held::Device => self.ops.device_free(entry.base),
-            Held::HostPages => self.ops.host_free(entry.base),
+            Held::HostPages => {
+                self.doorbells.borrow_mut().retain(|_, d| d.0 != handle);
+                self.ops.host_free(entry.base)
+            }
             Held::Imported | Held::Registered => {
                 self.ranges.borrow_mut().remove(&entry.host);
                 self.host_ranges.release(entry.host)
