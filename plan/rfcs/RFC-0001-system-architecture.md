@@ -3240,3 +3240,11 @@ COMP-E3-T03 found that two NEON intrinsic families the CPU kernels use do not co
 | Change | Sections touched | Reason |
 |---|---|---|
 | `smmla` (I8MM) and `fcvtl` (F16 to F32) are written as one-instruction `asm!` blocks in `#[target_feature]` functions, not `std::arch` intrinsics | RFC-0040 §7.3 and ADR-0402 item 1 (dated notes) | on 1.99.1 `vmmlaq_s32` is unstable (`stdarch_neon_i8mm`, E0658), and stable Rust has no F16 vector type for `vcvt_f32_f16`. Release builds use stable only (ADR-0001 decision 1). ADR-0402 item 5's re-check moves them to `std::arch` once they stabilise |
+
+### 18.59 Doorbell pages come from the tier manager (2026-11-07)
+
+COMP-E4-T05 resolved a conflict between RFC-0040 §4.2 and §9.1 here. The maintainers accepted the resolution on its PR.
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| A `HostFlag { page, slot }` addresses the tier manager's `HostMapped` buffers, with their 4 KiB pages numbered in allocation order and never reused; the provider no longer allocates doorbell pages at `open` | RFC-0040 §4.2 (dated note) | §9.1 makes the tier manager the only allocator of device and pinned memory, and the CUDA provider's memory module follows it |

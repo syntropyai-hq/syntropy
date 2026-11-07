@@ -363,6 +363,15 @@ COMP-E3-T03 (M0a) asks for op conformance "for every scheme and level", and `X86
 |---|---|---|---|
 | COMP-E3-T03's criterion keeps op conformance at `X86V3`, `Arm82Dot` and `Arm86I8mm` (QUAL-E4-T06); the `X86V4` leg is QUAL-E4-T07's, on the lab AVX-512 host | COMP-E3-T03, QUAL-E4-T07 | R9 | a criterion must run on hardware the task can reach when it closes. No M0a host has AVX-512, and QUAL-E4-T07 already runs the CPU provider's conformance on the AVX-512 host and depends on COMP-E3-T03 through QUAL-E4-T06 |
 
+## COMP-E4-T05: the real-step count and the runner reports move to the executor (2026-11-07)
+
+COMP-E4-T05 builds CUDA graph capture before any kernel exists, so its decode step is synthetic: copies and memory operations. It also has no runner states to report in. Its change (#2064) gives the provider's half: the submission counter, `graph_stats` and `CaptureFailed` mapped to `DegradeFlags::CAPTURE_OFF`. The maintainers accepted these moves on that PR.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| The one-submission count on a real decode step moves to PLC-E7-T03, which already owns one replay submission per device per decode step | COMP-E4-T05, PLC-E7-T03 | R9 | a real step needs the kernels and the step loop. PLC-E7-T03 already depends on COMP-E4-T05, so the graph stays acyclic and within M0a |
+| The report at `Warming` and `Ready { degraded }` after `CaptureFailed` move to PLC-E7-T04, which owns the capture policy and the degraded report | COMP-E4-T05, PLC-E7-T04 | R9 | the runner states are the executor's. PLC-E7-T04 already depends on COMP-E4-T05 |
+
 ## COMP-E17-T03: RFC-0060 corpus leg moves to the corpus import (2026-10-31)
 
 COMP-E17-T03 (M0a) asked for token-exact GGUF conversions "on the tokenizer corpus", which is RFC-0060's corpus. QUAL-E5-T22 publishes that corpus and its token streams, and it depends on COMP-E17-T03, so an edge from COMP-E17-T03 would make a cycle. COMP-E17-T03 keeps the check on a project-written corpus in its own crate, run on the publisher's GGUF files of both M0 nightly checkpoints. The rerun on the published corpus goes with the import. The `llama` family's M0 checkpoint is Qwen3-0.6B (RFC-0060 §12.2), and Llama-3.2-1B is lab-only, so the criterion's "M0 families" needs no gated file. Review of #2054.
