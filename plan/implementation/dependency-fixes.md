@@ -363,6 +363,14 @@ COMP-E3-T03 (M0a) asks for op conformance "for every scheme and level", and `X86
 |---|---|---|---|
 | COMP-E3-T03's criterion keeps op conformance at `X86V3`, `Arm82Dot` and `Arm86I8mm` (QUAL-E4-T06); the `X86V4` leg is QUAL-E4-T07's, on the lab AVX-512 host | COMP-E3-T03, QUAL-E4-T07 | R9 | a criterion must run on hardware the task can reach when it closes. No M0a host has AVX-512, and QUAL-E4-T07 already runs the CPU provider's conformance on the AVX-512 host and depends on COMP-E3-T03 through QUAL-E4-T06 |
 
+## COMP-E3-T09: the later M0 CPU ops' thread-count check moves to QUAL-E4-T06 (2026-11-07)
+
+COMP-E3-T09 (M0a) asks for outputs "bit-identical for 1, 2, 4 and all cores on every op used by the M0 families", and it depends only on COMP-E3-T03. When it lands, the CPU provider has one op, `Gemv`. The other M0 CPU ops come with COMP-E3-T05, COMP-E3-T08, COMP-E3-T21 and COMP-E3-T22, which COMP-E3-T09 does not reach. Edges from COMP-E3-T09 to them would hold the fake provider (QUAL-E3-T12) behind every CPU kernel. COMP-E3-T09 keeps the check for `Gemv`, builds the thread-count harness, and makes a device opened `deterministic` refuse a kernel that does not declare itself deterministic. QUAL-E4-T06 (M0a) already depends on every CPU M0 op task and runs their conformance, so it runs each of those ops under the harness. This is a plan correction under R9. The lead approved it under the maintainer's standing instruction, and it is listed here for the maintainers' sign-off on the PR.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| COMP-E3-T09's criterion covers the ops the CPU provider has when it lands (`Gemv`) and adds the `deterministic` refusal; QUAL-E4-T06 gains "every CPU op those families use gives bit-identical outputs on 1, 2, 4 and all cores under COMP-E3-T09's thread-count harness" and the edge QUAL-E4-T06 → COMP-E3-T09 | COMP-E3-T09, QUAL-E4-T06 | R9 | the criterion names ops from tasks COMP-E3-T09 does not reach. QUAL-E4-T06 depends on all of them, and COMP-E3-T09 depends only on COMP-E3-T03, so the new edge makes no cycle. Both are M0a |
+
 ## COMP-E4-T05: the real-step count and the runner reports move to the executor (2026-11-07)
 
 COMP-E4-T05 builds CUDA graph capture before any kernel exists, so its decode step is synthetic: copies and memory operations. It also has no runner states to report in. Its change (#2064) gives the provider's half: the submission counter, `graph_stats` and `CaptureFailed` mapped to `DegradeFlags::CAPTURE_OFF`. The maintainers accepted these moves on that PR.
@@ -948,6 +956,15 @@ TIER-E1-T02 (M0a) asked `plan_arenas` to make RFC-0020 §7.3's multi-site layout
 |---|---|---|---|
 | Moved: the accepted-layouts argument, the multi-site layout check, and the criterion "a fixture census giving an MoE expert a CPU-only layout under a GPU+CPU miss split fails the multi-site layout check, and `plan_arenas` returns `Unsupported`" → TIER-E1-T12 (M1a) | TIER-E1-T02, TIER-E1-T12 | R9 | the check reads COMP-E2-T13's readers, COMP-E11-T05's layout choice and PLC-E6-T15's marking, all M1a; TIER-E1-T02 → COMP-E2-T13 would be a cycle |
 | Dropped TIER-E1-T02 → COMP-E1-T02 (`LayoutVersion`, `OpCaps::layout`); added TIER-E1-T12 → COMP-E1-T02 | TIER-E1-T02, TIER-E1-T12 | R9 | only the moved check uses the layout types; TIER-E1-T12's moved criterion now names them |
+
+## TIER-E1-T07: the load-and-decode run and the digest record move out (2026-11-07)
+
+TIER-E1-T07 (M0a) builds the `Vram` and `HostPageable` arenas and measures the context reserve. Two of its criteria use work it does not reach. Decoding needs the CUDA decode kernels (COMP-E5-T01, COMP-E5-T05, COMP-E5-T26) and the loader that fills arenas from the pack (RFC-0021 §8). `ResidencySummary`, the digest, is TIER-E1-T09's (M1a), which runs after it. Its change (#2068) records the reserve in its arena build's report and uses it in the RFC-0020 §8.1 check. The maintainers accepted these moves on 2026-11-07.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| "A dense M0 model loads entirely through arenas and decodes on a CUDA device" moves to COMP-E4-T21, which already runs that leg on R-ADA and now owns the dev-GPU run too | TIER-E1-T07, COMP-E4-T21 | R9 | COMP-E4-T21 depends on TIER-E1-T07, COMP-E5-T01, COMP-E5-T26 and PLC-E8-T01, whose end-to-end run needs the decode path and the loader |
+| "The measured context reserve is recorded in the digest" moves to TIER-E1-T09, with the edge TIER-E1-T09 → TIER-E1-T07 | TIER-E1-T07, TIER-E1-T09 | R9 | TIER-E1-T09 builds the digest. TIER-E1-T07 is M0a and depends on nothing in M1a, so the edge makes no cycle |
 
 ## TIER-E5-T08's conformance suite (2026-10-23)
 

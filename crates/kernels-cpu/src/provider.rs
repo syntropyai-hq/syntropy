@@ -287,7 +287,12 @@ impl KernelProvider for CpuProvider {
         for (kind, kernel) in &self.extra {
             table.insert(*kind, *kernel);
         }
-        let device = CpuDevice::new(node, table, Doorbells::new(opts.doorbell_slots));
+        let device = CpuDevice::new(
+            node,
+            table,
+            opts.deterministic,
+            Doorbells::new(opts.doorbell_slots),
+        );
         let plan = opts.streams;
         for (count, prio) in [
             (plan.compute, StreamPriority::Compute),
@@ -575,10 +580,28 @@ impl KernelProvider for CpuProvider {
         device.push(s.handle, Item::CopyRef { src, dst })
     }
 
+    /// Finds the op's kernel at this device's level and plans it. On a device opened
+    /// deterministic, a kernel whose capabilities at `op` and `shape` are absent or not
+    /// `deterministic` is refused with `OpUnsupported`, class `Unsupported`.
     fn prepare(&self, ctx: &DeviceCtx, op: &OpKey, shape: &ShapeSig) -> Result<PreparedOp, Error> {
         let device = self.live(ctx)?;
         let kernel = device.table.get(&op.op).ok_or_else(unsupported)?;
         let plan = (kernel.plan)(op, shape).ok_or_else(unsupported)?;
+        // A device opened deterministic takes only a kernel that declares a fixed reduction
+        // order at this key and shape. A kernel that declares nothing is refused: it fails
+        // closed rather than run a variant nobody vouched for (RFC-0040 §3.3; ADR-0019
+        // decision 8).
+        if device.deterministic && !(kernel.caps)(op, shape).is_some_and(|c| c.deterministic) {
+            return Err(Error::new(
+                ErrorClass::Unsupported,
+                syntropy_kernels::error::codes::OP_UNSUPPORTED,
+                format!(
+                    "{:?} has no deterministic variant at this shape, and the device was opened \
+                     deterministic",
+                    op.op
+                ),
+            ));
+        }
         let mut prepared = device.prepared.borrow_mut();
         prepared.push((kernel, plan));
         Ok(PreparedOp::with_handle(
@@ -687,4 +710,75 @@ fn alloc_failed(what: String) -> Error {
         syntropy_kernels::error::codes::ALLOC_FAILED,
         format!("cannot allocate {what}"),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use smallvec::smallvec;
+    use syntropy_core::{DType, NodeId, QuantScheme};
+    use syntropy_kernels::{PowerHint, ShapeClass, StreamPlan};
+
+    use super::*;
+
+    /// The `Gemv` kernel with capabilities that say it is not deterministic.
+    fn not_deterministic() -> Kernel {
+        let gemv = crate::gemv::entry::kernel(syntropy_kernels::CpuIsa::X86V2);
+        Kernel {
+            caps: |key, shape| {
+                let caps =
+                    (crate::gemv::entry::kernel(syntropy_kernels::CpuIsa::X86V2).caps)(key, shape)?;
+                Some(OpCaps {
+                    deterministic: false,
+                    ..caps
+                })
+            },
+            ..gemv
+        }
+    }
+
+    fn open(p: &CpuProvider, deterministic: bool) -> DeviceCtx {
+        p.open(
+            DeviceId {
+                node: NodeId([5; 32]),
+                ordinal: 0,
+            },
+            &OpenOptions {
+                streams: StreamPlan {
+                    compute: 0,
+                    copy_in: 0,
+                    copy_out: 0,
+                    collective: 0,
+                },
+                doorbell_slots: 1,
+                capture: false,
+                deterministic,
+                power: PowerHint::Mains,
+            },
+        )
+        .expect("opens")
+    }
+
+    #[test]
+    fn prepare_refuses_a_declared_non_deterministic_kernel_only_on_a_deterministic_device() {
+        let mut p = CpuProvider::new(KillSwitches::NONE);
+        p.extra.push((OpKind::Gemv, not_deterministic()));
+        let key = OpKey {
+            op: OpKind::Gemv,
+            schemes: smallvec![QuantScheme::Plain(DType::F16)],
+            layout: LayoutVersion::SOURCE,
+            variant: 0,
+        };
+        let shape = ShapeSig {
+            class: ShapeClass::Decode,
+            rows: 1,
+            dims: smallvec![8, 64],
+        };
+        let ctx = open(&p, true);
+        assert!(!p.query(&ctx, &key, &shape).expect("caps").deterministic);
+        let e = p.prepare(&ctx, &key, &shape).unwrap_err();
+        assert_eq!(e.class, ErrorClass::Unsupported);
+        assert_eq!(e.code, syntropy_kernels::error::codes::OP_UNSUPPORTED);
+        let ctx = open(&p, false);
+        p.prepare(&ctx, &key, &shape).expect("prepares");
+    }
 }
