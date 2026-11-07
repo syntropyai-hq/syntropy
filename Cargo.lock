@@ -3920,10 +3920,12 @@ dependencies = [
  "proptest",
  "serde",
  "serde_json",
+ "sha2",
  "syntropy-core",
  "syntropy-manifest",
  "syntropy-obs",
  "syntropy-store",
+ "syntropy-text",
  "toml",
 ]
 

@@ -379,6 +379,14 @@ COMP-E17-T04 resolves a `ChatFormat` marker to `Marker::Special(id)` when its te
 |---|---|---|---|
 | COMP-E17-T13's criterion and fuzz target widen from "every special token" to every added token, special or not | COMP-E17-T13 | R9 | the markers its injection cases cover are COMP-E17-T04's, which T13 already depends on; both are M0a, so the graph does not change. Proposed, for the maintainers to confirm |
 
+## QUAL-E12-T05: the `long` items move to QUAL-E12-T20 (2026-11-07)
+
+QUAL-E12-T05 (M0a) builds `bench-prompts-v1` from the parity corpus sources, and `long` is one of its categories. `long`'s only source is PG-19. A PG-19 book may be used only after the death-year rule, which reads the Project Gutenberg catalogue archive and Wikidata, and QUAL-E5-T22 implements that rule in the corpus import. QUAL-E12-T05 does not depend on QUAL-E5-T22, and an edge would hold the prompt set, and the benchmark driver (QUAL-E12-T02) behind it, until the import lands. QUAL-E12-T05 ships `chat`, `code` and `agent` items. Its prompt construction already takes `long` items. A new task, QUAL-E12-T20, adds the `long` items from the import's kept books. Until then, a long prompt is built by cycling through a category's items. This is a plan correction under R9. The lead approved it under the maintainer's standing instruction, and it is listed here for the maintainers' sign-off on the PR.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| QUAL-E12-T05's set ships `chat`, `code` and `agent` items; new QUAL-E12-T20 (M0b) → QUAL-E12-T05, QUAL-E5-T22 adds the `long` items | QUAL-E12-T05, QUAL-E12-T20 | R9 | the `long` items need the death-year rule that only QUAL-E5-T22 implements. QUAL-E12-T20 is M0b, after both of its dependencies, and nothing depends on it yet |
+
 ## PLC-E1-T02 split (2026-10-21)
 
 | Change | Tasks | Rule | Reason |
