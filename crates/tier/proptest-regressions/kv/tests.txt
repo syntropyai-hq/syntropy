@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc d5e8bfb51e2f127616af9977b58884a9174390bca17ca23b4f1c67dc4103e829 # shrinks to ops = [Open, Open, Append { seq: 0, n: 51 }, Truncate { seq: 2, back: 16 }, Open, Fork { seq: 0, back: 0 }, Fork { seq: 0, back: 0 }, Append { seq: 5, n: 52 }, Open, Append { seq: 0, n: 53 }, Append { seq: 0, n: 79 }, Append { seq: 6, n: 38 }, Release { seq: 1 }, Fork { seq: 0, back: 1 }, Truncate { seq: 5, back: 29 }]

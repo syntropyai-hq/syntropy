@@ -54,6 +54,8 @@ pub struct RouteRecord {
 pub enum StatRecord {
     /// One pass's routing for one MoE layer.
     Route(RouteRecord),
+    /// One page class's KV bytes read and written over one step (RFC-0022 §5.4; TIER-E6-T02).
+    KvBytes(crate::kv::KvBytesRecord),
 }
 
 /// Why a record was dropped. Every drop is also counted in [`StatsProducer::dropped`].
@@ -176,6 +178,22 @@ impl StatsProducer {
                 self.spare = Some(r.route);
                 Err(self.drop(StatDrop::Full))
             }
+            // The record pushed above is a routing record, so the ring hands back that one.
+            Err(PushError::Full(_)) => Err(self.drop(StatDrop::Full)),
+            Err(PushError::Closed(_)) => Err(self.drop(StatDrop::Closed)),
+        }
+    }
+
+    /// Pushes one page class's KV bytes for one step. The record is fixed-size, so it needs
+    /// no buffer from the free ring. Never blocks and never allocates.
+    ///
+    /// # Errors
+    ///
+    /// [`StatDrop`] when the record was dropped; the drop is counted.
+    pub fn push_kv_bytes(&mut self, record: crate::kv::KvBytesRecord) -> Result<(), StatDrop> {
+        match self.records.push(StatRecord::KvBytes(record)) {
+            Ok(()) => Ok(()),
+            Err(PushError::Full(_)) => Err(self.drop(StatDrop::Full)),
             Err(PushError::Closed(_)) => Err(self.drop(StatDrop::Closed)),
         }
     }
@@ -222,6 +240,7 @@ impl StatsConsumer {
                 StatRecord::Route(r) => {
                     let _ = self.free.push(r.route);
                 }
+                StatRecord::KvBytes(_) => {}
             }
         }
         n
@@ -258,6 +277,7 @@ mod tests {
         let mut out = Vec::new();
         rx.drain(|r| match r {
             StatRecord::Route(r) => out.push(r.clone()),
+            StatRecord::KvBytes(_) => {}
         });
         out
     }
