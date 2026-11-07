@@ -24,6 +24,10 @@
 //! - [`gemv`]: decode GEMV over GGUF `Q4_K`, `Q8_0`, `Q4_0`, `BF16` and `F16` weights at each
 //!   level, and the `Gemv` op every dispatch table holds (COMP-E3-T03).
 //!
+//! - [`moe`]: expert misses, `MoeGrouped` at the `CPU` site over GGUF `Q4_K` and `Q8_0`
+//!   experts: tasks per (expert, output-row block), one weight pass per expert for all its
+//!   rows, F32 outputs per (row, rank) (COMP-E3-T05).
+//!
 //! The other kernels come with later tasks.
 //!
 //! `unsafe` is allowed in this crate (RFC-0001 §4.2 rule 8). Every `unsafe` block and impl carries
@@ -45,6 +49,7 @@ pub mod doorbell;
 pub mod gemv;
 pub mod isa;
 pub mod launch;
+pub mod moe;
 pub mod provider;
 pub mod sme2;
 pub mod stream;
