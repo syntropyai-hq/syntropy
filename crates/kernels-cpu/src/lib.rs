@@ -22,7 +22,10 @@
 //!   SME2 host holds (ADR-0402 item 3).
 //!
 //! - [`gemv`]: decode GEMV over GGUF `Q4_K`, `Q8_0`, `Q4_0`, `BF16` and `F16` weights at each
-//!   level, and the `Gemv` op every dispatch table holds (COMP-E3-T03).
+//!   level, and the `Gemv` op every dispatch table holds (COMP-E3-T03), which also serves
+//!   `Gemm` and `Logits` (COMP-E3-T22).
+//! - [`ops`]: the other CPU ops the M0 families use: `GateUpAct` with SiLU, `RowGather`, `Add`,
+//!   `Mul` and `Convert`, at every level (COMP-E3-T22).
 //!
 //! The other kernels come with later tasks.
 //!
@@ -45,6 +48,7 @@ pub mod doorbell;
 pub mod gemv;
 pub mod isa;
 pub mod launch;
+pub mod ops;
 pub mod provider;
 pub mod sme2;
 pub mod stream;

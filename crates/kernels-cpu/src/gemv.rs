@@ -72,7 +72,7 @@ mod arm;
 mod x86;
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 pub use act::{ActView, Activations, quantize_into, workspace_bytes};
 
@@ -234,6 +234,21 @@ impl<'a> Weights<'a> {
     #[must_use]
     pub fn row_bytes(&self) -> usize {
         self.row_bytes
+    }
+
+    /// Output rows `rows` as a matrix of their own. The value of each row's output does not
+    /// change: it depends on its own weights and `k_in` only (module docs).
+    ///
+    /// # Panics
+    ///
+    /// When `rows` ends past [`n_out`](Self::n_out).
+    #[must_use]
+    pub fn rows(&self, rows: Range<usize>) -> Weights<'a> {
+        Weights {
+            bytes: &self.bytes[rows.start * self.row_bytes..rows.end * self.row_bytes],
+            n_out: rows.len(),
+            ..*self
+        }
     }
 
     /// The bytes of output row `o`.

@@ -45,6 +45,9 @@ pub struct Plan {
     pub dims: [u32; 6],
     /// The weight scheme, `OpKey::schemes[0]`, for ops with weights.
     pub weight: Option<QuantScheme>,
+    /// The output's element type, for ops whose key fixes one other than F32: `Convert`'s
+    /// target.
+    pub out: Option<DType>,
     /// The scratch every launch must bind (RFC-0040 §5.3).
     pub workspace: Bytes,
 }
@@ -61,6 +64,7 @@ impl Plan {
             rows: shape.rows,
             dims,
             weight: None,
+            out: None,
             workspace: Bytes(0),
         }
     }

@@ -33,10 +33,10 @@ use super::act::ActKind;
 use super::*;
 
 /// splitmix64: a seeded stream for the generators.
-struct Rng(u64);
+pub(crate) struct Rng(pub(crate) u64);
 
 impl Rng {
-    fn next(&mut self) -> u64 {
+    pub(crate) fn next(&mut self) -> u64 {
         self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
         let mut z = self.0;
         z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
@@ -44,17 +44,17 @@ impl Rng {
         z ^ (z >> 31)
     }
 
-    fn byte(&mut self) -> u8 {
+    pub(crate) fn byte(&mut self) -> u8 {
         self.next() as u8
     }
 
     /// Uniform in `[-1, 1)`.
-    fn unit(&mut self) -> f32 {
+    pub(crate) fn unit(&mut self) -> f32 {
         ((self.next() >> 40) as f32 / (1u64 << 24) as f32) * 2.0 - 1.0
     }
 
     /// A value with a spread of magnitudes: `unit · 2^e`, `e` in `[-6, 6]`.
-    fn spread(&mut self) -> f32 {
+    pub(crate) fn spread(&mut self) -> f32 {
         let e = (self.next() % 13) as i32 - 6;
         self.unit() * 2f32.powi(e)
     }
@@ -67,7 +67,7 @@ impl Rng {
     }
 }
 
-const TYPES: [WeightType; 5] = [
+pub(crate) const TYPES: [WeightType; 5] = [
     WeightType::F16,
     WeightType::Bf16,
     WeightType::Q8_0,
@@ -76,7 +76,7 @@ const TYPES: [WeightType; 5] = [
 ];
 
 /// `n_out` random rows of `k` weights of `ty`, with finite scales and values.
-fn weights(rng: &mut Rng, ty: WeightType, n_out: usize, k: usize) -> Vec<u8> {
+pub(crate) fn weights(rng: &mut Rng, ty: WeightType, n_out: usize, k: usize) -> Vec<u8> {
     let blocks = n_out * k / ty.block_elems();
     let mut out = Vec::with_capacity(blocks * ty.block_bytes());
     for _ in 0..blocks {
@@ -102,12 +102,12 @@ fn weights(rng: &mut Rng, ty: WeightType, n_out: usize, k: usize) -> Vec<u8> {
 }
 
 /// `rows · k` activations with a spread of magnitudes.
-fn activations(rng: &mut Rng, rows: usize, k: usize) -> Vec<f32> {
+pub(crate) fn activations(rng: &mut Rng, rows: usize, k: usize) -> Vec<f32> {
     (0..rows * k).map(|_| rng.spread()).collect()
 }
 
 /// Every level this host can run, the portable one first.
-fn levels() -> Vec<Level> {
+pub(crate) fn levels() -> Vec<Level> {
     let mut v = vec![Level::Portable];
     #[cfg(target_arch = "x86_64")]
     for isa in [CpuIsa::X86V3, CpuIsa::X86V4] {
@@ -127,7 +127,7 @@ fn levels() -> Vec<Level> {
 }
 
 /// Runs one GEMV over every output row at `level`, into a fresh `y`.
-fn run(
+pub(crate) fn run(
     level: Level,
     ty: WeightType,
     w: &[u8],
@@ -145,11 +145,11 @@ fn run(
 }
 
 /// Bit-equal, or both NaN.
-fn same(a: f32, b: f32) -> bool {
+pub(crate) fn same(a: f32, b: f32) -> bool {
     a.to_bits() == b.to_bits() || (a.is_nan() && b.is_nan())
 }
 
-fn assert_same(got: &[f32], want: &[f32], what: &str) {
+pub(crate) fn assert_same(got: &[f32], want: &[f32], what: &str) {
     assert_eq!(got.len(), want.len(), "{what}: lengths");
     for (i, (&g, &w)) in got.iter().zip(want).enumerate() {
         assert!(
@@ -162,7 +162,7 @@ fn assert_same(got: &[f32], want: &[f32], what: &str) {
 }
 
 /// The values the product multiplies, per activation row: `x` as the kernel quantised it.
-fn seen(ty: WeightType, x: &[f32], k: usize) -> Vec<f32> {
+pub(crate) fn seen(ty: WeightType, x: &[f32], k: usize) -> Vec<f32> {
     x.chunks_exact(k.max(1))
         .flat_map(|row| match ty.act() {
             ActKind::F32 => row.to_vec(),
@@ -214,7 +214,7 @@ fn exact_weights(ty: WeightType, w: &[u8], k: usize) -> Vec<(f64, f64)> {
 
 /// Checks the kernel's output `y` and `reference::gemv`'s against the exact F64 value and each
 /// other, within the bounds of the module docs.
-fn check_against_reference(
+pub(crate) fn check_against_reference(
     ty: WeightType,
     w: &[u8],
     n_out: usize,
@@ -273,7 +273,7 @@ fn check_against_reference(
 
 /// Widths for `ty`: whole blocks, and for the float types widths that leave a partial lane
 /// group.
-fn widths(ty: WeightType) -> Vec<usize> {
+pub(crate) fn widths(ty: WeightType) -> Vec<usize> {
     match ty {
         WeightType::F16 | WeightType::Bf16 => vec![1, 7, 31, 32, 33, 64, 100, 256],
         WeightType::Q4K => vec![256, 512, 768],
