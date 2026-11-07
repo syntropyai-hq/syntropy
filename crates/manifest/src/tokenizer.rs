@@ -47,8 +47,11 @@ use syntropy_core::{Blake3, ErrorClass};
 
 use crate::safetensors::json::Json;
 
+mod added;
 #[cfg(test)]
 mod tests;
+
+pub use added::AddedToken;
 
 /// The tokenizer side files' names (RFC-0041 §2.2).
 pub const TOKENIZER_JSON: &str = "tokenizer.json";

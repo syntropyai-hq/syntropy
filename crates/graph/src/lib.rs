@@ -10,7 +10,8 @@
 //! interpreter's contract with its driver ([`reference`](mod@reference), RFC-0060 §4.1), the
 //! family trait, its metadata view, the static registry and the frozen tag list ([`families`],
 //! RFC-0043 §5.1), the `llama` family module ([`families::llama`], RFC-0043 §5.5), the fixture
-//! spec a family supplies ([`spec`], RFC-0043 §9.1), the census classification engine
+//! spec a family supplies ([`spec`], RFC-0043 §9.1), each family's chat format with its markers
+//! resolved against the tokenizer ([`chat`], RFC-0043 §8.4), the census classification engine
 //! ([`classify`], RFC-0043 §4), and the census builder ([`census`], RFC-0041 §3), which turns a
 //! checkpoint's headers into its manifest. The other blocks and family modules, segments,
 //! sharding, tokenizers and the interpreter itself come with later tasks.
@@ -24,6 +25,7 @@
 pub mod blocks;
 pub mod boundary;
 pub mod census;
+pub mod chat;
 pub mod classify;
 pub mod families;
 pub mod ir;

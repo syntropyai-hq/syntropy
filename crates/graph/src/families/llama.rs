@@ -30,7 +30,10 @@
 //! - **KV.** One `PerToken` entry of `2 · n_kv_heads · d_head` elements per layer, in the dtype
 //!   RFC-0042 §4.2's rule gives for the source (COMP-E13-T06).
 //!
-//! The chat format is COMP-E17-T04's, which adds the `ChatFormat` type. [`fixture_spec`] gives
+//! [`chat_format`] resolves a checkpoint's `ChatFormat` under [`chat::LLAMA`]: tagged JSON or a
+//! bare JSON list, with reasoning markers where the template declares them (RFC-0043 §8.4).
+//! The trait method that returns it joins [`Family`] in its own change, because the trait's
+//! file is code-owned. [`fixture_spec`] gives
 //! the `FamilySpec` the synthetic fixtures are generated from (RFC-0043 §9.1); the trait method
 //! that returns it joins [`Family`] with the generator (QUAL-E7-T01).
 
@@ -40,11 +43,13 @@ use syntropy_kernels::{GatedAct, RopeKind};
 use syntropy_manifest::config::ConfigFile;
 use syntropy_manifest::hparams::{HParamValue, HyperParams};
 use syntropy_manifest::kv::{KvDTypeRule, KvFormula, KvSource, LayerKv};
+use syntropy_manifest::tokenizer::TokenizerSpec;
 
 use super::{Family, FamilyError, Key, MetaView};
 use crate::blocks::{
     DenseFfnParams, EmbedParams, GqaParams, LmHeadParams, QkvLayout, RopeParams, RopeScaling,
 };
+use crate::chat::{self, ChatFormat, ChatFormatError};
 use crate::classify::{
     BlockSel, ClassRule, ClassSel, Classification, DimOrder, Matcher, RuleTable, ShapeDim,
 };
@@ -1127,6 +1132,16 @@ static SPEC: FamilySpec = FamilySpec {
 #[must_use]
 pub fn fixture_spec() -> &'static FamilySpec {
     &SPEC
+}
+
+/// The chat format of a `llama` checkpoint whose tokenizer `spec` describes (RFC-0043 §8.4):
+/// [`chat::resolve`] under [`chat::LLAMA`].
+///
+/// # Errors
+///
+/// [`ChatFormatError`] as [`chat::resolve`] gives it.
+pub fn chat_format(spec: &TokenizerSpec) -> Result<ChatFormat, ChatFormatError> {
+    chat::resolve(&chat::LLAMA, spec)
 }
 
 #[cfg(test)]
