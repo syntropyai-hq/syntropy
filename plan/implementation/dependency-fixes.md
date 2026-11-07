@@ -371,6 +371,15 @@ COMP-E3-T09 (M0a) asks for outputs "bit-identical for 1, 2, 4 and all cores on e
 |---|---|---|---|
 | COMP-E3-T09's criterion covers the ops the CPU provider has when it lands (`Gemv`) and adds the `deterministic` refusal; QUAL-E4-T06 gains "every CPU op those families use gives bit-identical outputs on 1, 2, 4 and all cores under COMP-E3-T09's thread-count harness" and the edge QUAL-E4-T06 → COMP-E3-T09 | COMP-E3-T09, QUAL-E4-T06 | R9 | the criterion names ops from tasks COMP-E3-T09 does not reach. QUAL-E4-T06 depends on all of them, and COMP-E3-T09 depends only on COMP-E3-T03, so the new edge makes no cycle. Both are M0a |
 
+## COMP-E4-T05: the real-step count and the runner reports move to the executor (2026-11-07)
+
+COMP-E4-T05 builds CUDA graph capture before any kernel exists, so its decode step is synthetic: copies and memory operations. It also has no runner states to report in. Its change (#2064) gives the provider's half: the submission counter, `graph_stats` and `CaptureFailed` mapped to `DegradeFlags::CAPTURE_OFF`. The maintainers accepted these moves on that PR.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| The one-submission count on a real decode step moves to PLC-E7-T03, which already owns one replay submission per device per decode step | COMP-E4-T05, PLC-E7-T03 | R9 | a real step needs the kernels and the step loop. PLC-E7-T03 already depends on COMP-E4-T05, so the graph stays acyclic and within M0a |
+| The report at `Warming` and `Ready { degraded }` after `CaptureFailed` move to PLC-E7-T04, which owns the capture policy and the degraded report | COMP-E4-T05, PLC-E7-T04 | R9 | the runner states are the executor's. PLC-E7-T04 already depends on COMP-E4-T05 |
+
 ## COMP-E17-T03: RFC-0060 corpus leg moves to the corpus import (2026-10-31)
 
 COMP-E17-T03 (M0a) asked for token-exact GGUF conversions "on the tokenizer corpus", which is RFC-0060's corpus. QUAL-E5-T22 publishes that corpus and its token streams, and it depends on COMP-E17-T03, so an edge from COMP-E17-T03 would make a cycle. COMP-E17-T03 keeps the check on a project-written corpus in its own crate, run on the publisher's GGUF files of both M0 nightly checkpoints. The rerun on the published corpus goes with the import. The `llama` family's M0 checkpoint is Qwen3-0.6B (RFC-0060 §12.2), and Llama-3.2-1B is lab-only, so the criterion's "M0 families" needs no gated file. Review of #2054.
@@ -947,6 +956,15 @@ TIER-E1-T02 (M0a) asked `plan_arenas` to make RFC-0020 §7.3's multi-site layout
 |---|---|---|---|
 | Moved: the accepted-layouts argument, the multi-site layout check, and the criterion "a fixture census giving an MoE expert a CPU-only layout under a GPU+CPU miss split fails the multi-site layout check, and `plan_arenas` returns `Unsupported`" → TIER-E1-T12 (M1a) | TIER-E1-T02, TIER-E1-T12 | R9 | the check reads COMP-E2-T13's readers, COMP-E11-T05's layout choice and PLC-E6-T15's marking, all M1a; TIER-E1-T02 → COMP-E2-T13 would be a cycle |
 | Dropped TIER-E1-T02 → COMP-E1-T02 (`LayoutVersion`, `OpCaps::layout`); added TIER-E1-T12 → COMP-E1-T02 | TIER-E1-T02, TIER-E1-T12 | R9 | only the moved check uses the layout types; TIER-E1-T12's moved criterion now names them |
+
+## TIER-E1-T07: the load-and-decode run and the digest record move out (2026-11-07)
+
+TIER-E1-T07 (M0a) builds the `Vram` and `HostPageable` arenas and measures the context reserve. Two of its criteria use work it does not reach. Decoding needs the CUDA decode kernels (COMP-E5-T01, COMP-E5-T05, COMP-E5-T26) and the loader that fills arenas from the pack (RFC-0021 §8). `ResidencySummary`, the digest, is TIER-E1-T09's (M1a), which runs after it. Its change (#2068) records the reserve in its arena build's report and uses it in the RFC-0020 §8.1 check. The maintainers accepted these moves on 2026-11-07.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| "A dense M0 model loads entirely through arenas and decodes on a CUDA device" moves to COMP-E4-T21, which already runs that leg on R-ADA and now owns the dev-GPU run too | TIER-E1-T07, COMP-E4-T21 | R9 | COMP-E4-T21 depends on TIER-E1-T07, COMP-E5-T01, COMP-E5-T26 and PLC-E8-T01, whose end-to-end run needs the decode path and the loader |
+| "The measured context reserve is recorded in the digest" moves to TIER-E1-T09, with the edge TIER-E1-T09 → TIER-E1-T07 | TIER-E1-T07, TIER-E1-T09 | R9 | TIER-E1-T09 builds the digest. TIER-E1-T07 is M0a and depends on nothing in M1a, so the edge makes no cycle |
 
 ## TIER-E5-T08's conformance suite (2026-10-23)
 
