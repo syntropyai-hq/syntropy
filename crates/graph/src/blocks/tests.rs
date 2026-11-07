@@ -12,7 +12,10 @@
 //! - **Nano graphs.** `llama` and `qwen_moe` graphs at RFC-0060 §12.1's `Nano` size are
 //!   composed from the blocks. The families themselves, their `FamilySpec` and their
 //!   `required_ops` are COMP-E16-T03 and COMP-E16-T04's, so the composition and the nano
-//!   hyperparameters here are the minimum the acceptance criteria need.
+//!   hyperparameters here are the minimum the acceptance criteria need. The same composition
+//!   over the real families (their parsed hyperparameters, block parameters, census groups and
+//!   `required_ops`, on QUAL-E7-T01's generated `Nano` fixtures) is checked in
+//!   `crates/testkit/tests/family_blocks.rs` (COMP-E15-T13).
 
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
