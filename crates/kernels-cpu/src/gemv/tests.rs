@@ -8,6 +8,10 @@
 //!   quantised activations within a rounding bound derived from the operation count (below).
 //! - The activation quantisers equal the reference quantisers bit for bit.
 //! - Hand-computed cases, edge cases, refusals and the row partition.
+//! - Regression: pinned output bits for one seeded case per type, unaligned weights, zero
+//!   activations and F32 overflow, each the same at every level.
+//! - Once `numerics/tolerances-v1.toml` publishes `Gemv`'s op-level `tol_ref` for a class, the
+//!   kernel's `rel_l2` against the reference is checked against it as well.
 //!
 //! **The bound.** With `u = 2^-24`, a sum of `n` F32 terms rounded `n − 1` times and products
 //! rounded once is within `(n + 1) · u · Σ|terms|` of the exact sum (standard first-order
@@ -717,4 +721,168 @@ proptest! {
 #[test]
 fn report_levels() {
     eprintln!("gemv levels on this host: {:?}", levels());
+}
+
+/// The inputs of the pinned outputs below: seed 11, 2 activation rows, 3 output rows, the
+/// second width of `widths`.
+fn golden_case(ty: WeightType) -> Vec<f32> {
+    let mut rng = Rng(11);
+    let k = widths(ty)[1];
+    let w = weights(&mut rng, ty, 3, k);
+    let x = activations(&mut rng, 2, k);
+    run(Level::Portable, ty, &w, 3, k, &x, 2)
+}
+
+/// Exact-mode output must not change unnoticed (ADR-0019): the portable kernels, and so every
+/// level, give these bits for `golden_case`. A change to the block order, the lane fold or a
+/// quantiser fails here. Update the table only in a change meant to alter the output.
+#[test]
+fn outputs_are_pinned() {
+    let want: [(WeightType, [u32; 6]); 5] = [
+        (
+            WeightType::F16,
+            [
+                0x420a1b10, 0x454b51ba, 0xc3d1653b, 0x3fc76c70, 0xc028a29a, 0x3f9ab456,
+            ],
+        ),
+        (
+            WeightType::Bf16,
+            [
+                0x420a439a, 0x454ba9fa, 0xc3d0ee64, 0x3fc733f4, 0xc02a34ae, 0x3f9a739a,
+            ],
+        ),
+        (
+            WeightType::Q8_0,
+            [
+                0x40a0abe7, 0xc2ab4cc2, 0x41fc936a, 0x4094d860, 0xc1b6724a, 0xc089cc5f,
+            ],
+        ),
+        (
+            WeightType::Q4_0,
+            [
+                0xbe40fe75, 0xbf1a503e, 0x408f99d8, 0x3f152b45, 0xbfbc2046, 0x3f151262,
+            ],
+        ),
+        (
+            WeightType::Q4K,
+            [
+                0x43065438, 0xc5cb1506, 0x4353f838, 0x43517b96, 0xc596e5a0, 0x44910fbe,
+            ],
+        ),
+    ];
+    for (ty, bits) in want {
+        let got: Vec<u32> = golden_case(ty).iter().map(|v| v.to_bits()).collect();
+        assert_eq!(got, bits, "{ty:?}");
+    }
+}
+
+/// All-zero activations: every quantised block has scale 0, and every output is +0, not NaN.
+#[test]
+fn zero_activations_give_positive_zero() {
+    let mut rng = Rng(12);
+    for ty in TYPES {
+        let k = widths(ty)[1];
+        let w = weights(&mut rng, ty, 5, k);
+        let x = vec![0.0f32; 3 * k];
+        for level in levels() {
+            let y = run(level, ty, &w, 5, k, &x, 3);
+            assert!(
+                y.iter().all(|v| v.to_bits() == 0),
+                "{ty:?} {level:?}: {y:?}"
+            );
+        }
+    }
+}
+
+/// Weights that start at an odd address, as a tensor inside a mapped file can: every level
+/// reads them unaligned and gives the same bits as an aligned copy.
+#[test]
+fn unaligned_weights_equal_aligned() {
+    let mut rng = Rng(13);
+    for ty in TYPES {
+        let k = widths(ty)[2];
+        let (n_out, rows) = (9, 3);
+        let w = weights(&mut rng, ty, n_out, k);
+        let x = activations(&mut rng, rows, k);
+        let want = run(Level::Portable, ty, &w, n_out, k, &x, rows);
+        for shift in 1..4 {
+            let mut buf = vec![0u8; w.len() + shift];
+            buf[shift..].copy_from_slice(&w);
+            for level in levels() {
+                let got = run(level, ty, &buf[shift..], n_out, k, &x, rows);
+                assert_same(&got, &want, &format!("{ty:?} {level:?} shift {shift}"));
+            }
+        }
+    }
+}
+
+/// Activations large enough to overflow F32: every level overflows the same way, bit for bit.
+#[test]
+fn overflow_is_the_same_at_every_level() {
+    let mut rng = Rng(14);
+    for ty in TYPES {
+        let k = widths(ty)[1];
+        let (n_out, rows) = (4, 2);
+        let w = weights(&mut rng, ty, n_out, k);
+        let x: Vec<f32> = (0..rows * k)
+            .map(|i| if i % 2 == 0 { 3.0e38 } else { 2.5e38 })
+            .collect();
+        let want = run(Level::Portable, ty, &w, n_out, k, &x, rows);
+        assert!(
+            want.iter().any(|v| !v.is_finite()),
+            "{ty:?}: the case should overflow: {want:?}"
+        );
+        for level in levels() {
+            let got = run(level, ty, &w, n_out, k, &x, rows);
+            assert_same(&got, &want, &format!("{ty:?} {level:?}"));
+        }
+    }
+}
+
+/// The dtype class whose op-level tolerance applies to `ty` (RFC-0042 §6.4).
+fn dtype_class(ty: WeightType) -> syntropy_core::quant::DTypeClass {
+    use syntropy_core::quant::DTypeClass;
+    match ty {
+        WeightType::F16 | WeightType::Bf16 => DTypeClass::Float16,
+        WeightType::Q8_0 => DTypeClass::Int8,
+        WeightType::Q4_0 | WeightType::Q4K => DTypeClass::Bits4,
+    }
+}
+
+/// Where the embedded tolerance table publishes `Gemv`'s op-level tolerance for a type's
+/// class, the kernel's `rel_l2` against `reference::gemv` stays within its `tol_ref`
+/// (RFC-0042 §6.4). Until QUAL-E4-T04 publishes the entries, none exists, the derived bound of
+/// the module docs is the check, and this test has nothing to compare.
+#[test]
+fn published_op_tolerances_hold() {
+    use syntropy_kernels::tolerances::ToleranceTable;
+    let table = ToleranceTable::release().unwrap();
+    let mut rng = Rng(15);
+    for ty in TYPES {
+        let Some(tol) = table
+            .op("Gemv", dtype_class(ty))
+            .and_then(|e| e.value())
+            .map(|t| t.tol_ref)
+        else {
+            continue;
+        };
+        let k = widths(ty)[1];
+        let (n_out, rows) = (16, 4);
+        let w = weights(&mut rng, ty, n_out, k);
+        let x = activations(&mut rng, rows, k);
+        let y = run(Level::Portable, ty, &w, n_out, k, &x, rows);
+        let wd = dequantize(ty.ggml(), &w).unwrap();
+        let xs = seen(ty, &x, k);
+        let mut yr = vec![0.0f32; rows * n_out];
+        ref_gemv(Matrix::new(&wd, n_out, k).unwrap(), &xs, rows, &mut yr).unwrap();
+        let (num, den) = y
+            .iter()
+            .zip(&yr)
+            .fold((0.0f64, 0.0f64), |(n, d), (&a, &b)| {
+                let (a, b) = (f64::from(a), f64::from(b));
+                (n + (a - b) * (a - b), d + b * b)
+            });
+        let rel = (num / den.max(f64::MIN_POSITIVE)).sqrt();
+        assert!(rel <= tol, "{ty:?}: rel_l2 {rel:e} > tol_ref {tol:e}");
+    }
 }
