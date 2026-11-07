@@ -4293,6 +4293,8 @@ dependencies = [
  "syntropy-core",
  "syntropy-graph",
  "syntropy-ipc",
+ "syntropy-kernels",
+ "syntropy-manifest",
  "syntropy-net",
  "syntropy-spsc",
  "toml",
