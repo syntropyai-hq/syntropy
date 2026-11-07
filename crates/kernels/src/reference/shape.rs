@@ -71,6 +71,25 @@ pub enum OpError {
     },
     /// The bytes could not be decoded.
     Dequant(DequantError),
+    /// A static parameter is outside the op's domain, such as an odd number of rotated dims.
+    Param {
+        /// The op.
+        op: &'static str,
+        /// What is wrong.
+        what: &'static str,
+    },
+    /// An active row's position, or a KV page it names, is outside what the step provides: past
+    /// its sequence's KV length or page table, or a page past the pool (COMP-E1-T17).
+    Position {
+        /// The op.
+        op: &'static str,
+        /// The active row.
+        row: usize,
+        /// The row's position.
+        pos: u32,
+        /// What it exceeds.
+        what: &'static str,
+    },
 }
 
 impl fmt::Display for OpError {
@@ -92,6 +111,10 @@ impl fmt::Display for OpError {
                 write!(f, "row ID {id} is past the table's {rows} rows")
             }
             Self::Dequant(e) => e.fmt(f),
+            Self::Param { op, what } => write!(f, "{op}: {what}"),
+            Self::Position { op, row, pos, what } => {
+                write!(f, "{op}: row {row} at position {pos}: {what}")
+            }
         }
     }
 }
