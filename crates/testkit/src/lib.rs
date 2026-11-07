@@ -8,7 +8,8 @@
 //! [`guards::CountingAlloc`] and [`guards::alloc_count_this_thread`]; the simulator's clock,
 //! entropy and world core, and the fake runner that ingress is tested against
 //! ([`sim::fake_runner`], QUAL-E3-T18), in [`sim`]; and the stubs of the reference interpreter's
-//! contract ([`refexec`], RFC-0060 §4.1). The rest is planned.
+//! contract ([`refexec`], RFC-0060 §4.1); and the synthetic `Nano` fixture generator
+//! ([`fixtures`], RFC-0060 §12.1). The rest is planned.
 //!
 //! `unsafe` is denied in this crate, not forbidden, for one reason: a global allocator is an
 //! `unsafe impl GlobalAlloc`. RFC-0001 §4.2 rule 8 (note 2026-10-22) lets [`guards`] hold that one
@@ -18,6 +19,7 @@
 #![deny(unsafe_code)]
 #![deny(clippy::undocumented_unsafe_blocks)]
 
+pub mod fixtures;
 pub mod fuzz;
 pub mod guards;
 pub mod refexec;

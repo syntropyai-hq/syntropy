@@ -14,6 +14,8 @@ smallvec.workspace = true
 syntropy-core = { path = "../core" }
 syntropy-io = { path = "../io" }
 syntropy-kernels = { path = "../kernels" }
+# `TensorCensus`, an input of `plan_arenas` (RFC-0020 §3; TIER-E1-T02).
+syntropy-manifest = { path = "../manifest" }
 syntropy-spsc = { path = "../spsc" }
 
 [dev-dependencies]

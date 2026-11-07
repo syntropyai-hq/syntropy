@@ -41,6 +41,34 @@ pub enum Call {
         s: u64,
         pairs: Vec<(u64, u64, usize)>,
     },
+    // The capture calls (`crate::capture::fake`).
+    BeginCapture(u64),
+    /// The stream and the graph it gave.
+    EndCapture(u64, u64),
+    /// The graph and the executable made from it.
+    Instantiate(u64, u64),
+    DestroyGraph(u64),
+    Upload {
+        exec: u64,
+        s: u64,
+    },
+    Launch {
+        exec: u64,
+        s: u64,
+    },
+    /// The executable, and whether the primary context was still retained.
+    DestroyExec(u64, bool),
+    WriteValue {
+        s: u64,
+        addr: u64,
+        value: u32,
+    },
+    WaitValue {
+        s: u64,
+        addr: u64,
+        value: u32,
+        eq: bool,
+    },
 }
 
 /// The fake's state, shared with the test.
@@ -59,11 +87,38 @@ pub struct State {
     pub events: BTreeSet<u64>,
     /// The fake driver's retain count, read when a handle is destroyed.
     pub retained: Option<Arc<AtomicI32>>,
+    /// Streams being captured, with the work recorded on each so far.
+    pub capturing: BTreeMap<u64, Vec<Call>>,
+    /// Captured graphs not yet destroyed, with their nodes.
+    pub graphs: BTreeMap<u64, Vec<Call>>,
+    /// Executables not yet destroyed, with their nodes.
+    pub execs: BTreeMap<u64, Vec<Call>>,
+    /// What `cuMemGetInfo_v2` reports free.
+    pub free: u64,
+    /// The device memory each instantiation and each first upload takes from `free`.
+    pub instantiate_bytes: u64,
+    pub upload_bytes: u64,
 }
 
 impl State {
     pub fn live(&self) -> (usize, usize) {
         (self.streams.len(), self.events.len())
+    }
+
+    /// Logs `call`, work enqueued on `s`; while `s` is being captured it is also a node of the
+    /// graph being recorded.
+    pub fn enqueue(&mut self, s: u64, call: Call) {
+        if let Some(nodes) = self.capturing.get_mut(&s) {
+            nodes.push(call.clone());
+        }
+        self.log.push(call);
+    }
+
+    /// Whether the primary context is still retained.
+    pub fn held(&self) -> bool {
+        self.retained
+            .as_ref()
+            .is_none_or(|r| r.load(Ordering::SeqCst) > 0)
     }
 }
 
@@ -79,7 +134,7 @@ impl FakeStreams {
 }
 
 /// Fails `call` if the test asked for it.
-fn inject(st: &mut State, call: &'static str) -> Result<(), StreamFault> {
+pub fn inject(st: &mut State, call: &'static str) -> Result<(), StreamFault> {
     match st.fail {
         Some((c, status)) if c == call => {
             st.fail = None;
@@ -187,7 +242,7 @@ impl StreamApi for FakeStreams {
         assert!(st.streams.contains_key(&s));
         assert!(bytes > 0);
         inject(&mut st, "cuMemcpyAsync")?;
-        st.log.push(Call::Copy { s, dst, src, bytes });
+        st.enqueue(s, Call::Copy { s, dst, src, bytes });
         Ok(())
     }
 
@@ -211,7 +266,7 @@ impl StreamApi for FakeStreams {
         let pairs = (0..dsts.len())
             .map(|i| (dsts[i], srcs[i], sizes[i]))
             .collect();
-        st.log.push(Call::Batch { s, pairs });
+        st.enqueue(s, Call::Batch { s, pairs });
         Ok(())
     }
 }

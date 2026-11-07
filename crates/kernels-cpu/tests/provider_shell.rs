@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! COMP-E3-T02's first criterion: the CPU provider's shell holds to RFC-0040 §2's contract over
-//! real host buffers. No CPU kernel exists yet, so the launches run stand-in kernels that
-//! [`CpuProvider::with_kernel`] adds.
+//! real host buffers. The launches run stand-in kernels that [`CpuProvider::with_kernel`] adds;
+//! `tests/gemv_provider.rs` and `tests/launch_binding.rs` launch with real operands.
 
 #![allow(
     clippy::result_large_err,
@@ -21,7 +21,9 @@ use syntropy_kernels::{
     KernelProvider, LayoutVersion, MemKind, MemoryDomain, OpArgs, OpKey, OpKind, OpenOptions,
     PowerHint, ShapeClass, ShapeSig, Stream, StreamPlan, StreamPriority, WaitCmp, unsupported,
 };
-use syntropy_kernels_cpu::{CpuProvider, CpuWaker, KillSwitches, Parked, Run, STREAM_CAPACITY};
+use syntropy_kernels_cpu::{
+    CpuProvider, CpuWaker, KillSwitches, Launch, Parked, Run, STREAM_CAPACITY,
+};
 
 fn options(doorbells: u32) -> OpenOptions {
     OpenOptions {
@@ -472,12 +474,12 @@ fn capture_records_an_op_list_that_replays_afresh() {
 
 static STAND_IN_RUNS: AtomicU32 = AtomicU32::new(0);
 
-fn stand_in(_: &OpArgs<'_>) -> Result<(), Error> {
+fn stand_in(_: &Launch<'_>) -> Result<(), Error> {
     STAND_IN_RUNS.fetch_add(1, Ordering::Relaxed);
     Ok(())
 }
 
-fn failing(_: &OpArgs<'_>) -> Result<(), Error> {
+fn failing(_: &Launch<'_>) -> Result<(), Error> {
     Err(Error::new(
         ErrorClass::Device,
         syntropy_kernels::error::codes::DEVICE_STICKY,

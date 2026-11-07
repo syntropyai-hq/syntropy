@@ -437,6 +437,11 @@ pub trait RefSink {
 - `RefOptions`, the `WeightSource` and `RefSink` traits, `TapSpec` and `HiddenBlock` live in `graph::reference`, beside the interpreter that uses them. That interpreter is production code (the warm-up canary), and `testkit` is a dev-dependency only (rule 9). A `WeightSource` returns F32 values, dequantised with RFC-0042's reference dequantisers, for a `WeightKey`: a `graph::ir::WeightRef` and, for a routed expert, its index.
 - `RefExecutor`, `RefKv` and `RefStats` live in `testkit::refexec`, with the stub sources and sinks tests use.
 
+*Note 2026-10-31 (COMP-E1-T03, the `F32Fixed` order spelled out):* "pairwise over fixed 32-element blocks in index order" is read as two levels, which `kernels::reference::reduce` implements once for every reference op and for `graph::reference`.
+- The terms are cut into blocks of 32 in index order, the last holding the remainder. Each block is summed sequentially in index order into an F32 accumulator that starts at `+0.0`.
+- The block sums are added in neighbouring pairs, level by level, `(s₀ + s₁), (s₂ + s₃), …`, an odd last sum carried to the next level unchanged, until one is left.
+- An empty sum is `+0.0`. A product term is rounded once before it is added. This is the reading the declared-activation-quantisation test of COMP-E13-T03 already used, and a GPU reference (`RefDevice::Gpu`) uses the same tree.
+
 Reference semantics that matter for parity:
 - **Routing ties.** MoE top-k selection breaks score ties toward the lower expert index. RFC-0042 requires every provider to use the same rule, so a tie is never an inter-kernel divergence by construction. Near-ties are real numerics, and the metrics capture them.
 - **Attention** materialises full score rows per head. There is no tiled or online softmax in the reference.
@@ -1404,6 +1409,8 @@ pub struct Fixture { pub gguf: Vec<(QuantClass, PathBuf)>, pub safetensors: Opti
 - **Weight statistics.** Weights are drawn from zero-mean normals scaled by fan-in. Norm gains, routers and the LM head scale are then calibrated against the `smoke` corpus. The target is a mean next-token entropy of 1.5–3 nats, with at most 20% of positions inside the near-tie margin `τ_tie`. Without this, random models produce near-uniform logits on which top-1 agreement means nothing. Each fixture's entropy and near-tie share are recorded in its manifest entry.
 - **Quantization.** An F32 original is quantized to every quant class the family ships (Q4_K-class and Q8_0 GGUF blocks, MXFP4, NVFP4, FP8, BF16) with RFC-0042's deterministic quantizers. A given seed always gives byte-identical files.
 - **Structure-true.** Each fixture contains at least one of every layer kind, attention variant, MoE feature (shared expert, latent MoE, router bias), MTP head and recurrent block its family has, so census, KV-formula and boundary checks see every case (§7.2).
+
+*Note 2026-10-31 (QUAL-E7-T01):* built in `syntropy_testkit::fixtures`. `generate` also takes the directory it writes into, and returns one `Fixture` per variant of the `FamilySpec`, because the spec lists variants for features fixed per checkpoint, such as QK-norm and tied embeddings (`graph::spec`). Each `Nano` fixture is an F32 safetensors checkpoint with `config.json` and a byte-level `tokenizer.json`, plus the same weights as an F32 GGUF file where GGUF metadata can state the variant's RoPE rule. `Fixture::manifest` is the census of the safetensors checkpoint, read back from disk. Normal draws use the polar method with a logarithm computed from correctly rounded operations only, so a seed gives byte-identical files on every platform; the tests hold the files' BLAKE3 digests. Calibration (QUAL-E7-T02) and quantized classes (QUAL-E7-T03) come with their tasks. The `Family` trait method that returns a family's spec is not added yet; the generator takes the spec directly.
 
 #### 12.2 Real checkpoints
 

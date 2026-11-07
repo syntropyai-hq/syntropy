@@ -9,25 +9,24 @@
 
 use std::collections::BTreeMap;
 
-use syntropy_kernels::{CpuIsa, Error, OpArgs, OpKind};
+use syntropy_kernels::{CpuIsa, OpKind};
 
+use crate::launch::Kernel;
 use crate::sme2::Sme2;
-
-/// One CPU kernel entry point. It runs the op on the calling thread over the buffers `args`
-/// binds. The argument types are COMP-E1-T05's, so the signature follows [`OpArgs`].
-pub type KernelFn = fn(&OpArgs<'_>) -> Result<(), Error>;
 
 /// The kernels for one [`CpuIsa`] level, by op kind.
 ///
-/// Today no kernel exists, so every level's table is empty. COMP-E3-T03 and the later kernel
-/// tasks add their entries in [`DispatchTable::for_level`], one arm per level.
+/// Every level has `Gemv` (COMP-E3-T03, [`crate::gemv`]): its own SIMD kernels at `X86V3`,
+/// `X86V4`, `Arm82Dot` and `Arm86I8mm`, the next level down's at `X86V4Amx` and `Arm92Sme2`,
+/// and the portable kernels at `X86V2` and `Arm80`. The later kernel tasks add their entries in
+/// [`DispatchTable::for_level`].
 ///
 /// It has no `PartialEq`: function-pointer equality is not reliable across codegen units.
 /// Compare tables by [`isa`](Self::isa) and [`len`](Self::len).
 #[derive(Clone, Debug)]
 pub struct DispatchTable {
     isa: CpuIsa,
-    ops: BTreeMap<OpKind, KernelFn>,
+    ops: BTreeMap<OpKind, Kernel>,
     sme2: Option<Sme2>,
 }
 
@@ -35,11 +34,13 @@ impl DispatchTable {
     /// The table for `isa`: what `enumerate` reports with the class and what `open` installs.
     #[must_use]
     pub fn for_level(isa: CpuIsa) -> Self {
-        // The kernel tasks add a `match isa` here: each level's arm inserts that level's
-        // kernels and, for an op the level has none of its own for, the next level down's.
+        // Each kernel picks its own code for the level, falling back to the next level down
+        // where it has none, and never above what the live host runs.
+        let mut ops = BTreeMap::new();
+        ops.insert(OpKind::Gemv, crate::gemv::entry::kernel(isa));
         Self {
             isa,
-            ops: BTreeMap::new(),
+            ops,
             sme2: Sme2::for_level(isa),
         }
     }
@@ -48,7 +49,7 @@ impl DispatchTable {
     /// add theirs in [`for_level`](Self::for_level). Until then a provider built with
     /// [`CpuProvider::with_kernel`](crate::CpuProvider::with_kernel) adds stand-in kernels this
     /// way, for tests.
-    pub fn insert(&mut self, kind: OpKind, kernel: KernelFn) {
+    pub fn insert(&mut self, kind: OpKind, kernel: Kernel) {
         self.ops.insert(kind, kernel);
     }
 
@@ -68,7 +69,7 @@ impl DispatchTable {
 
     /// The kernel for `kind`, if this level has one.
     #[must_use]
-    pub fn get(&self, kind: &OpKind) -> Option<KernelFn> {
+    pub fn get(&self, kind: &OpKind) -> Option<Kernel> {
         self.ops.get(kind).copied()
     }
 

@@ -4107,6 +4107,7 @@ name = "syntropy-kernels-cpu"
 version = "0.0.0"
 dependencies = [
  "cc",
+ "proptest",
  "smallvec",
  "syntropy-core",
  "syntropy-io",
@@ -4294,6 +4295,8 @@ dependencies = [
  "syntropy-core",
  "syntropy-graph",
  "syntropy-ipc",
+ "syntropy-kernels",
+ "syntropy-manifest",
  "syntropy-net",
  "syntropy-spsc",
  "toml",
@@ -4310,6 +4313,7 @@ dependencies = [
  "serde",
  "serde_json",
  "syntropy-core",
+ "syntropy-testkit",
  "tokenizers",
 ]
 
@@ -4325,6 +4329,7 @@ dependencies = [
  "syntropy-core",
  "syntropy-io",
  "syntropy-kernels",
+ "syntropy-manifest",
  "syntropy-spsc",
  "syntropy-testkit",
 ]
