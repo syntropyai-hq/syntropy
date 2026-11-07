@@ -136,6 +136,7 @@ There is one executable, `syntropy` (ADR-0015). It runs in one of three modes:
 | Daemon | `syntropy serve` (user-facing; `syntropy run`, `pull` and `chat` start or reach one) | long-lived, one per node | control plane, API, discovery, model store, supervision |
 | Runner | `syntropy __runner --ipc <handle>` (hidden; spawned by the daemon re-executing `current_exe()`) | one model instance on this node, `Fetching` to `Stopped` | devices, tiers, data plane, execution |
 | Probe | `syntropy __runner --probe --ipc <handle>` (hidden) | seconds | device enumeration that needs a driver context, startup microbenchmarks (RFC-0010) |
+| Header | `syntropy __header --kind <kind> --path <file> …` (hidden) | seconds | a newly added model file's header, parsed confined (RFC-0034 §10.4; DIST-E17-T16, added 2026-10-29) |
 | Self-test | `syntropy __selftest --root <root>` (hidden; run by the updater on a staged build) | ≤ 20 s | config parse, a state-migration dry run on a copy, module load and device enumeration, the CPU parity smoke test on a fixture model; no network and no GPU context in-process (RFC-0052 §7.3) |
 
 Runner and probe processes are the only ones that load GPU backend modules (§4.2 rule 7). Client subcommands (`ls`, `run`, `chat`, `ps`, `plan`, `cluster`, `doctor` and the rest of the command tree in RFC-0051 §2.1) talk to the local daemon over its API and are owned by RFC-0051.
@@ -161,6 +162,12 @@ On platforms that forbid spawning a child process (iOS, some Android contexts), 
 - **Exit.** When the runner exits, the host removes the region's name (`Region::unlink`), and it removes it on every failed spawn too. Dropping the host's handle closes the channel and never kills the runner; a runner still running after the drop's 2 s wait is reaped by a detached thread when it exits.
 - **The L0 check.** `cargo xtask ci lint`'s `orphan-rule` step refuses the identifiers `PR_SET_PDEATHSIG`, `PROC_PDEATHSIG_CTL`, `NOTE_EXIT`, `NOTE_EXITSTATUS`, `EVFILT_PROC`, `pidfd_open`, `getppid` and `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` in `runner`, `daemon`, `ipc`, `io` and `cli`. It reads tokens, so it cannot see a constant written as a bare number.
 - **Probe mode** (`--probe`) is DIST-E1-T17, a scope split: it adds `RunnerMsg::ProbeResult` and an `ipc_protocol` bump, which DIST-E1-T04 kept out of the process host. `CapabilityProfile`, which `ProbeResult` carries, is already on main (PLC-E1-T17), so DIST-E1-T17 is ready now that DIST-E1-T04 has merged.
+
+*Note 2026-10-29 (as built, §18.52; DIST-E1-T17): probe mode.*
+- **The command line.** A probe is `syntropy __runner --probe --ipc <handle>`, with no `--region`; `--probe` and `--region` are exclusive. `daemon::runner_host::probe_process` spawns it through the same channel pair as a runner.
+- **The exchange.** The probe sends `Hello`, which the daemon checks as for a runner, then one `ProbeResult { profile }`, and exits 0. It is sent no `Init`, so it holds no plan, loads no model and admits no sequence. Anything else after `Hello` makes the daemon kill and reap it.
+- **The profile.** Until PLC-E1-T07 runs its enumeration in the probe, the profile names no device, storage tier or link. The probe leaves `node` and `version` zero, and the daemon stamps them, since only it knows them. `ProbeRequest` and its suites come with PLC-E2-T01, which may send a partial result first and so reworks this one-result exchange; the daemon's deadline on a probe (RFC-0010 §8) is PLC-E3-T10's. Until then a probe that sends nothing blocks its caller, which nothing in the daemon calls yet.
+- **Daemon loss.** A probe never reads its channel, so it does not see the daemon's exit as a runner does. It exits as soon as it has sent; once PLC-E1-T07's enumeration runs in it, a probe stuck in a driver call outlives a lost daemon, which that task handles.
 
 ### 3.2 What each process owns
 
@@ -303,7 +310,7 @@ Command-channel messages:
 | R → D | `SequenceEnded { seq: SequenceId, outcome: SequenceOutcome }` | finished, failed or migrated |
 | R → D | `ErrorReport { error: Error }` | errors that are not tied to one sequence |
 | R → D | `EdgeDemoted { demotion: Demotion, cause: DemotionCause, cost: Nanos }` | a hop moved off its transport: the planned one could not connect (`ConnectFailed`, RFC-0031 §3), or it faulted 3 times in 60 s (`RepeatedFaults`, RFC-0031 §7.4). `cost` is the new transport's `cost_t` at the decode frame size. The daemon forwards it as `ReportEdgeDemoted` (RFC-0033 §11). Added by DIST-E7-T11, with an `ipc_protocol` bump (RFC-0031 §3, note of 2026-10-23) |
-| R → D | `ProbeResult { profile: CapabilityProfile }` | probe output |
+| R → D | `ProbeResult { profile: CapabilityProfile }` | probe output. Added by DIST-E1-T17, with `ipc_protocol` 6.0 (§18.52) |
 | R → D | `Pong` | — |
 
 *Note 2026-10-22 (amendment, §18.9):* `LedgerGrant` is plain data in `core`: the per-tier bytes the daemon grants the runner. `ipc` carries it in `Init`, and `tier` checks an `ArenaPlan` against it (RFC-0020 §3, §12; OQ-IO-27).
@@ -1418,7 +1425,7 @@ The head forwards `SequenceOpen` metadata (`SequenceMeta`: every field except th
 - **`CancelReason`** is `ClientGone`, `ClientRequest`, `StopString`, `Deadline` or `Error { domain, code }`, a sequence-scoped error (§10.4). A sequence whose ingress is lost, or whose detach grace runs out, ends with `finish = Cancelled` and a `Release` instead (RFC-0033 §9.2), so neither is a reason.
 - **`FinishReason::Error`** and `CancelReason::Error` carry §10's `ErrorCode` in the wire's numeric form, a domain and a code, until `core` has the `Domain` type (DIST-E18-T02).
 - **`TokenEntry::rng_counter`** has no serde default, unlike the other additions: a counter read as 0 would restart a resumed sequence's random stream (RFC-0031 §6.5's note of the same date).
-- **`LogprobBlock`** follows RFC-0031 §6.5's layout: per token, the chosen logprob and `k` (id, logprob) pairs. `k = 0` is the chosen tokens' logprobs alone, OpenAI's `top_logprobs = 0`, which the in-process path (PROD-E2-T06) carries. The wire's `logprob_k = 0` means no logprobs, so `net` refuses a `k = 0` block with a classified `Unsupported` error until OQ-NET-35 gives it a form.
+- **`LogprobBlock`** follows RFC-0031 §6.5's layout: per token, the chosen logprob and `k` (id, logprob) pairs. `k = 0` is the chosen tokens' logprobs alone, OpenAI's `top_logprobs = 0`, which the in-process path (PROD-E2-T06) carries. The wire's `logprob_k = 0` means no logprobs, so `net` refuses a `k = 0` block with a classified `Unsupported` error until OQ-NET-35 gives it a form. *Note 2026-10-31 (DIST-E8-T18):* OQ-NET-35 is settled. The wire carries `k = 0` as `logprob_k = 0x80`, only on channels that negotiated capability bit 16 `CHOSEN_LOGPROBS` (RFC-0031 §6.5, §10).
 - **`TokenEntry`** also carries `draft` and `draft_tree`, the tail-side drafter's draft for the next window (RFC-0032 §3.5), which RFC-0031 §6.5 carries on the ring-return copy. A tree node is `DraftNode { parent, depth, flags }`, which `net` re-exports as `TreeNode`.
 - **`SequenceMeta`** holds every `SequenceOpen` field but the prompt, `trace` and `prefix_scope` included, which RFC-0032 §3.6's listing leaves out.
 - **`net`'s view and the tap block.** `net`'s `TokenEntryView` converts to and from `TokenEntry` for every field but `tap`. The tap block travels as bytes until its codec exists (DIST-E8-T06, M2), and `TokenEntry::tap` is the typed `LogitTap`, so `net` refuses a non-empty tap block either way with a classified `Unsupported` error. M0 loses nothing: PLC-E9-T16's parity taps travel in-process on the `local_tokens` ring as `core` types, never through `net`'s codec.
@@ -2402,7 +2409,7 @@ The milestones run in the order M0a, M0b, M1a, M1b, M2, M3, M4. M0 is split so t
 
 ### M0a: walking skeleton
 One dense family end to end on one Linux machine, CPU and CUDA, behind every merge gate. It is the first integration point, and nothing in it is built for scale.
-- The workspace builds on every Tier 1 OS, and CI enforces the §4.2 dependency rules (RFC-0062).
+- The workspace builds on every Tier 1 OS, and CI enforces the §4.2 dependency rules (RFC-0062). During M0a only the Linux build and tests run and gate a merge; the macOS and Windows jobs are paused (ADR-0626, revised 2026-10-31).
 - The merge gates of ADR-0021 decision 5 run from the first commit: build, lint and tests; the DCO, licence and dependency checks; the workflow security lint; the independent review-agent job; and the sandbox in which agent runs read untrusted content. The repository's security baseline, the private vulnerability-reporting channel and the agent trust tiers are in place from the first commit too (RFC-0062 §12.5, §12.6, §13; ADR-0021; ADR-0624).
 - GGUF reader, census and manifest for `llama` at Q4_K and Q8_0. Such a model runs end to end through the OpenAI Chat Completions API with streaming, through the daemon and a real runner, on the CPU provider and on CUDA (RFC-0041, RFC-0043, RFC-0050, RFC-0051).
 - Execution is eager; this exit needs no captured graphs (RFC-0012).
@@ -3172,3 +3179,64 @@ COMP-E10-T11 builds the remaining identities of RFC-0041 §1 and the two message
 | `ShardSpec`, `PackKey`, `ChunkId` and `LayoutVersion` are `core` types. `ShardSpec::new_with` takes the hash function, and `PackKey::for_shard` builds a key from a spec. `kernels` and `manifest` re-export them | §5.6 (dated note) | §18.28 moved them to `core` so that `ipc` can carry them. `core` links no hasher, so the digest follows the `InstancePolicy::digest_with` pattern |
 | `RunnerMsg` gains `FetchShard { spec, priority }` and `PackCommitted { key, sidecar }`, and `ipc_protocol` goes from 4.0 to 5.0 | §3.5 (the two rows) | they are the messages §3.5's note of 2026-10-23 assigns to COMP-E10-T11. A 5.0 runner sends them in normal operation and a 4.x daemon cannot decode them. A change is compatible only when every older reader can read everything a newer writer sends it, so the major moves. |
 | `TensorRecord::hash`, `ShardSpec::digest` and `ExtentKey` have fixed byte encodings, with golden values computed apart from the implementation. The tensor hash is a domain-separated binary Merkle tree split at the largest power of two. `ExtentKey`'s "layout ID and its version" are the extent's own layout and the layout-table version | RFC-0041 §1 (dated note) | RFC-0041 §1 named each identity's inputs but not its bytes. Its `ExtentKey` row leaves the version open, and the layout-table version is the one version the plan defines. For the maintainers to confirm |
+
+### 18.52 `ProbeResult`, and probe mode (2026-10-29)
+
+DIST-E1-T17 builds probe mode (§3.1).
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| `RunnerMsg` gains `ProbeResult { profile: CapabilityProfile }`, and `ipc_protocol` goes from 5.0 to 6.0 | §3.5 (the row); §3.1 (dated note) | `CapabilityProfile` exists in `core` (PLC-E1-T17); a 5.x daemon cannot decode the new message, so the major moves, as for 5.0 |
+
+Taken under the maintainers' standing instruction, for the maintainers to confirm.
+
+### 18.53 The header child is a mode of the binary (2026-10-29)
+
+DIST-E17-T16 builds RFC-0034 §10.4's child that parses a newly added model's header.
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| A fourth process mode, `syntropy __header`, parses one file's header confined, and `daemon::header_child::parse_in_child` spawns it | §3.1 (the Header row); RFC-0034 §10.4 (dated note) | ADR-0015 decision 1 has one binary run every role, so the child is a hidden mode, as `__runner` is. It needs no shared-memory region and no plan. Proposed, for the maintainers to confirm |
+| The child returns the file's length and the header's bytes on its stdout, not over an IPC channel, and the daemon re-parses those bytes | RFC-0034 §10.4 (dated note) | the child sends one reply and exits, so a pipe is enough; re-parsing the vetted bytes in the daemon needs no new `ipc` message. Proposed, for the maintainers to confirm |
+| On Linux the child's network ban is a seccomp filter at M1, and the macOS and Windows bans stay at M4 with DIST-E17-T08 | RFC-0034 §10.4 (dated note); DIST-E17-T16 and DIST-E17-T08's criteria | accepted by the maintainers on 2026-10-29. A network namespace needs a privilege Ubuntu 24.04 does not give unprivileged processes by default |
+
+### 18.54 An interim dev GPU, and the M0 CUDA path off the lab (2026-10-31)
+
+R-ADA (QUAL-E15-T02), the other M0 rigs (QUAL-E15-T17) and the fixture store's S3 backend (QUAL-E7-T15) all wait on maintainer actions, and the M0 CUDA path and the real-checkpoint chain waited on them. The maintainers decided on 2026-10-31 that agents may use a dev GPU for development evidence in the meantime.
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| An RTX 3090 (`sm_86`) on a maintainer's development host, under WSL2, is an interim dev GPU: development evidence only, labelled `[measured, RTX 3090 dev host, not R-ADA]`, never conformance, gating or performance evidence | ADR-0610 decision 4 (dated revision) | the pool's first devices and R-ADA are not online, so no M0 CUDA task could be developed against a real device |
+| The M0 CUDA tasks no longer depend on the rigs; their R-ADA, R-BW and pool-host legs move to one task, COMP-E4-T21, at the same milestone | the COMP, PLC, TIER and PROD epics; `dependency-fixes.md` | each leg still runs on the rig it names before M0a closes, so no gate moves off the lab |
+| QUAL-E7-T06 imports ungated checkpoints through the local fixture store; the gated and lab-only imports, and the lab-credential read, move to QUAL-E7-T15 | the QUAL and COMP epics; `dependency-fixes.md` | the real-checkpoint chain (tokenizers, families, census, templates and the OpenAI API) needed the S3 backend only for gated files |
+
+The dev-GPU decision is the maintainers', made on 2026-10-31. The R9 splits and the R8 cut that follow from it are taken under their standing instruction and are proposals for the maintainers to confirm.
+
+### 18.55 A Linux build host for this repository's own runs (2026-10-30, revised 2026-10-31)
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| Every Linux job of every workflow may run on a self-hosted Linux build host, label `syntropy-build`, behind the repository variable `SYNTROPY_BUILD_HOST` and a gate the workflow lint checks, for every event except a PR from a fork. Fork PRs, `toolchains-linux`, `dep-approval.yml` and the macOS and Windows jobs stay hosted (revised 2026-10-31; first proposed for four `pr.yml` jobs of same-repository PRs only) | ADR-0625 (new, Proposed); ADR-0620 (dated revision); RFC-0062 §3.1 (dated note) | hosted Linux jobs waited 6 to 10 minutes on average for a runner [measured: GitHub Actions API, the 8 `pr.yml` runs before 2026-10-30]. Each job runs in a fresh container from a single-use just-in-time configuration, with no credential and no route to the LAN, and a job-started hook refuses a fork's PR, so the fork defence of ADR-0620 decision 4 is unchanged. Binds no task until a maintainer accepts ADR-0625 |
+
+### 18.56 Linux alone gates merges during M0a (2026-10-31, revised 2026-10-31)
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| Until M0b starts, only Linux x86_64 gates a merge; the maintainers then end or extend it. `build-macos`, `build-windows`, `hosted-test-macos`, `hosted-test-windows`, `toolchains-macos` and `toolchains-windows` still run and post their checks, but `ci-gate` does not wait for them or count them. M0a tasks close on their Linux legs and report each macOS or Windows leg as NOT RUN or with its advisory result | ADR-0626 (new, Accepted 2026-10-31); RFC-0062 §2.5 (dated note); QUAL-E1-T37 (new); §16 (M0a's first deliverable) | the maintainers decided on 2026-10-31 that M0a supports Linux only. M0a's and M0b's exits are on Linux, and the Windows tests were the slowest job `ci-gate` waited for: median 22.6 min against 7.8 min for `hosted-test-linux` [measured: GitHub Actions API, the 60 most recent `pull_request` runs of `pr.yml` up to 2026-10-31]. Accepted by devdaviddr on 2026-10-31. §16's first M0a deliverable notes that it is enforced on Linux only during M0a |
+| Revised 2026-10-31: during M0a the macOS and Windows jobs don't run at all, rather than running as advisory. `ci/jobs.toml` marks the six jobs `paused`; `changes` reports each one's rule but never lists it, so `pr.yml` skips it and `ci-gate` does not wait for it. M0a tasks report each macOS or Windows leg as NOT RUN (ADR-0626) | ADR-0626 (dated revision); RFC-0062 §2.5 (note revised); QUAL-E1-T37 (row revised); §16 (M0a's first deliverable) | devdaviddr instructed on 2026-10-31 that M0a is Linux only and the macOS and Windows jobs stop running. The cost, recorded in the ADR revision, is that portability breakage goes unseen until the pause ends at M0b's start or a maintainer ends it sooner |
+
+### 18.57 RFC-0011's plan additions in `core` (2026-10-31)
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| `PlacementPlan` gains `ext: PlacementPlanExt`, and `PredictedCost` gains `stages: Vec<StageCost>`, both with serde defaults. `StageCost` is keyed by `core::plan::StageTerm`, a mirror of `obs::CostTerm` with the same discriminants, which `obs` converts | §5.4 (through RFC-0011 §2's note of 2026-10-31) | RFC-0011 §2 adds both to the plan. `core` cannot name `obs`'s `CostTerm` (§4.2), so a mirror holds the key, and `obs` checks that it matches (PLC-E4-T01) |
+| The IPC protocol goes to 7.0 | §3.5 | the plan in `AssignPlan`, and the cost in a delta's `Predicted` item, change their postcard layout |
+| `solver::solve`, `solve_delta` and `evaluate` return `Result<_, SolveError>`, like `route`; each returns `SolveError::NotBuilt` with the task that builds its body until that task lands | none here (RFC-0011 §2, note of 2026-10-31) | PLC-E4-T01 builds the signatures before the bodies, and a caller must be able to tell "not built" from a result |
+
+### 18.58 I8MM and F16 conversion through `asm!` on the CPU (2026-10-31)
+
+COMP-E3-T03 found that two NEON intrinsic families the CPU kernels use do not compile on the pinned toolchain.
+
+| Change | Sections touched | Reason |
+|---|---|---|
+| `smmla` (I8MM) and `fcvtl` (F16 to F32) are written as one-instruction `asm!` blocks in `#[target_feature]` functions, not `std::arch` intrinsics | RFC-0040 §7.3 and ADR-0402 item 1 (dated notes) | on 1.99.1 `vmmlaq_s32` is unstable (`stdarch_neon_i8mm`, E0658), and stable Rust has no F16 vector type for `vcvt_f32_f16`. Release builds use stable only (ADR-0001 decision 1). ADR-0402 item 5's re-check moves them to `std::arch` once they stabilise |

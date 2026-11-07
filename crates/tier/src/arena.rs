@@ -1,12 +1,15 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! Arena layout: purposes, pin classes, registrations, slot geometry and the per-runner
-//! [`ArenaPlan`] (RFC-0020 §2, §3). Construction per tier kind, segment mapping and the slot
-//! allocators come in later tasks (RFC-0020 §4, §8; TIER-E1-T07).
+//! [`ArenaPlan`] (RFC-0020 §2, §3), which [`plan::plan_arenas`] derives from the plan
+//! (TIER-E1-T02). Construction per tier kind, segment mapping and the slot allocators come in
+//! later tasks (RFC-0020 §4, §8; TIER-E1-T07).
 //!
 //! This is one of the two modules where RFC-0020 §1 allows `unsafe`. It holds none yet, so it
 //! keeps the crate-level `deny(unsafe_code)`; the task that adds the first `unsafe` block lifts
 //! it here with a scoped `allow`.
+
+pub mod plan;
 
 use bitflags::bitflags;
 use serde::{Deserialize, Serialize};
@@ -161,8 +164,8 @@ pub struct SegmentSpec {
 }
 
 /// The tier manager's whole layout for one runner, derived from the plan before any byte is
-/// allocated (RFC-0020 §3). `TierManager::plan_arenas` (TIER-E1-T02) builds it as a pure
-/// function of (plan, stages, census, profile, config).
+/// allocated (RFC-0020 §3). [`plan::plan_arenas`] builds it as a pure function of (plan,
+/// stages, census, profile, config).
 ///
 /// Every field defaults (container `#[serde(default)]`), so a record that predates a field
 /// still decodes, in map form and, for trailing fields, in sequence form.

@@ -20,9 +20,9 @@ use syntropy_core::{
     ApproxFlags, ErrorClass, FinishReason, InstanceId, LogprobBlock, SequenceId, TokenEntry,
 };
 use syntropy_net::frame::{
-    ENTRY_HEADER_LEN, Entries, Flags, Frame, FrameError, FrameType, Route, Side, SideItem,
-    SideItems, StepTokens, Token, TokenCopy, TokenEntryBytes, TokenEntryView, TokenSpec,
-    TraceContext, TreeArea, TreeNode, WIRE_MINOR, tlv, token_flags,
+    ENTRY_HEADER_LEN, Entries, Flags, Frame, FrameError, FrameType, LOGPROB_CHOSEN_ONLY, Route,
+    Side, SideItem, SideItems, StepTokens, Token, TokenCopy, TokenEntryBytes, TokenEntryView,
+    TokenSpec, TraceContext, TreeArea, TreeNode, WIRE_MINOR, capability, tlv, token_flags,
 };
 
 use super::{INSTANCE, REFUSAL_CLASSES, base, epoch, golden_dir, leak, reseal, spec};
@@ -51,6 +51,7 @@ fn spec_for(step: u64, chan_seq: u64) -> TokenSpec {
         epoch: epoch(),
         step,
         chan_seq,
+        capabilities: capability::CHOSEN_LOGPROBS,
     }
 }
 
@@ -211,6 +212,24 @@ fn as_carried<'a>(entry: &TokenEntryView<'a>, route: Route) -> TokenEntryView<'a
 }
 
 /// The RFC-0031 §6.5 wire values of `entry`, as `route` carries it.
+/// Step 25's entries: the chosen tokens' logprobs alone (`logprob_k = 0x80`) for a verify
+/// result, one alternative per token for a plain decode, and an entry without logprobs.
+fn step25() -> Vec<TokenEntryView<'static>> {
+    vec![
+        TokenEntryView {
+            logprob_k: LOGPROB_CHOSEN_ONLY,
+            logprobs: logprobs(&[(-0.75, &[]), (-0.0625, &[])]),
+            ..plain(seq(X, 80), 300, &[14, 15], 9)
+        },
+        TokenEntryView {
+            logprob_k: 1,
+            logprobs: logprobs(&[(-1.0, &[(17, -1.5)])]),
+            ..plain(seq(Y, 6), 12, &[16], 3)
+        },
+        plain(seq(X, 81), 8, &[18], 1),
+    ]
+}
+
 fn entry_fields(entry: &TokenEntryView<'_>, route: Route) -> spec::EntryFields {
     let entry = as_carried(entry, route);
     let (finish, error_domain, error_code) = match entry.finish {
@@ -428,6 +447,17 @@ fn goldens() -> Vec<Golden> {
                 },
             }],
             vec![],
+        ),
+        golden(
+            "token-ring-return-chosen-logprobs",
+            "step 25's ring-return copy: the chosen tokens' logprobs alone (logprob_k = 0x80, \
+             capability bit 16) on a 2-token entry, one alternative on another, and an entry \
+             without logprobs",
+            spec_for(25, 5),
+            Route::RingReturn,
+            (0, 1),
+            vec![],
+            step25(),
         ),
     ]
 }
@@ -739,6 +769,18 @@ fn a_token_frame_breaking_a_rule_is_refused_with_a_classified_error() {
             ring(),
             |r| r.entries[0].finish = 6,
             field("finish", 6),
+        ),
+        case(
+            "logprob_k 0x81, bit 7 with another bit",
+            ring(),
+            |r| r.entries[0].logprob_k = 0x81,
+            field("logprob_k", 0x81),
+        ),
+        case(
+            "logprob_k 0xFF",
+            ring(),
+            |r| r.entries[0].logprob_k = 0xFF,
+            field("logprob_k", 0xFF),
         ),
         case(
             "draft_nodes not n_draft",
@@ -1215,6 +1257,7 @@ proptest! {
                     epoch: header.epoch,
                     step: header.step,
                     chan_seq: header.chan_seq,
+                    capabilities: capability::CHOSEN_LOGPROBS,
                 };
                 let again = token.encode_to_vec(&spec).unwrap();
                 let frame = Frame::decode(&again).unwrap();
@@ -1499,12 +1542,11 @@ fn token_ingress_x_entries_with_a_tap_block_are_refused_conversion() {
     assert_eq!(read_golden("token-ingress-x"), bytes);
 }
 
-/// An owned entry with `k = 0` logprobs, the chosen tokens' logprobs alone, is what the
-/// in-process path carries, but RFC-0031 §6.5's `logprob_k = 0` means no logprobs. So encoding
-/// one is refused with `ChosenLogprobsOnly`, an `Unsupported` refusal, until OQ-NET-35 gives it a
-/// form.
+/// DIST-E8-T18: an owned entry with `k = 0` logprobs, the chosen tokens' logprobs alone, becomes
+/// `logprob_k = 0x80` with one f32 per token, and converts back to `k = 0`. A `k` above 127,
+/// which `logprob_k` cannot carry, is refused, classified and never `Internal`.
 #[test]
-fn a_chosen_only_logprob_block_is_refused_encoding() {
+fn a_chosen_only_logprob_block_is_0x80() {
     let mut entry = token_with_logprobs();
     entry.logprobs = Some(LogprobBlock {
         k: 0,
@@ -1512,12 +1554,169 @@ fn a_chosen_only_logprob_block_is_refused_encoding() {
         top_ids: Vec::new(),
         top_logprobs: Vec::new(),
     });
-    let error = TokenEntryBytes::new(&entry).unwrap_err();
-    assert_eq!(error, FrameError::ChosenLogprobsOnly { n_tokens: 2 });
-    assert_eq!(error.class(), ErrorClass::Unsupported);
-    // Without logprobs the same entry encodes.
-    entry.logprobs = None;
-    assert!(TokenEntryBytes::new(&entry).is_ok());
+    let held = TokenEntryBytes::new(&entry).unwrap();
+    let view = held.view();
+    assert_eq!(view.logprob_k, 0x80);
+    assert_eq!(view.logprobs, logprobs(&[(-0.5, &[]), (-1.0, &[])]));
+    assert_eq!(view.to_entry(), Ok(entry.clone()));
+    // 0x80 sizes the logprobs at one f32 per token, so a view carrying an alternative's bytes
+    // too is refused.
+    let wrong = Vec::leak(vec![TokenEntryView {
+        logprobs: logprobs(&[(-0.5, &[(1, -2.0)]), (-1.0, &[(1, -2.0)])]),
+        ..view
+    }]);
+    let step = StepTokens {
+        entries: Entries::new(wrong),
+        side: SideItems::new(&[]),
+        part_index: 0,
+        part_count: 1,
+    };
+    assert_eq!(
+        step.encode_to_vec(TokenCopy::RingReturn, &spec_for(1, 1)),
+        Err(inconsistent("logprobs len", 24, 8))
+    );
+    for k in [128, 0x81, 0xFF] {
+        entry.logprobs = Some(LogprobBlock {
+            k,
+            chosen: vec![-0.5, -1.0],
+            top_ids: vec![1; 2 * usize::from(k)],
+            top_logprobs: vec![-2.0; 2 * usize::from(k)],
+        });
+        let error = TokenEntryBytes::new(&entry).unwrap_err();
+        assert_eq!(error, field("logprob_k", u64::from(k)), "k = {k}");
+        assert!(REFUSAL_CLASSES.contains(&error.class()), "k = {k}");
+    }
+}
+
+/// DIST-E8-T18: a peer that did not advertise capability bit 16 is never sent 0x80. A copy that
+/// would carry such an entry is refused with `CapabilityNotNegotiated`, an `Unsupported`
+/// refusal; a copy that leaves the entry out, and every frame without one, is written as before.
+#[test]
+fn chosen_only_logprobs_need_capability_bit_16() {
+    let entries: &'static [TokenEntryView<'static>] = Vec::leak(step25());
+    let step = StepTokens {
+        entries: Entries::new(entries),
+        side: SideItems::new(&[]),
+        part_index: 0,
+        part_count: 1,
+    };
+    let without = TokenSpec {
+        capabilities: !capability::CHOSEN_LOGPROBS,
+        ..spec_for(25, 5)
+    };
+    let refused = FrameError::CapabilityNotNegotiated {
+        ftype: FrameType::Token,
+        capability: capability::CHOSEN_LOGPROBS,
+    };
+    // The 0x80 entry is X's: the ring-return copy and X's ingress copy carry it.
+    for copy in [TokenCopy::RingReturn, TokenCopy::Ingress { ingress: X }] {
+        assert_eq!(
+            step.encode_to_vec(copy, &without),
+            Err(refused.clone()),
+            "{copy:?}"
+        );
+        let mut slot = vec![0; 4096];
+        assert_eq!(
+            step.encode(copy, &without, &mut slot),
+            Err(refused.clone()),
+            "{copy:?}"
+        );
+        assert!(slot.iter().all(|b| *b == 0), "{copy:?}: nothing written");
+        assert!(
+            step.encode_to_vec(copy, &spec_for(25, 5)).is_ok(),
+            "{copy:?}"
+        );
+    }
+    assert_eq!(refused.class(), ErrorClass::Unsupported);
+    // A decoded frame re-encodes only for a channel with the bit.
+    let bytes = read_golden("token-ring-return-chosen-logprobs");
+    let frame = Frame::decode(&bytes).unwrap();
+    let token = frame.token().unwrap();
+    assert_eq!(token.encode_to_vec(&without), Err(refused));
+    // Y's copy has only the one-alternative entry, so it is written without the bit.
+    assert!(
+        step.encode_to_vec(TokenCopy::Ingress { ingress: Y }, &without)
+            .is_ok()
+    );
+    // So is every existing golden, none of which carries 0x80.
+    for golden in goldens()
+        .into_iter()
+        .filter(|g| g.name != "token-ring-return-chosen-logprobs")
+    {
+        let spec = TokenSpec {
+            capabilities: 0,
+            ..golden.spec
+        };
+        assert_eq!(
+            golden.token().encode_to_vec(&spec),
+            Ok(read_golden(golden.name)),
+            "{}",
+            golden.name
+        );
+    }
+}
+
+/// DIST-E8-T18: the chosen-logprobs golden's entries against values written out here, `k = 0`
+/// for the 0x80 entry, and back to the golden's bytes.
+#[test]
+fn chosen_logprobs_golden_converts_field_by_field() {
+    let bytes = read_golden("token-ring-return-chosen-logprobs");
+    let frame = Frame::decode(&bytes).unwrap();
+    let token = frame.token().unwrap();
+    let views: Vec<TokenEntryView<'_>> = token.entries.iter().collect();
+    let plain_entry = |seq, tokens: Vec<u32>, first_position, logprobs, rng_counter| TokenEntry {
+        seq,
+        tokens: tokens.into(),
+        first_position,
+        logprobs,
+        finish: None,
+        approx: ApproxFlags::empty(),
+        draft: Default::default(),
+        draft_tree: None,
+        rng_counter,
+        tap: None,
+    };
+    let expected = [
+        plain_entry(
+            seq(X, 80),
+            vec![14, 15],
+            300,
+            Some(LogprobBlock {
+                k: 0,
+                chosen: vec![-0.75, -0.0625],
+                top_ids: vec![],
+                top_logprobs: vec![],
+            }),
+            9,
+        ),
+        plain_entry(
+            seq(Y, 6),
+            vec![16],
+            12,
+            Some(LogprobBlock {
+                k: 1,
+                chosen: vec![-1.0],
+                top_ids: vec![17],
+                top_logprobs: vec![-1.5],
+            }),
+            3,
+        ),
+        plain_entry(seq(X, 81), vec![18], 8, None, 1),
+    ];
+    assert_eq!(views.len(), expected.len());
+    let mut held = Vec::new();
+    for (index, (view, expected)) in views.iter().zip(&expected).enumerate() {
+        assert_eq!(&view.to_entry().unwrap(), expected, "entry {index}");
+        let back = TokenEntryBytes::new(expected).unwrap();
+        assert_eq!(back.view(), *view, "entry {index}");
+        held.push(back);
+    }
+    let views: Vec<TokenEntryView<'_>> = held.iter().map(TokenEntryBytes::view).collect();
+    let again = Token {
+        entries: Entries::new(&views),
+        ..token
+    };
+    assert_eq!(again.encode_to_vec(&spec_for(25, 5)), Ok(bytes));
 }
 
 /// Every field of the ring-return golden's entries against values written out here, not against

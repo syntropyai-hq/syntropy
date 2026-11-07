@@ -17,11 +17,13 @@
 //!   registered, after the stores before it (RFC-0040 §4.2, the CPU row).
 //! - **Capture.** It records the op list that a stream's calls would push, and `replay` pushes
 //!   it again (RFC-0040 §4.4, the CPU row). A replay allocates nothing.
-//! - **Kernels.** `prepare` looks the op's kernel up in the ISA level's dispatch table
-//!   (COMP-E3-T01), and `launch` queues it. The table is empty until the kernel tasks fill it, so
-//!   every op is `Unsupported` today, except stand-ins a test adds with
-//!   [`CpuProvider::with_kernel`]. `OpArgs` is a placeholder until COMP-E1-T05, so a kernel runs
-//!   with [`OpArgs::none`](syntropy_kernels::OpArgs::none).
+//! - **Kernels.** `query` returns the capabilities the op's kernel declares. `prepare` looks
+//!   the kernel up in the ISA level's dispatch table (COMP-E3-T01) and asks it for a
+//!   [`Plan`](crate::launch::Plan), whose workspace the prepared op asks for. `launch` checks the
+//!   operands against the plan, copies them into a fixed-size form and queues the kernel; the
+//!   push resolves every buffer to its host address, at once or at each replay of a capture
+//!   ([`launch`](crate::launch)). Ops with no kernel at the level are `Unsupported`, apart from
+//!   stand-ins a test adds with [`CpuProvider::with_kernel`].
 //!
 //! The calls the dispatcher makes inside a step allocate nothing, take no lock and make no
 //! system call: `replay`, `launch`, `record`, `wait`, `poll`, `signal_host`, `wait_host`,
@@ -43,9 +45,9 @@ use syntropy_kernels::{
 };
 
 use crate::device::{CpuDevice, HostBuf, internal};
-use crate::dispatch::KernelFn;
 use crate::doorbell::Doorbells;
 use crate::isa::{self, KillSwitches};
+use crate::launch::{Kernel, KernelFn, Unresolved};
 use crate::stream::{Item, Run, StreamRunner, sticky};
 use crate::wake::CpuWaker;
 
@@ -65,7 +67,7 @@ const MIN_ALIGN: u64 = 64;
 pub struct CpuProvider {
     kill: KillSwitches,
     /// Stand-in kernels added to every opened device's table, for tests.
-    extra: Vec<(OpKind, KernelFn)>,
+    extra: Vec<(OpKind, Kernel)>,
     registry: OpRegistry,
 }
 
@@ -80,11 +82,11 @@ impl CpuProvider {
         }
     }
 
-    /// The same provider with `kernel` as the kernel for `kind` on every device it opens: a
-    /// stand-in, for tests, until the kernel tasks fill the dispatch tables.
+    /// The same provider with `kernel` as a stand-in kernel for `kind` on every device it opens
+    /// ([`Kernel::stand_in`]), for tests. It replaces the level's own kernel for `kind`.
     #[must_use]
     pub fn with_kernel(mut self, kind: OpKind, kernel: KernelFn) -> CpuProvider {
-        self.extra.push((kind, kernel));
+        self.extra.push((kind, Kernel::stand_in(kernel)));
         self
     }
 
@@ -304,9 +306,10 @@ impl KernelProvider for CpuProvider {
         &self.registry
     }
 
-    /// `None` for every op: each kernel task declares its op's capabilities with its kernel.
-    fn query(&self, _ctx: &DeviceCtx, _op: &OpKey, _shape: &ShapeSig) -> Option<OpCaps> {
-        None
+    /// What the op's kernel at this device's level declares, or `None` when it has none.
+    fn query(&self, ctx: &DeviceCtx, op: &OpKey, shape: &ShapeSig) -> Option<OpCaps> {
+        let device = self.device(ctx).ok()?;
+        (device.table.get(&op.op)?.caps)(op, shape)
     }
 
     fn alloc(&self, ctx: &DeviceCtx, req: AllocRequest) -> Result<DeviceBuffer, Error> {
@@ -572,32 +575,46 @@ impl KernelProvider for CpuProvider {
         device.push(s.handle, Item::CopyRef { src, dst })
     }
 
-    fn prepare(&self, ctx: &DeviceCtx, op: &OpKey, _shape: &ShapeSig) -> Result<PreparedOp, Error> {
+    fn prepare(&self, ctx: &DeviceCtx, op: &OpKey, shape: &ShapeSig) -> Result<PreparedOp, Error> {
         let device = self.live(ctx)?;
         let kernel = device.table.get(&op.op).ok_or_else(unsupported)?;
+        let plan = (kernel.plan)(op, shape).ok_or_else(unsupported)?;
         let mut prepared = device.prepared.borrow_mut();
-        prepared.push(kernel);
+        prepared.push((kernel, plan));
         Ok(PreparedOp::with_handle(
-            Bytes(0),
+            plan.workspace,
             (prepared.len() - 1) as u64,
         ))
     }
 
-    /// Queues the prepared kernel. `args` is the placeholder of COMP-E1-T05, so the kernel runs
-    /// with [`OpArgs::none`].
+    /// Checks `args` against the prepared op's plan and queues the kernel with them. The push
+    /// resolves every buffer to its host address; in a capture, each replay does.
+    /// Allocation-free.
     fn launch(
         &self,
         ctx: &DeviceCtx,
         s: &Stream,
         op: &PreparedOp,
-        _args: &OpArgs<'_>,
+        args: &OpArgs<'_>,
     ) -> Result<(), Error> {
         let device = self.live(ctx)?;
-        let kernel = usize::try_from(op.handle)
+        let (kernel, plan) = usize::try_from(op.handle)
             .ok()
             .and_then(|i| device.prepared.borrow().get(i).copied())
             .ok_or_else(|| internal(format!("no prepared op {} on this device", op.handle)))?;
-        device.push(s.handle, Item::Launch(kernel))
+        if plan.workspace.0 > 0 && args.workspace.is_none_or(|w| w.bytes < plan.workspace) {
+            return Err(internal(format!(
+                "the prepared op needs a workspace of {} bytes",
+                plan.workspace.0
+            )));
+        }
+        (kernel.check)(&plan, args)?;
+        let item = Item::LaunchRef {
+            kernel: kernel.run,
+            plan,
+            args: Unresolved::from_args(args)?,
+        };
+        device.push(s.handle, item)
     }
 
     /// Starts recording the items `s`'s calls would push, instead of pushing them.

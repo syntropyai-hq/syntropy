@@ -1,0 +1,1804 @@
+{
+  "arenas": [
+    {
+      "tier": {
+        "node": [
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17
+        ],
+        "ordinal": 0
+      },
+      "purpose": "Weights",
+      "bytes": 9620230144,
+      "max_bytes": 9620230144,
+      "geometry": {
+        "Extents": {
+          "align": 4096
+        }
+      },
+      "pin": "Locked",
+      "numa": null,
+      "registrations": "",
+      "dma_devices": [],
+      "pin_priority": 0,
+      "elastic": null
+    },
+    {
+      "tier": {
+        "node": [
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17
+        ],
+        "ordinal": 0
+      },
+      "purpose": "ExpertCache",
+      "bytes": 9500000000,
+      "max_bytes": 9500000000,
+      "geometry": {
+        "Classes": [
+          {
+            "size": 26501120,
+            "count": 7,
+            "layer": 3
+          },
+          {
+            "size": 26501120,
+            "count": 7,
+            "layer": 4
+          },
+          {
+            "size": 26501120,
+            "count": 7,
+            "layer": 5
+          },
+          {
+            "size": 26501120,
+            "count": 7,
+            "layer": 6
+          },
+          {
+            "size": 26501120,
+            "count": 7,
+            "layer": 7
+          },
+          {
+            "size": 26501120,
+            "count": 7,
+            "layer": 8
+          },
+          {
+            "size": 26501120,
+            "count": 7,
+            "layer": 9
+          },
+          {
+            "size": 26501120,
+            "count": 7,
+            "layer": 10
+          },
+          {
+            "size": 26501120,
+            "count": 7,
+            "layer": 11
+          },
+          {
+            "size": 26501120,
+            "count": 7,
+            "layer": 12
+          },
+          {
+            "size": 26501120,
+            "count": 6,
+            "layer": 13
+          },
+          {
+            "size": 26501120,
+            "count": 6,
+            "layer": 14
+          },
+          {
+            "size": 26501120,
+            "count": 6,
+            "layer": 15
+          },
+          {
+            "size": 26501120,
+            "count": 6,
+            "layer": 16
+          },
+          {
+            "size": 26501120,
+            "count": 6,
+            "layer": 17
+          },
+          {
+            "size": 26501120,
+            "count": 6,
+            "layer": 18
+          },
+          {
+            "size": 26501120,
+            "count": 6,
+            "layer": 19
+          },
+          {
+            "size": 26501120,
+            "count": 6,
+            "layer": 20
+          },
+          {
+            "size": 26501120,
+            "count": 6,
+            "layer": 21
+          },
+          {
+            "size": 26501120,
+            "count": 6,
+            "layer": 22
+          },
+          {
+            "size": 26501120,
+            "count": 6,
+            "layer": 23
+          },
+          {
+            "size": 26501120,
+            "count": 6,
+            "layer": 24
+          },
+          {
+            "size": 26501120,
+            "count": 6,
+            "layer": 25
+          },
+          {
+            "size": 26501120,
+            "count": 6,
+            "layer": 26
+          },
+          {
+            "size": 26501120,
+            "count": 6,
+            "layer": 27
+          },
+          {
+            "size": 26501120,
+            "count": 6,
+            "layer": 28
+          },
+          {
+            "size": 26501120,
+            "count": 6,
+            "layer": 29
+          },
+          {
+            "size": 26501120,
+            "count": 6,
+            "layer": 30
+          },
+          {
+            "size": 26501120,
+            "count": 6,
+            "layer": 31
+          },
+          {
+            "size": 26501120,
+            "count": 6,
+            "layer": 32
+          },
+          {
+            "size": 26501120,
+            "count": 6,
+            "layer": 33
+          },
+          {
+            "size": 26501120,
+            "count": 6,
+            "layer": 34
+          },
+          {
+            "size": 26501120,
+            "count": 6,
+            "layer": 35
+          },
+          {
+            "size": 26501120,
+            "count": 6,
+            "layer": 36
+          },
+          {
+            "size": 26501120,
+            "count": 6,
+            "layer": 37
+          },
+          {
+            "size": 26501120,
+            "count": 6,
+            "layer": 38
+          },
+          {
+            "size": 26501120,
+            "count": 6,
+            "layer": 39
+          },
+          {
+            "size": 26501120,
+            "count": 6,
+            "layer": 40
+          },
+          {
+            "size": 26501120,
+            "count": 6,
+            "layer": 41
+          },
+          {
+            "size": 26501120,
+            "count": 6,
+            "layer": 42
+          },
+          {
+            "size": 26501120,
+            "count": 6,
+            "layer": 43
+          },
+          {
+            "size": 26501120,
+            "count": 6,
+            "layer": 44
+          },
+          {
+            "size": 26501120,
+            "count": 6,
+            "layer": 45
+          },
+          {
+            "size": 26501120,
+            "count": 6,
+            "layer": 46
+          },
+          {
+            "size": 26501120,
+            "count": 6,
+            "layer": 47
+          },
+          {
+            "size": 26501120,
+            "count": 6,
+            "layer": 48
+          },
+          {
+            "size": 26501120,
+            "count": 6,
+            "layer": 49
+          },
+          {
+            "size": 26501120,
+            "count": 6,
+            "layer": 50
+          },
+          {
+            "size": 26501120,
+            "count": 6,
+            "layer": 51
+          },
+          {
+            "size": 26501120,
+            "count": 6,
+            "layer": 52
+          },
+          {
+            "size": 26501120,
+            "count": 6,
+            "layer": 53
+          },
+          {
+            "size": 26501120,
+            "count": 6,
+            "layer": 54
+          },
+          {
+            "size": 26501120,
+            "count": 6,
+            "layer": 55
+          },
+          {
+            "size": 26501120,
+            "count": 6,
+            "layer": 56
+          },
+          {
+            "size": 26501120,
+            "count": 6,
+            "layer": 57
+          },
+          {
+            "size": 26501120,
+            "count": 6,
+            "layer": 58
+          },
+          {
+            "size": 26501120,
+            "count": 6,
+            "layer": 59
+          },
+          {
+            "size": 26501120,
+            "count": 6,
+            "layer": 60
+          }
+        ]
+      },
+      "pin": "Locked",
+      "numa": null,
+      "registrations": "",
+      "dma_devices": [],
+      "pin_priority": 0,
+      "elastic": {
+        "segment": 268435456,
+        "min_segments": 2
+      }
+    },
+    {
+      "tier": {
+        "node": [
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17
+        ],
+        "ordinal": 0
+      },
+      "purpose": "ExpertStaging",
+      "bytes": 536870912,
+      "max_bytes": 536870912,
+      "geometry": {
+        "Classes": [
+          {
+            "size": 26501120,
+            "count": 20,
+            "layer": null
+          }
+        ]
+      },
+      "pin": "Locked",
+      "numa": null,
+      "registrations": "",
+      "dma_devices": [],
+      "pin_priority": 0,
+      "elastic": null
+    },
+    {
+      "tier": {
+        "node": [
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17
+        ],
+        "ordinal": 0
+      },
+      "purpose": "Kv",
+      "bytes": 2250000000,
+      "max_bytes": 2250000000,
+      "geometry": {
+        "Pages": {
+          "page": 2097152,
+          "count": 1072
+        }
+      },
+      "pin": "Locked",
+      "numa": null,
+      "registrations": "",
+      "dma_devices": [],
+      "pin_priority": 0,
+      "elastic": null
+    },
+    {
+      "tier": {
+        "node": [
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17
+        ],
+        "ordinal": 0
+      },
+      "purpose": "Scratch",
+      "bytes": 1500000000,
+      "max_bytes": 1500000000,
+      "geometry": "Bump",
+      "pin": "Locked",
+      "numa": null,
+      "registrations": "",
+      "dma_devices": [],
+      "pin_priority": 0,
+      "elastic": null
+    },
+    {
+      "tier": {
+        "node": [
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17
+        ],
+        "ordinal": 1
+      },
+      "purpose": "ExpertCache",
+      "bytes": 61000000000,
+      "max_bytes": 61000000000,
+      "geometry": {
+        "Classes": [
+          {
+            "size": 26501120,
+            "count": 40,
+            "layer": 3
+          },
+          {
+            "size": 26501120,
+            "count": 40,
+            "layer": 4
+          },
+          {
+            "size": 26501120,
+            "count": 40,
+            "layer": 5
+          },
+          {
+            "size": 26501120,
+            "count": 40,
+            "layer": 6
+          },
+          {
+            "size": 26501120,
+            "count": 40,
+            "layer": 7
+          },
+          {
+            "size": 26501120,
+            "count": 40,
+            "layer": 8
+          },
+          {
+            "size": 26501120,
+            "count": 40,
+            "layer": 9
+          },
+          {
+            "size": 26501120,
+            "count": 40,
+            "layer": 10
+          },
+          {
+            "size": 26501120,
+            "count": 40,
+            "layer": 11
+          },
+          {
+            "size": 26501120,
+            "count": 40,
+            "layer": 12
+          },
+          {
+            "size": 26501120,
+            "count": 40,
+            "layer": 13
+          },
+          {
+            "size": 26501120,
+            "count": 40,
+            "layer": 14
+          },
+          {
+            "size": 26501120,
+            "count": 40,
+            "layer": 15
+          },
+          {
+            "size": 26501120,
+            "count": 40,
+            "layer": 16
+          },
+          {
+            "size": 26501120,
+            "count": 40,
+            "layer": 17
+          },
+          {
+            "size": 26501120,
+            "count": 40,
+            "layer": 18
+          },
+          {
+            "size": 26501120,
+            "count": 40,
+            "layer": 19
+          },
+          {
+            "size": 26501120,
+            "count": 40,
+            "layer": 20
+          },
+          {
+            "size": 26501120,
+            "count": 40,
+            "layer": 21
+          },
+          {
+            "size": 26501120,
+            "count": 40,
+            "layer": 22
+          },
+          {
+            "size": 26501120,
+            "count": 40,
+            "layer": 23
+          },
+          {
+            "size": 26501120,
+            "count": 40,
+            "layer": 24
+          },
+          {
+            "size": 26501120,
+            "count": 40,
+            "layer": 25
+          },
+          {
+            "size": 26501120,
+            "count": 40,
+            "layer": 26
+          },
+          {
+            "size": 26501120,
+            "count": 40,
+            "layer": 27
+          },
+          {
+            "size": 26501120,
+            "count": 40,
+            "layer": 28
+          },
+          {
+            "size": 26501120,
+            "count": 40,
+            "layer": 29
+          },
+          {
+            "size": 26501120,
+            "count": 40,
+            "layer": 30
+          },
+          {
+            "size": 26501120,
+            "count": 40,
+            "layer": 31
+          },
+          {
+            "size": 26501120,
+            "count": 40,
+            "layer": 32
+          },
+          {
+            "size": 26501120,
+            "count": 40,
+            "layer": 33
+          },
+          {
+            "size": 26501120,
+            "count": 40,
+            "layer": 34
+          },
+          {
+            "size": 26501120,
+            "count": 40,
+            "layer": 35
+          },
+          {
+            "size": 26501120,
+            "count": 40,
+            "layer": 36
+          },
+          {
+            "size": 26501120,
+            "count": 40,
+            "layer": 37
+          },
+          {
+            "size": 26501120,
+            "count": 40,
+            "layer": 38
+          },
+          {
+            "size": 26501120,
+            "count": 40,
+            "layer": 39
+          },
+          {
+            "size": 26501120,
+            "count": 40,
+            "layer": 40
+          },
+          {
+            "size": 26501120,
+            "count": 40,
+            "layer": 41
+          },
+          {
+            "size": 26501120,
+            "count": 39,
+            "layer": 42
+          },
+          {
+            "size": 26501120,
+            "count": 39,
+            "layer": 43
+          },
+          {
+            "size": 26501120,
+            "count": 39,
+            "layer": 44
+          },
+          {
+            "size": 26501120,
+            "count": 39,
+            "layer": 45
+          },
+          {
+            "size": 26501120,
+            "count": 39,
+            "layer": 46
+          },
+          {
+            "size": 26501120,
+            "count": 39,
+            "layer": 47
+          },
+          {
+            "size": 26501120,
+            "count": 39,
+            "layer": 48
+          },
+          {
+            "size": 26501120,
+            "count": 39,
+            "layer": 49
+          },
+          {
+            "size": 26501120,
+            "count": 39,
+            "layer": 50
+          },
+          {
+            "size": 26501120,
+            "count": 39,
+            "layer": 51
+          },
+          {
+            "size": 26501120,
+            "count": 39,
+            "layer": 52
+          },
+          {
+            "size": 26501120,
+            "count": 39,
+            "layer": 53
+          },
+          {
+            "size": 26501120,
+            "count": 39,
+            "layer": 54
+          },
+          {
+            "size": 26501120,
+            "count": 39,
+            "layer": 55
+          },
+          {
+            "size": 26501120,
+            "count": 39,
+            "layer": 56
+          },
+          {
+            "size": 26501120,
+            "count": 39,
+            "layer": 57
+          },
+          {
+            "size": 26501120,
+            "count": 39,
+            "layer": 58
+          },
+          {
+            "size": 26501120,
+            "count": 39,
+            "layer": 59
+          },
+          {
+            "size": 26501120,
+            "count": 39,
+            "layer": 60
+          }
+        ]
+      },
+      "pin": "DmaPinned",
+      "numa": 0,
+      "registrations": "GPU_DMA | IO_FIXED",
+      "dma_devices": [
+        {
+          "node": [
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17
+          ],
+          "ordinal": 0
+        }
+      ],
+      "pin_priority": 1,
+      "elastic": {
+        "segment": 1060044800,
+        "min_segments": 3
+      }
+    },
+    {
+      "tier": {
+        "node": [
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17
+        ],
+        "ordinal": 1
+      },
+      "purpose": "ExpertStaging",
+      "bytes": 268435456,
+      "max_bytes": 268435456,
+      "geometry": {
+        "Classes": [
+          {
+            "size": 26501120,
+            "count": 10,
+            "layer": null
+          }
+        ]
+      },
+      "pin": "DmaPinned",
+      "numa": 0,
+      "registrations": "GPU_DMA | IO_FIXED",
+      "dma_devices": [
+        {
+          "node": [
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17
+          ],
+          "ordinal": 0
+        }
+      ],
+      "pin_priority": 1,
+      "elastic": null
+    },
+    {
+      "tier": {
+        "node": [
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17
+        ],
+        "ordinal": 1
+      },
+      "purpose": "Kv",
+      "bytes": 2250000000,
+      "max_bytes": 2250000000,
+      "geometry": {
+        "Pages": {
+          "page": 2097152,
+          "count": 1072
+        }
+      },
+      "pin": "DmaPinned",
+      "numa": 0,
+      "registrations": "GPU_DMA | IO_FIXED",
+      "dma_devices": [
+        {
+          "node": [
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17
+          ],
+          "ordinal": 0
+        }
+      ],
+      "pin_priority": 3,
+      "elastic": null
+    },
+    {
+      "tier": {
+        "node": [
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17
+        ],
+        "ordinal": 1
+      },
+      "purpose": "IoStaging",
+      "bytes": 268435456,
+      "max_bytes": 268435456,
+      "geometry": {
+        "Ring": {
+          "slot": 67108864,
+          "count": 4
+        }
+      },
+      "pin": "DmaPinned",
+      "numa": 0,
+      "registrations": "GPU_DMA | IO_FIXED",
+      "dma_devices": [
+        {
+          "node": [
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17,
+            17
+          ],
+          "ordinal": 0
+        }
+      ],
+      "pin_priority": 0,
+      "elastic": null
+    },
+    {
+      "tier": {
+        "node": [
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17
+        ],
+        "ordinal": 2
+      },
+      "purpose": "Weights",
+      "bytes": 470003712,
+      "max_bytes": 470003712,
+      "geometry": {
+        "Extents": {
+          "align": 4096
+        }
+      },
+      "pin": "Locked",
+      "numa": 0,
+      "registrations": "",
+      "dma_devices": [],
+      "pin_priority": 4,
+      "elastic": null
+    },
+    {
+      "tier": {
+        "node": [
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17
+        ],
+        "ordinal": 2
+      },
+      "purpose": "ExpertCache",
+      "bytes": 43000000000,
+      "max_bytes": 43000000000,
+      "geometry": {
+        "Classes": [
+          {
+            "size": 26501120,
+            "count": 28,
+            "layer": 3
+          },
+          {
+            "size": 26501120,
+            "count": 28,
+            "layer": 4
+          },
+          {
+            "size": 26501120,
+            "count": 28,
+            "layer": 5
+          },
+          {
+            "size": 26501120,
+            "count": 28,
+            "layer": 6
+          },
+          {
+            "size": 26501120,
+            "count": 28,
+            "layer": 7
+          },
+          {
+            "size": 26501120,
+            "count": 28,
+            "layer": 8
+          },
+          {
+            "size": 26501120,
+            "count": 28,
+            "layer": 9
+          },
+          {
+            "size": 26501120,
+            "count": 28,
+            "layer": 10
+          },
+          {
+            "size": 26501120,
+            "count": 28,
+            "layer": 11
+          },
+          {
+            "size": 26501120,
+            "count": 28,
+            "layer": 12
+          },
+          {
+            "size": 26501120,
+            "count": 28,
+            "layer": 13
+          },
+          {
+            "size": 26501120,
+            "count": 28,
+            "layer": 14
+          },
+          {
+            "size": 26501120,
+            "count": 28,
+            "layer": 15
+          },
+          {
+            "size": 26501120,
+            "count": 28,
+            "layer": 16
+          },
+          {
+            "size": 26501120,
+            "count": 28,
+            "layer": 17
+          },
+          {
+            "size": 26501120,
+            "count": 28,
+            "layer": 18
+          },
+          {
+            "size": 26501120,
+            "count": 28,
+            "layer": 19
+          },
+          {
+            "size": 26501120,
+            "count": 28,
+            "layer": 20
+          },
+          {
+            "size": 26501120,
+            "count": 28,
+            "layer": 21
+          },
+          {
+            "size": 26501120,
+            "count": 28,
+            "layer": 22
+          },
+          {
+            "size": 26501120,
+            "count": 28,
+            "layer": 23
+          },
+          {
+            "size": 26501120,
+            "count": 28,
+            "layer": 24
+          },
+          {
+            "size": 26501120,
+            "count": 28,
+            "layer": 25
+          },
+          {
+            "size": 26501120,
+            "count": 28,
+            "layer": 26
+          },
+          {
+            "size": 26501120,
+            "count": 28,
+            "layer": 27
+          },
+          {
+            "size": 26501120,
+            "count": 28,
+            "layer": 28
+          },
+          {
+            "size": 26501120,
+            "count": 28,
+            "layer": 29
+          },
+          {
+            "size": 26501120,
+            "count": 28,
+            "layer": 30
+          },
+          {
+            "size": 26501120,
+            "count": 28,
+            "layer": 31
+          },
+          {
+            "size": 26501120,
+            "count": 28,
+            "layer": 32
+          },
+          {
+            "size": 26501120,
+            "count": 28,
+            "layer": 33
+          },
+          {
+            "size": 26501120,
+            "count": 28,
+            "layer": 34
+          },
+          {
+            "size": 26501120,
+            "count": 28,
+            "layer": 35
+          },
+          {
+            "size": 26501120,
+            "count": 28,
+            "layer": 36
+          },
+          {
+            "size": 26501120,
+            "count": 28,
+            "layer": 37
+          },
+          {
+            "size": 26501120,
+            "count": 28,
+            "layer": 38
+          },
+          {
+            "size": 26501120,
+            "count": 28,
+            "layer": 39
+          },
+          {
+            "size": 26501120,
+            "count": 28,
+            "layer": 40
+          },
+          {
+            "size": 26501120,
+            "count": 28,
+            "layer": 41
+          },
+          {
+            "size": 26501120,
+            "count": 28,
+            "layer": 42
+          },
+          {
+            "size": 26501120,
+            "count": 28,
+            "layer": 43
+          },
+          {
+            "size": 26501120,
+            "count": 28,
+            "layer": 44
+          },
+          {
+            "size": 26501120,
+            "count": 28,
+            "layer": 45
+          },
+          {
+            "size": 26501120,
+            "count": 28,
+            "layer": 46
+          },
+          {
+            "size": 26501120,
+            "count": 28,
+            "layer": 47
+          },
+          {
+            "size": 26501120,
+            "count": 28,
+            "layer": 48
+          },
+          {
+            "size": 26501120,
+            "count": 28,
+            "layer": 49
+          },
+          {
+            "size": 26501120,
+            "count": 28,
+            "layer": 50
+          },
+          {
+            "size": 26501120,
+            "count": 28,
+            "layer": 51
+          },
+          {
+            "size": 26501120,
+            "count": 28,
+            "layer": 52
+          },
+          {
+            "size": 26501120,
+            "count": 28,
+            "layer": 53
+          },
+          {
+            "size": 26501120,
+            "count": 28,
+            "layer": 54
+          },
+          {
+            "size": 26501120,
+            "count": 28,
+            "layer": 55
+          },
+          {
+            "size": 26501120,
+            "count": 28,
+            "layer": 56
+          },
+          {
+            "size": 26501120,
+            "count": 28,
+            "layer": 57
+          },
+          {
+            "size": 26501120,
+            "count": 28,
+            "layer": 58
+          },
+          {
+            "size": 26501120,
+            "count": 27,
+            "layer": 59
+          },
+          {
+            "size": 26501120,
+            "count": 27,
+            "layer": 60
+          }
+        ]
+      },
+      "pin": "Locked",
+      "numa": 0,
+      "registrations": "",
+      "dma_devices": [],
+      "pin_priority": 4,
+      "elastic": {
+        "segment": 1060044800,
+        "min_segments": 3
+      }
+    }
+  ],
+  "nvme_extents": [],
+  "per_tier": [
+    [
+      {
+        "node": [
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17
+        ],
+        "ordinal": 0
+      },
+      {
+        "reserved": 23407101056,
+        "by_purpose": [
+          [
+            "Weights",
+            9620230144
+          ],
+          [
+            "ExpertCache",
+            9500000000
+          ],
+          [
+            "ExpertStaging",
+            536870912
+          ],
+          [
+            "Kv",
+            2250000000
+          ],
+          [
+            "Scratch",
+            1500000000
+          ]
+        ],
+        "headroom": 536870912
+      }
+    ],
+    [
+      {
+        "node": [
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17
+        ],
+        "ordinal": 1
+      },
+      {
+        "reserved": 63786870912,
+        "by_purpose": [
+          [
+            "ExpertCache",
+            61000000000
+          ],
+          [
+            "ExpertStaging",
+            268435456
+          ],
+          [
+            "Kv",
+            2250000000
+          ],
+          [
+            "IoStaging",
+            268435456
+          ]
+        ],
+        "headroom": 0
+      }
+    ],
+    [
+      {
+        "node": [
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17
+        ],
+        "ordinal": 2
+      },
+      {
+        "reserved": 43470003712,
+        "by_purpose": [
+          [
+            "Weights",
+            470003712
+          ],
+          [
+            "ExpertCache",
+            43000000000
+          ]
+        ],
+        "headroom": 0
+      }
+    ]
+  ]
+}

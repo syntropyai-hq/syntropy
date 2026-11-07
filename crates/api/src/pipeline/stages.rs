@@ -16,12 +16,14 @@
 //! | 10 encoder | [`EventSink`] | each shape's encoder, PROD-E2-T04 first |
 //!
 //! Stages 1 and 2, authentication and the front end, run before the pipeline: they produce the
-//! [`GenerateRequest`](super::GenerateRequest). Stage 4's overrides (PROD-E1-T10), stage 6's
-//! constraint compile (PROD-E3-T05) and §2.3's token-ID range check (PROD-E2-T20) are not in M0's
-//! pipeline yet; their tasks add them between the stages they name.
+//! [`GenerateRequest`](super::GenerateRequest). Stage 4's overrides (PROD-E1-T10) and stage 6's
+//! constraint compile (PROD-E3-T05) are not in M0's pipeline yet; their tasks add them between
+//! the stages they name. §2.3's token-ID range check runs after stage 5, with the
+//! [`ModelInfo::vocab_limit`] stage 3 returns ([`check_request`](super::check_request)).
 
 use syntropy_core::{InstanceId, PlanEpoch};
 
+use super::logprobs::TailChannels;
 use super::types::{ApiError, GenEvent, Input, ModelRef};
 
 /// What the pipeline needs to know of a resolved model.
@@ -31,6 +33,10 @@ pub struct ModelInfo {
     pub name: String,
     /// The largest prompt plus `max_tokens` the model takes.
     pub context_length: u32,
+    /// `min(embedding rows, LM-head rows, sampler table size)`, from the model's manifest
+    /// ([`vocab_limit`](super::vocab_limit)): every token ID a request carries must be below it
+    /// (RFC-0050 §2.3).
+    pub vocab_limit: u32,
 }
 
 /// Where a request goes (stage 7): the instance, and the router's choices that travel in
@@ -45,6 +51,10 @@ pub struct Route {
     pub prefill_chunk: u32,
     /// The first verify window; `None` takes the plan's.
     pub initial_window: Option<u16>,
+    /// The tail's channels to this ingress and to the head, which decide whether the tail is
+    /// asked for the chosen tokens' logprobs alone (RFC-0050 §3.1). The default is a tail in
+    /// this ingress's process.
+    pub tail: TailChannels,
 }
 
 /// Stages 3, 5, 7 and 8, and the per-choice text state of stage 10.

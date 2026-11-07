@@ -118,6 +118,7 @@ fn m4_mini() {
                 large_pages: None,
                 lock: None,
             },
+            node_mem: None,
         }]
     );
     assert_eq!(

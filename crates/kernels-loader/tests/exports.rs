@@ -3,9 +3,11 @@
 //! The dynamic symbol table of the test provider library holds exactly one symbol, the entry
 //! point (COMP-E9-T04; RFC-0040 §10.4; ADR-0400 decision 4).
 //!
-//! - Linux: `nm -D --defined-only` lists one symbol. It is unversioned: rustc's own anonymous
-//!   version script, which makes everything but the entry symbol local, cannot be combined with a
-//!   named `SYNTROPY_PROVIDER_1` node (see `build.rs`).
+//! - Linux: `nm -D --defined-only` lists one function symbol, the entry, under the version node
+//!   `SYNTROPY_PROVIDER_1`, and `readelf -V` defines that node (COMP-E9-T19). GNU ld also lists
+//!   the node itself as an absolute symbol, which is not an export and is ignored; rust-lld does
+//!   not list it. The node comes from `ci/link/provider-cc`, the linker driver
+//!   `.cargo/config.toml` sets for Linux.
 //! - Windows: the test reads the PE export directory itself, so it needs no tool from a Visual
 //!   Studio prompt. The reader is checked against a synthetic image on every OS.
 //! - macOS has no modules, but the same library builds there with an exported-symbols list, and
@@ -14,6 +16,8 @@
 mod common;
 
 const ENTRY: &str = "syntropy_provider_entry_v1";
+#[cfg(target_os = "linux")]
+const NODE: &str = syntropy_kernels::abi::VERSION_NODE;
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn run(tool: &str, args: &[&str]) -> String {
@@ -44,8 +48,55 @@ fn nm_names(listing: &str) -> Vec<String> {
 fn the_dynamic_symbol_table_holds_exactly_the_entry_symbol() {
     let lib = common::provider_library();
     let path = lib.to_str().expect("a UTF-8 path");
-    let names = nm_names(&run("nm", &["-D", "--defined-only", path]));
-    assert_eq!(names, [ENTRY], "defined dynamic symbols of {path}");
+    let listing = run("nm", &["-D", "--defined-only", path]);
+    // GNU ld lists the version node as an absolute (`A`) symbol; it names no code or data. A
+    // binutils that prints versions appends `@@SYNTROPY_PROVIDER_1` to the entry; the version
+    // itself is `the_entry_symbol_is_under_the_version_node`'s to check.
+    let marker = format!("A {NODE}");
+    let kept: String = listing
+        .lines()
+        .filter(|line| !line.trim_end().ends_with(&marker))
+        .map(|line| format!("{line}\n"))
+        .collect();
+    let exports: Vec<String> = nm_names(&kept)
+        .into_iter()
+        .map(|name| match name.split_once('@') {
+            Some((bare, _)) => bare.to_owned(),
+            None => name,
+        })
+        .collect();
+    assert_eq!(
+        exports,
+        [ENTRY],
+        "defined dynamic symbols of {path}:\n{listing}"
+    );
+}
+
+/// The library defines the version node `SYNTROPY_PROVIDER_1` and the entry symbol is its
+/// default version (ADR-0400 decision 4; COMP-E9-T19).
+#[cfg(target_os = "linux")]
+#[test]
+fn the_entry_symbol_is_under_the_version_node() {
+    let lib = common::provider_library();
+    let path = lib.to_str().expect("a UTF-8 path");
+    let versions = run("readelf", &["-V", "-W", path]);
+    let defined = versions
+        .lines()
+        .skip_while(|line| !line.contains(".gnu.version_d"))
+        .take_while(|line| !line.contains(".gnu.version_r"))
+        .any(|line| line.split_whitespace().last() == Some(NODE));
+    assert!(
+        defined,
+        "`readelf -V` of {path} defines no {NODE}:\n{versions}"
+    );
+    let symbols = run("readelf", &["--dyn-syms", "-W", path]);
+    let versioned = format!("{ENTRY}@@{NODE}");
+    assert!(
+        symbols
+            .lines()
+            .any(|line| line.split_whitespace().last() == Some(versioned.as_str())),
+        "the dynamic symbols of {path} have no {versioned}:\n{symbols}"
+    );
 }
 
 #[cfg(target_os = "macos")]

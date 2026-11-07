@@ -85,6 +85,6 @@ pub use seq_control::{
     encode_seq_control, encode_seq_meta, open_body_limit, sequence_slot_size,
 };
 pub use token::{
-    ENTRY_HEADER_LEN, Entries, Route, StepTokens, TOKEN_FIXED_LEN, Token, TokenCopy,
-    TokenEntryBytes, TokenEntryView, TokenSpec, token_flags,
+    ENTRY_HEADER_LEN, Entries, LOGPROB_CHOSEN_ONLY, Route, StepTokens, TOKEN_FIXED_LEN, Token,
+    TokenCopy, TokenEntryBytes, TokenEntryView, TokenSpec, token_flags,
 };

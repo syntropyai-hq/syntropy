@@ -6,9 +6,15 @@
 //! built with its pure-Rust regex backend (`fancy-regex`), never the Oniguruma C library, so it
 //! cross-compiles to every ADR-0020 target. Every model reaches it in one form: the serialized
 //! `tokenizer.json` that `TokenizerSpec::model` holds, shipped by a safetensors source or converted
-//! from GGUF metadata at census time (RFC-0043 §8.3). Encoding, detokenization and the segment map
-//! of RFC-0050 build on [`load`]; they are planned.
+//! from GGUF metadata at census time (RFC-0043 §8.3).
+//!
+//! [`SpanEncoder`] encodes a rendered prompt's segment map with content tokenized literally
+//! (RFC-0043 §8.7), and [`injection`] holds the injection cases of §8.6. Detokenization is planned.
 
+pub mod injection;
+mod spans;
+
+pub use spans::{Span, SpanEncoder, SpanError, SpanKind, SpecialTokens};
 pub use tokenizers::Tokenizer;
 
 /// Loads the engine from a serialized `tokenizer.json`, as `TokenizerSpec::model` holds it.

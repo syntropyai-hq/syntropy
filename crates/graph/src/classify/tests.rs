@@ -570,6 +570,13 @@ fn the_plan_lists_ignored_and_unknown_tensors_apart_from_the_fetch() {
         fn classify(&self, name: &str, shape: &[u64], hp: &HyperParams) -> Classification {
             self.0.classify(name, shape, hp)
         }
+        fn kv_formula(
+            &self,
+            _: &HyperParams,
+            _: syntropy_manifest::kv::KvSource,
+        ) -> syntropy_manifest::kv::KvFormula {
+            syntropy_manifest::kv::KvFormula::new(Vec::new(), syntropy_core::DType::F16)
+        }
         fn required_ops(&self, _: &HyperParams) -> crate::ir::OpSet {
             crate::ir::OpSet::new()
         }

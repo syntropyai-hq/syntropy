@@ -29,7 +29,9 @@ inputs:
     description: >-
       `read-only` (the default) restores the caches and never saves them. `read-write` also saves
       them when the job succeeds; use it only in trusted runs, never in a build of untrusted code
-      (RFC-0062 §3.3 item 3). `off` skips the caches.
+      (RFC-0062 §3.3 item 3). On a self-hosted runner it restores only, as `read-only` does: the
+      build host's uplink takes far longer to upload a target cache than the job takes to rebuild
+      it (ADR-0625). `off` skips the caches.
     required: false
     default: read-only
 
@@ -85,7 +87,7 @@ runs:
 
     - name: Restore and save the cargo caches
       id: cache-rw
-      if: inputs.cache == 'read-write'
+      if: inputs.cache == 'read-write' && runner.environment == 'github-hosted'
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: |
@@ -98,7 +100,9 @@ runs:
 
     - name: Restore the cargo caches without saving
       id: cache-ro
-      if: inputs.cache == 'read-only'
+      if: >-
+        inputs.cache == 'read-only' ||
+        (inputs.cache == 'read-write' && runner.environment != 'github-hosted')
       uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: |

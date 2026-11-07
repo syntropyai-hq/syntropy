@@ -15,6 +15,8 @@ use std::net::SocketAddr;
 
 use syntropy_core::{InstanceId, Nanos, PlanEpoch, SequenceId};
 
+use super::token_ids::TokenIdOutOfRange;
+
 /// The API shape a request arrived in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ApiShape {
@@ -173,6 +175,8 @@ pub enum StreamMode {
         /// Whether a final usage chunk is sent (OpenAI's `stream_options.include_usage`).
         include_usage: bool,
     },
+    /// One JSON object per event and line: the native API's `?format=ndjson` (RFC-0050 §5.1).
+    Ndjson,
 }
 
 /// Who sent a request (RFC-0050 §2.1). Authentication (§11) fills it in before the pipeline runs.
@@ -222,6 +226,16 @@ pub enum GenEvent {
         choice: u8,
         /// The text.
         text: String,
+    },
+    /// The tokens a choice emitted and counted since its last `Tokens` event, after the text
+    /// they released. Sent only when the generation was asked for them
+    /// ([`Generation::return_tokens`](super::Generation::return_tokens)): the native API's
+    /// `return_tokens` (RFC-0050 §13.1).
+    Tokens {
+        /// The choice.
+        choice: u8,
+        /// The token IDs, in order.
+        tokens: Vec<u32>,
     },
     /// A tool call begins (RFC-0050 §6).
     ToolCallStart {
@@ -323,6 +337,9 @@ pub enum ApiError {
         /// The model's context length.
         limit: u32,
     },
+    /// A token ID at or above the model's `vocab_limit` (RFC-0050 §2.3): 400
+    /// `token_id_out_of_range`, naming the field, the first offending position and the limit.
+    TokenIdOutOfRange(TokenIdOutOfRange),
     /// No capacity now: admission refused, or the runner's control ring is full. Retryable.
     Capacity(String),
     /// The runner's rings are gone or broke their protocol.
@@ -350,6 +367,7 @@ impl fmt::Display for ApiError {
                 f,
                 "the prompt and max_tokens need {need} tokens, over the model's context of {limit}"
             ),
+            ApiError::TokenIdOutOfRange(e) => write!(f, "token ID out of range: {e}"),
             ApiError::Capacity(why) => write!(f, "no capacity: {why}"),
             ApiError::RunnerUnavailable(why) => write!(f, "the runner is unavailable: {why}"),
             ApiError::SequenceIdsExhausted => {
@@ -363,3 +381,9 @@ impl fmt::Display for ApiError {
 }
 
 impl std::error::Error for ApiError {}
+
+impl From<TokenIdOutOfRange> for ApiError {
+    fn from(e: TokenIdOutOfRange) -> ApiError {
+        ApiError::TokenIdOutOfRange(e)
+    }
+}

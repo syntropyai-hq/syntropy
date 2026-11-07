@@ -16,3 +16,5 @@ tokenizers.workspace = true
 [dev-dependencies]
 proptest.workspace = true
 regex.workspace = true
+# The fuzz harness of RFC-0060 §10.2, for the literal-tokenization fuzz target.
+syntropy-testkit = { path = "../testkit" }

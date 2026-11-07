@@ -7,3 +7,13 @@
 # run `cargo xtask` from the workspace root, as CI does.
 [alias]
 xtask = "run --quiet --locked --package syntropy-xtask --target-dir target/xtask --"
+
+# Linux links go through `ci/link/provider-cc`, which puts a provider library's single
+# export under the ELF version node `SYNTROPY_PROVIDER_1` and passes every other link to `cc`
+# unchanged (COMP-E9-T19; RFC-0040 §10.4; ADR-0400 decision 4). The path is relative to the
+# workspace root.
+[target.x86_64-unknown-linux-gnu]
+linker = "ci/link/provider-cc"
+
+[target.aarch64-unknown-linux-gnu]
+linker = "ci/link/provider-cc"

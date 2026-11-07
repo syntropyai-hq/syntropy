@@ -73,19 +73,37 @@ def status(name, uid, gid, groups, capeff, capbnd, seccomp):
     )
 
 
-def meminfo(total, free, avail):
+# Active(file), Inactive(file) and SReclaimable in kB, per node and host-wide: the clean cache
+# RFC-0020 §5's per-NUMA estimate counts as reclaimable. A one-node host's /proc/meminfo
+# matches its node; the dual-socket host's is the sum of its two nodes.
+DESKTOP_RECLAIM = (2310456, 3402108, 389204)
+DUAL_NODE0_RECLAIM = (1602340, 2104772, 512388)
+DUAL_NODE1_RECLAIM = (1498116, 1987204, 498772)
+DUAL_RECLAIM = tuple(a + b for a, b in zip(DUAL_NODE0_RECLAIM, DUAL_NODE1_RECLAIM))
+WSL2_RECLAIM = (312444, 401256, 98312)
+DOCKER_RECLAIM = (2198004, 3011552, 402876)
+RPI5_RECLAIM = (301224, 289908, 61004)
+
+
+def meminfo(total, free, avail, reclaim):
+    act, inact, srecl = reclaim
     return (
         f"MemTotal:       {total:>8} kB\nMemFree:        {free:>8} kB\nMemAvailable:   {avail:>8} kB\n"
         "Buffers:          412312 kB\nCached:          6123044 kB\nSwapCached:            0 kB\n"
-        "SwapTotal:       2097148 kB\nSwapFree:        2097148 kB\nHugePages_Total:       0\n"
+        f"Active(file):   {act:>8} kB\nInactive(file): {inact:>8} kB\n"
+        "SwapTotal:       2097148 kB\nSwapFree:        2097148 kB\n"
+        f"SReclaimable:   {srecl:>8} kB\nHugePages_Total:       0\n"
         "HugePages_Free:        0\nHugepagesize:       2048 kB\n"
     )
 
 
-def node_meminfo(n, total, free):
+def node_meminfo(n, total, free, reclaim):
+    act, inact, srecl = reclaim
     return (
         f"Node {n} MemTotal:       {total:>8} kB\nNode {n} MemFree:        {free:>8} kB\n"
-        f"Node {n} MemUsed:        {total - free:>8} kB\nNode {n} HugePages_Total:     0\n"
+        f"Node {n} MemUsed:        {total - free:>8} kB\n"
+        f"Node {n} Active(file):   {act:>8} kB\nNode {n} Inactive(file): {inact:>8} kB\n"
+        f"Node {n} SReclaimable:   {srecl:>8} kB\nNode {n} HugePages_Total:     0\n"
     )
 
 
@@ -152,7 +170,7 @@ def desktop(root):
     def cores_of(c):
         return (0, c // 2 * 4 if c < 12 else 32 + (c - 12) * 2, 16, 10)
     w(root, "proc/cpuinfo", x86_cpuinfo(cpus, "12th Gen Intel(R) Core(TM) i5-12600K", 6, 151, flags, cores_of, "3700.000"))
-    w(root, "proc/meminfo", meminfo(32562044, 18304412, 26120588))
+    w(root, "proc/meminfo", meminfo(32562044, 18304412, 26120588, DESKTOP_RECLAIM))
     w(root, "sys/devices/system/cpu/online", "0-15")
     w(root, "sys/devices/cpu_core/cpus", "0-11")
     w(root, "sys/devices/cpu_atom/cpus", "12-15")
@@ -170,7 +188,7 @@ def desktop(root):
             cache(root, c, 2, 2, "Unified", "2048K", [12, 13, 14, 15])
         cache(root, c, 3, 3, "Unified", "20480K", cpus)
     w(root, "sys/devices/system/node/node0/cpulist", "0-15")
-    w(root, "sys/devices/system/node/node0/meminfo", node_meminfo(0, 32562044, 18304412))
+    w(root, "sys/devices/system/node/node0/meminfo", node_meminfo(0, 32562044, 18304412, DESKTOP_RECLAIM))
     proc_common(root, "6.8.0-45-generic", "8388608", "0000000000000000", 0,
                 "0::/user.slice/user-1000.slice/user@1000.service/app.slice/syntropy.scope",
                 0, "always [madvise] never", 2097152)
@@ -210,7 +228,7 @@ def dual_socket(root):
         s, k = where(c)
         return (s, k, 16, 8)
     w(root, "proc/cpuinfo", x86_cpuinfo(cpus, "Intel(R) Xeon(R) Gold 5415+", 6, 143, flags, cores_of, "2900.000"))
-    w(root, "proc/meminfo", meminfo(263856048, 241002316, 252874220))
+    w(root, "proc/meminfo", meminfo(263856048, 241002316, 252874220, DUAL_RECLAIM))
     w(root, "sys/devices/system/cpu/online", "0-31")
     for c in cpus:
         s, k = where(c)
@@ -222,9 +240,9 @@ def dual_socket(root):
         cache(root, c, 2, 2, "Unified", "2048K", core)
         cache(root, c, 3, 3, "Unified", "23040K", sock)
     w(root, "sys/devices/system/node/node0/cpulist", "0-7,16-23")
-    w(root, "sys/devices/system/node/node0/meminfo", node_meminfo(0, 131854356, 120112508))
+    w(root, "sys/devices/system/node/node0/meminfo", node_meminfo(0, 131854356, 120112508, DUAL_NODE0_RECLAIM))
     w(root, "sys/devices/system/node/node1/cpulist", "8-15,24-31")
-    w(root, "sys/devices/system/node/node1/meminfo", node_meminfo(1, 132001692, 120889808))
+    w(root, "sys/devices/system/node/node1/meminfo", node_meminfo(1, 132001692, 120889808, DUAL_NODE1_RECLAIM))
     w(root, "sys/devices/system/node/online", "0-1")
     proc_common(root, "6.8.0-45-generic", "8388608", "0000000000004000", 0,
                 "0::/system.slice/syntropy.service", 0, "[always] madvise never", 2097152)
@@ -245,7 +263,7 @@ def wsl2(root):
     def cores_of(c):
         return (0, c // 2, 16, 8)
     w(root, "proc/cpuinfo", x86_cpuinfo(cpus, "AMD Ryzen 7 7800X3D 8-Core Processor", 25, 97, flags, cores_of, "4199.998"))
-    w(root, "proc/meminfo", meminfo(32803456, 30112708, 31207884))
+    w(root, "proc/meminfo", meminfo(32803456, 30112708, 31207884, WSL2_RECLAIM))
     w(root, "sys/devices/system/cpu/online", "0-15")
     for c in cpus:
         core = [c - c % 2, c - c % 2 + 1]
@@ -255,7 +273,7 @@ def wsl2(root):
         cache(root, c, 2, 2, "Unified", "1024K", core)
         cache(root, c, 3, 3, "Unified", "98304K", cpus)
     w(root, "sys/devices/system/node/node0/cpulist", "0-15")
-    w(root, "sys/devices/system/node/node0/meminfo", node_meminfo(0, 32803456, 30112708))
+    w(root, "sys/devices/system/node/node0/meminfo", node_meminfo(0, 32803456, 30112708, WSL2_RECLAIM))
     proc_common(root, "5.15.153.1-microsoft-standard-WSL2", "65536", "0000000000000000", 0,
                 "0::/", None, "always [madvise] never", 2097152)
     w(root, "sys/fs/cgroup/cgroup.controllers", "cpuset cpu io memory pids")
@@ -271,7 +289,7 @@ def docker(root):
     def cores_of(c):
         return (0, c % 16, 32, 16)
     w(root, "proc/cpuinfo", x86_cpuinfo(cpus, "AMD Ryzen 9 5950X 16-Core Processor", 25, 33, flags, cores_of, "3400.000"))
-    w(root, "proc/meminfo", meminfo(65777452, 40221396, 58993172))
+    w(root, "proc/meminfo", meminfo(65777452, 40221396, 58993172, DOCKER_RECLAIM))
     w(root, "sys/devices/system/cpu/online", "0-31")
     for c in cpus:
         k = c % 16
@@ -283,7 +301,7 @@ def docker(root):
         cache(root, c, 2, 2, "Unified", "512K", core)
         cache(root, c, 3, 3, "Unified", "32768K", ccd)
     w(root, "sys/devices/system/node/node0/cpulist", "0-31")
-    w(root, "sys/devices/system/node/node0/meminfo", node_meminfo(0, 65777452, 40221396))
+    w(root, "sys/devices/system/node/node0/meminfo", node_meminfo(0, 65777452, 40221396, DOCKER_RECLAIM))
     proc_common(root, "6.8.0-45-generic", "8388608", "00000000a80425fb", 2,
                 "0::/", 0, "always [madvise] never", 2097152,
                 user=CONTAINER_ROOT, capbnd="00000000a80425fb")
@@ -305,7 +323,7 @@ def rpi5(root):
               "CPU architecture: 8\nCPU variant\t: 0x4\nCPU part\t: 0xd0b\nCPU revision\t: 1\n\n")
     s += "Revision\t: d04170\nSerial\t\t: 0000000000000000\nModel\t\t: Raspberry Pi 5 Model B Rev 1.0\n"
     w(root, "proc/cpuinfo", s)
-    w(root, "proc/meminfo", meminfo(8245168, 6922480, 7570784))
+    w(root, "proc/meminfo", meminfo(8245168, 6922480, 7570784, RPI5_RECLAIM))
     w(root, "sys/devices/system/cpu/online", "0-3")
     for c in cpus:
         cpu_topo(root, c, [c], 0, c)

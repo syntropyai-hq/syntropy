@@ -28,6 +28,11 @@
 //! A job marked `planned` has no suite or rig yet: its rule is evaluated and reported, but a
 //! hosted one is not listed, and `ci-gate` does not hold a same-repository PR for a hardware one.
 //!
+//! A hosted job marked `paused`, with the ADR that pauses it, does not run: its rule is evaluated
+//! and reported, but it is never listed, so `pr.yml` skips it and `ci-gate` does not wait for it.
+//! During M0a these are the macOS and Windows jobs (ADR-0626). The base branch's rules decide, so
+//! a PR cannot pause its own failing job.
+//!
 //! The crate graph is read from the manifests as TOML at both revisions, and the closure is taken
 //! over the union of the two graphs, so an edge the PR adds or removes counts. Nothing from the PR
 //! runs: the diff and the PR's files are read through git, and no cargo command reads the PR's
@@ -160,6 +165,8 @@ pub struct Job {
     pub when: When,
     /// The task that adds the job's suite or rig, while it has none.
     pub planned: Option<String>,
+    /// The ADR that pauses the job, which then never runs (ADR-0626).
+    pub paused: Option<String>,
 }
 
 /// `ci/jobs.toml`.
@@ -209,6 +216,7 @@ struct RawJob {
     #[serde(default)]
     lock_deps: Vec<String>,
     planned: Option<String>,
+    paused: Option<String>,
 }
 
 impl Config {
@@ -294,11 +302,24 @@ impl Config {
                     "`planned = \"{task}\"` is not a task ID such as `QUAL-E2-T02`"
                 )));
             }
+            if let Some(adr) = &job.paused {
+                if !is_adr_ref(adr) {
+                    problems.push(problem(format!(
+                        "`paused = \"{adr}\"` is not an ADR ID such as `ADR-0626`"
+                    )));
+                }
+                if runner != Runner::Hosted || job.planned.is_some() {
+                    problems.push(problem(
+                        "only a hosted job with a suite can be paused".into(),
+                    ));
+                }
+            }
             jobs.push(Job {
                 name: name.clone(),
                 runner,
                 when,
                 planned: job.planned.clone(),
+                paused: job.paused.clone(),
             });
         }
         if problems.is_empty() {
@@ -375,6 +396,12 @@ fn is_job_name(name: &str) -> bool {
         && name
             .chars()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+}
+
+/// An ADR ID: `ADR-` and four digits.
+fn is_adr_ref(text: &str) -> bool {
+    text.strip_prefix("ADR-")
+        .is_some_and(|n| n.len() == 4 && n.chars().all(|c| c.is_ascii_digit()))
 }
 
 /// A task ID, or several of one epic written `QUAL-E3-T09/T10`.
@@ -698,6 +725,8 @@ pub struct Affected {
     pub hw_required: Vec<String>,
     /// Planned jobs whose rule matched, with the task that adds each.
     pub planned: Vec<(String, String)>,
+    /// Paused jobs whose rule matched, with the ADR that pauses each. None of them runs.
+    pub paused: Vec<(String, String)>,
     /// Why each matched job matched.
     pub reasons: BTreeMap<String, String>,
 }
@@ -767,6 +796,10 @@ pub fn affected(
             continue;
         };
         affected.reasons.insert(job.name.clone(), reason);
+        if let Some(adr) = &job.paused {
+            affected.paused.push((job.name.clone(), adr.clone()));
+            continue;
+        }
         match (job.runner, &job.planned) {
             (Runner::Hosted, Some(task)) => affected.planned.push((job.name.clone(), task.clone())),
             (Runner::Hosted, None) => affected.jobs.push(job.name.clone()),
@@ -923,6 +956,10 @@ pub fn report(affected: &Affected, config: &Config) -> Vec<String> {
     ));
     for job in &config.jobs {
         let verdict = match (affected.reasons.get(&job.name), &job.planned) {
+            (Some(reason), _) if job.paused.is_some() => format!(
+                "would run ({reason}), but it is paused: {}",
+                job.paused.as_deref().unwrap_or_default()
+            ),
             (Some(reason), Some(task)) if job.runner == Runner::Hosted => {
                 format!("would run ({reason}), but it is planned: {task}")
             }
@@ -1032,6 +1069,9 @@ pub struct Golden {
     /// Planned jobs whose rule matches.
     #[serde(default)]
     pub planned: Vec<String>,
+    /// Paused jobs whose rule matches.
+    #[serde(default)]
+    pub paused: Vec<String>,
 }
 
 /// The digest the golden suite records for `ci/jobs.toml`.
@@ -1108,10 +1148,12 @@ pub fn check(
         let lock: BTreeSet<String> = golden.lock.iter().cloned().collect();
         let got = affected(&config, workspace, &golden.paths, &lock);
         let planned: Vec<String> = got.planned.iter().map(|(name, _)| name.clone()).collect();
+        let paused: Vec<String> = got.paused.iter().map(|(name, _)| name.clone()).collect();
         for (what, want, got) in [
             ("jobs", &golden.jobs, &got.jobs),
             ("hw_required", &golden.hw_required, &got.hw_required),
             ("planned", &golden.planned, &planned),
+            ("paused", &golden.paused, &paused),
         ] {
             let want: BTreeSet<&String> = want.iter().collect();
             let got: BTreeSet<&String> = got.iter().collect();
@@ -1127,6 +1169,7 @@ pub fn check(
         seen_jobs.extend(golden.jobs.iter().cloned());
         seen_jobs.extend(golden.hw_required.iter().cloned());
         seen_jobs.extend(golden.planned.iter().cloned());
+        seen_jobs.extend(golden.paused.iter().cloned());
         unclassified |= got.paths.iter().any(|(_, c)| *c == Class::Unclassified);
         closures.push(got.closure);
     }

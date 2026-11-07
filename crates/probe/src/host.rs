@@ -5,6 +5,7 @@
 
 use smallvec::SmallVec;
 use syntropy_core::Blake3;
+use syntropy_core::budget::NodeMem;
 use syntropy_core::ids::NodeId;
 use syntropy_core::resource::caps::PowerSource;
 use syntropy_core::resource::ordinal::{self, DeviceCandidate, Enumerated, HostDomain, TierSlot};
@@ -46,6 +47,12 @@ pub struct NumaHostMem {
     /// The inputs RFC-0020's `budget::host_usable` reads. `total` and `available` are
     /// host-wide; `numa_free` is this domain's.
     pub mem: HostMemInfo,
+    /// The domain's reclaimable memory, the input of RFC-0020 §5's `budget::numa_available`
+    /// (the per-NUMA cap): Linux the node's `meminfo` (`/proc/meminfo` on a kernel without
+    /// NUMA); Windows `GetNumaAvailableMemoryNodeEx` as `mem_free`, since Windows' available
+    /// figure already counts its standby (clean cache) pages. `None` where the OS reports no
+    /// per-domain figure: macOS, which has one domain.
+    pub node_mem: Option<NodeMem>,
 }
 
 /// One NUMA domain's CPU device, before numbering.

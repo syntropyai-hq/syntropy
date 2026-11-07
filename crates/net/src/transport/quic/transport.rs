@@ -928,6 +928,128 @@ mod tests {
         assert_eq!(admit(Some(&other), &peer, 1, 0), Admit::Claimed);
     }
 
+    /// The arrival number of the early stream b holds for `key`, if any.
+    fn held_arrival(transport: &QuicTransport, key: &ChannelKey) -> Option<u64> {
+        lock(&transport.inner.routes)
+            .early
+            .get(key)
+            .map(|(arrival, _)| *arrival)
+    }
+
+    /// Waits until `check` holds of b's held streams, for up to 10 s, letting the connects run.
+    async fn wait_held(what: &str, mut check: impl FnMut() -> bool) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !check() {
+            assert!(std::time::Instant::now() < deadline, "never {what}");
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+    }
+
+    /// A second stream from the held stream's own peer takes the held entry, and the first is
+    /// closed: `accept` then opens the channel on the second. The test reads b's table of early
+    /// streams, so it orders the two streams on b's own routing, whatever the load.
+    #[test]
+    fn a_second_stream_from_the_same_peer_takes_the_held_entry() {
+        use crate::transport::domain::NetDomain;
+        use crate::transport::stream::UncheckedAuth;
+        use crate::transport::{ChannelPriority, ChannelSpec, PoolId};
+        use syntropy_core::plan::WireDType;
+        use syntropy_core::{Bytes, InstanceId, NodeId, PlanEpoch, StageIx};
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("a test runtime");
+        let domains = [
+            NetDomain::start("syntropy-net-a").expect("domain a"),
+            NetDomain::start("syntropy-net-b").expect("domain b"),
+        ];
+        let config = || QuicConfig {
+            endpoint: endpoint::Config::default(),
+            settings: QuicSettings {
+                connect_timeout: Some(std::time::Duration::from_secs(5)),
+                ..QuicSettings::default()
+            },
+            auth: Arc::new(UncheckedAuth),
+            capabilities: 0,
+        };
+        let (a, b) = runtime.block_on(async {
+            let a = QuicTransport::bind(domains[0].handle(), [0xA1; 32], config());
+            let b = QuicTransport::bind(domains[1].handle(), [0xB2; 32], config());
+            let (a, b) = tokio::join!(a, b);
+            (a.expect("bind a"), b.expect("bind b"))
+        });
+        let slot = 4096;
+        let pool = |transport: &QuicTransport, id: u32, slots: u32| {
+            let pool = BufferPool::heap(PoolId(id), slot, slots).expect("a pool");
+            transport.register(&pool).expect("register")
+        };
+        let key = ChannelKey {
+            instance: InstanceId(0x2016),
+            epoch: PlanEpoch { term: 1, seq: 1 },
+            purpose: ChannelPurpose::Activations,
+            from: StageIx(0),
+            to: StageIx(1),
+            lane: 0,
+        };
+        let spec = move |pool, recv_slots| ChannelSpec {
+            key,
+            pool,
+            slot_size: Bytes(slot as u64),
+            recv_slots,
+            priority: ChannelPriority::Data,
+            wire: WireDType::F32,
+            retention: recv_slots.max(4),
+        };
+        let a_pool = pool(&a, 1, u32::from(CONTROL_RECEIVES));
+        let b_pool = pool(&b, 2, 4 + u32::from(CONTROL_RECEIVES));
+        let to_b = RemoteEndpoint {
+            node: NodeId(b.node_id()),
+            key: b.node_id(),
+            addrs: b
+                .bound_addrs()
+                .into_iter()
+                .map(|addr| match addr.ip() {
+                    IpAddr::V4(ip) if ip.is_unspecified() => {
+                        SocketAddr::new(std::net::Ipv4Addr::LOCALHOST.into(), addr.port())
+                    }
+                    IpAddr::V6(ip) if ip.is_unspecified() => {
+                        SocketAddr::new(std::net::Ipv6Addr::LOCALHOST.into(), addr.port())
+                    }
+                    _ => addr,
+                })
+                .collect(),
+            relay: None,
+        };
+        let (first, second, receiver) = runtime.block_on(async {
+            let first = tokio::spawn({
+                let (a, to_b) = (a.clone(), to_b.clone());
+                async move { a.connect(&to_b, spec(a_pool, 0)).await }
+            });
+            wait_held("held the first stream", || held_arrival(&b, &key).is_some()).await;
+            let held = held_arrival(&b, &key);
+            let second = tokio::spawn({
+                let (a, to_b) = (a.clone(), to_b.clone());
+                async move { a.connect(&to_b, spec(a_pool, 0)).await }
+            });
+            wait_held("held the second stream in the first's place", || {
+                held_arrival(&b, &key).is_some_and(|arrival| Some(arrival) != held)
+            })
+            .await;
+            let receiver = b.accept(spec(b_pool, 4)).await;
+            let first = first.await.expect("the first connect's task");
+            let second = second.await.expect("the second connect's task");
+            (first, second, receiver)
+        });
+        let error = first.expect_err("the replaced stream");
+        assert_eq!(error.class, ErrorClass::Link, "{error}");
+        assert_eq!(error.code, None, "closed, not refused: {error}");
+        assert_eq!(*second.expect("the second stream's channel").key(), key);
+        assert_eq!(*receiver.expect("the channel at b").key(), key);
+        drop((a, b));
+        drop(domains);
+    }
+
     #[test]
     fn replay_and_bulk_take_the_bulk_connection() {
         for purpose in ChannelPurpose::ALL {

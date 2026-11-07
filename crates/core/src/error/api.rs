@@ -5,7 +5,8 @@
 //!
 //! RFC-0050 §12.1 ("Distributed error codes", note 2026-10-22) gives every code of the
 //! `Cluster`, `Net`, `Dist`, `Recovery` and `Security` domains one of four outcomes, and its
-//! note of 2026-10-28 applies the same rules to the `Kernels` and `Exec` domains. A code's
+//! note of 2026-10-28 applies the same rules to the `Kernels` and `Exec` domains, and its note
+//! of 2026-10-31 to the `Tier` domain. A code's
 //! mapping is found in this order:
 //! 1. **Its own §12.1 row.** A code that can reach an API client is named in a row of the
 //!    §12.1 table. [`per_code`] lists those codes with the row each comes from. The rows for
@@ -38,7 +39,7 @@
 //! Security 0x050C–0x050F (a signature or source that does not verify), even though the
 //! shape is `instance_unavailable`.
 
-use super::codes::{self, CodeInfo, cluster, dist, kernels, net, recovery, security};
+use super::codes::{self, CodeInfo, cluster, dist, kernels, net, recovery, security, tier};
 use super::{ErrorClass, ErrorCode};
 
 /// The `Retry-After` header a row of RFC-0050 §12.1 sends.
@@ -300,6 +301,11 @@ const EXEMPT: &[ErrorCode] = &[
     kernels::GGML_IMPORT_FAILED,
     kernels::AMX_DENIED,
     kernels::NO_CERTIFIED_CANDIDATE,
+    tier::LEDGER_EXCEEDED,
+    tier::VRAM_SHORT,
+    tier::HOST_RESERVE,
+    tier::REGISTER_UNSUPPORTED,
+    tier::VMM_UNSUPPORTED,
 ];
 
 /// The codes RFC-0050 §12.1 names one by one: the code, its mapping and the row it comes

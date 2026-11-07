@@ -112,8 +112,8 @@ fn nano(family: Family, form: Form) -> Nano {
         Family::QwenMoe => gqa_params(QkvLayout::Separate { qk_norm: true }),
     };
     if family == Family::Llama {
-        // Llama-3-style scaling has no parameters in the plan yet (see `RopeScaling`); the
-        // nano graph exercises linear scaling instead.
+        // The nano graph exercises linear scaling; the attribute tests below cover the
+        // Llama-3-style and YaRN rules.
         gqa_p.rope.scaling = RopeScaling::Linear { factor: 8.0 };
     }
     let embed_p = EmbedParams {
@@ -640,10 +640,89 @@ fn each_block_emits_only_its_own_ops() {
 
 #[test]
 fn rope_rules_have_distinct_codes_and_kinds() {
-    let rules = [RopeScaling::Plain, RopeScaling::Linear { factor: 2.0 }];
+    let rules = [
+        RopeScaling::Plain,
+        RopeScaling::Linear { factor: 2.0 },
+        LLAMA3,
+        YARN,
+    ];
     let codes: BTreeSet<u32> = rules.iter().map(rope_kind_code).collect();
-    assert_eq!(codes, BTreeSet::from([0, 1]));
-    assert_eq!(rules.map(|r| r.kind()), [RopeKind::Plain, RopeKind::Linear]);
+    assert_eq!(codes, BTreeSet::from([0, 1, 2, 3]));
+    assert_eq!(
+        rules.map(|r| r.kind()),
+        [
+            RopeKind::Plain,
+            RopeKind::Linear,
+            RopeKind::Llama3,
+            RopeKind::Yarn
+        ]
+    );
+}
+
+const LLAMA3: RopeScaling = RopeScaling::Llama3 {
+    factor: 32.0,
+    low_freq_factor: 1.0,
+    high_freq_factor: 4.0,
+    original_ctx: 8192,
+};
+
+const YARN: RopeScaling = RopeScaling::Yarn {
+    factor: 4.0,
+    original_ctx: 32_768,
+    beta_fast: 32.0,
+    beta_slow: 1.0,
+    attn_factor: None,
+};
+
+/// The Llama-3-style and YaRN rules carry every parameter as an attribute, and YaRN's
+/// attention factor only when the checkpoint states one.
+#[test]
+fn scaled_rope_rules_carry_their_parameters() {
+    let attrs = |scaling| {
+        let mut params = gqa_params(QkvLayout::Fused);
+        params.rope.scaling = scaling;
+        let (_, p) = one_block(|b, p, x| {
+            gqa(b, p, &params, Form::Decode, G, x);
+        });
+        let node = p
+            .nodes
+            .iter()
+            .find(|n| n.op == OpKind::KvWrite(syntropy_kernels::AttnKind::Gqa))
+            .unwrap()
+            .clone();
+        node.attrs
+    };
+    let a = attrs(LLAMA3);
+    assert_eq!(a.get("rope_kind"), Some(AttrValue::U32(2)));
+    assert_eq!(a.get("rope_factor"), Some(AttrValue::F32(32.0)));
+    assert_eq!(a.get("rope_low_freq_factor"), Some(AttrValue::F32(1.0)));
+    assert_eq!(a.get("rope_high_freq_factor"), Some(AttrValue::F32(4.0)));
+    assert_eq!(a.get("rope_original_ctx"), Some(AttrValue::U32(8192)));
+    let a = attrs(YARN);
+    assert_eq!(a.get("rope_kind"), Some(AttrValue::U32(3)));
+    assert_eq!(a.get("rope_factor"), Some(AttrValue::F32(4.0)));
+    assert_eq!(a.get("rope_original_ctx"), Some(AttrValue::U32(32_768)));
+    assert_eq!(a.get("rope_beta_fast"), Some(AttrValue::F32(32.0)));
+    assert_eq!(a.get("rope_beta_slow"), Some(AttrValue::F32(1.0)));
+    assert_eq!(a.get("rope_attn_factor"), None);
+    let RopeScaling::Yarn {
+        factor,
+        original_ctx,
+        beta_fast,
+        beta_slow,
+        ..
+    } = YARN
+    else {
+        unreachable!()
+    };
+    let a = attrs(RopeScaling::Yarn {
+        factor,
+        original_ctx,
+        beta_fast,
+        beta_slow,
+        attn_factor: Some(1.25),
+    });
+    assert_eq!(a.get("rope_attn_factor"), Some(AttrValue::F32(1.25)));
 }
 
 /// Every input of the RoPE table is an attribute: the rule, the base, the rotated dims and,

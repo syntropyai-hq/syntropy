@@ -231,11 +231,18 @@ pub const LOADER_PREFIX: &str = "ld-linux";
 /// - `bcryptprimitives.dll`: `getrandom` 0.4.3's `ProcessPrng`,
 ///   `link(name = "bcryptprimitives", kind = "raw-dylib")` (`src/backends/windows.rs:40`), reached
 ///   through `rand` 0.10, `igd-next` and `portmapper` under `iroh` (`syntropy-net`).
+///
+/// `msvcp140.dll` was added 2026-10-31 (COMP-E7-T01), from what rule 7 reported on the hosted
+/// `windows-2025` runner, when the core gained its static ggml copy, whose CPU backend is C++
+/// (RFC-0040 §8.1): it is the Visual C++ runtime's C++ library, which ships with
+/// `vcruntime140.dll` in the same redistributable, and the build links the dynamic Visual C++
+/// runtime as the rest of the workspace does.
 pub const WINDOWS_SYSTEM_LIBRARIES: &[&str] = &[
     "kernel32.dll",
     "ntdll.dll",
     "api-ms-win-core-synch-l1-2-0.dll",
     "vcruntime140.dll",
+    "msvcp140.dll",
     "ws2_32.dll",
     "advapi32.dll",
     "bcryptprimitives.dll",
@@ -257,6 +264,12 @@ pub const WINDOWS_SYSTEM_LIBRARIES: &[&str] = &[
 /// 2732–3282). `ring` references none: it declares `_byteswap_ulong` an intrinsic
 /// (`crypto/internal.h:354`). `zstd-sys` is `syntropy-net`'s control-message compression
 /// (RFC-0031 §9.1).
+///
+/// `api-ms-win-crt-time-l1-1-0.dll`, `api-ms-win-crt-convert-l1-1-0.dll` and
+/// `api-ms-win-crt-environment-l1-1-0.dll` were added 2026-10-31 (COMP-E7-T01), from what rule 7
+/// reported on the hosted `windows-2025` runner, when the core gained its static ggml copy, whose C
+/// and C++ sources call the C library's time, conversion and environment functions (RFC-0040
+/// §8.1).
 pub const WINDOWS_CRT_API_SETS: &[&str] = &[
     "api-ms-win-crt-heap-l1-1-0.dll",
     "api-ms-win-crt-locale-l1-1-0.dll",
@@ -265,6 +278,9 @@ pub const WINDOWS_CRT_API_SETS: &[&str] = &[
     "api-ms-win-crt-stdio-l1-1-0.dll",
     "api-ms-win-crt-string-l1-1-0.dll",
     "api-ms-win-crt-utility-l1-1-0.dll",
+    "api-ms-win-crt-time-l1-1-0.dll",
+    "api-ms-win-crt-convert-l1-1-0.dll",
+    "api-ms-win-crt-environment-l1-1-0.dll",
 ];
 
 /// Rule 7: the libraries the core binary may load on macOS, by install name. `libSystem` is what
@@ -283,10 +299,17 @@ pub const WINDOWS_CRT_API_SETS: &[&str] = &[
 /// `cfg_attr(not(feature = "rustc-dep-of-std"), link(name = "iconv"))`), so the standard
 /// library's own copy does not, and an empty binary never loaded it. `syntropy-ipc`,
 /// `syntropy-spsc`, `mio` and `socket2` use `libc`. It ships with every macOS.
+///
+/// `libc++` was added 2026-10-31 (COMP-E7-T01), from what rule 7 reported on the hosted
+/// `macos-26` runner, when the core gained its static ggml copy, whose CPU backend is C++
+/// (RFC-0040 §8.1). It is the system C++ runtime, part of every macOS, and Apple ships no static
+/// copy to link instead. On Linux the C++ runtime is linked statically, so `libstdc++` stays off
+/// [`SYSTEM_LIBRARIES`].
 pub const MACOS_SYSTEM_LIBRARIES: &[&str] = &[
     "/usr/lib/libSystem.B.dylib",
     "/usr/lib/libobjc.A.dylib",
     "/usr/lib/libiconv.2.dylib",
+    "/usr/lib/libc++.1.dylib",
 ];
 
 /// Rule 7: the system frameworks the core binary may load on macOS, by name: `Metal` matches
@@ -611,6 +634,12 @@ pub fn named_crates() -> Vec<&'static str> {
     names
 }
 
+/// Whether `symbol` is one of ggml's, by the prefixes its C API uses (`ggml_`, `gguf_`), so an
+/// exported one is a leak of the core's static, hidden ggml copy (ADR-0403 item 6).
+pub fn is_ggml_symbol(symbol: &str) -> bool {
+    symbol.starts_with("ggml_") || symbol.starts_with("gguf_")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -697,6 +726,10 @@ mod tests {
             "advapi32.dll",
             "bcryptprimitives.dll",
             "api-ms-win-crt-utility-l1-1-0.dll",
+            "MSVCP140.dll",
+            "api-ms-win-crt-time-l1-1-0.dll",
+            "api-ms-win-crt-convert-l1-1-0.dll",
+            "api-ms-win-crt-environment-l1-1-0.dll",
         ] {
             assert!(is_windows_system_library(dll), "{dll}");
         }
@@ -707,7 +740,7 @@ mod tests {
             "kernel32",
             "api-ms-win-crt-.dll",
             "api-ms-win-crt-evil-l1-1-0.dll",
-            "api-ms-win-crt-time-l1-1-0.dll",
+            "api-ms-win-crt-multibyte-l1-1-0.dll",
             "api-ms-win-core-file-l1-1-0.dll",
             "bcrypt.dll",
             "ws2_32.dll.evil.dll",
@@ -740,6 +773,7 @@ mod tests {
             "/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation",
             "/System/Library/Frameworks/CoreGraphics.framework/Versions/A/CoreGraphics",
             "/usr/lib/libiconv.2.dylib",
+            "/usr/lib/libc++.1.dylib",
             "/System/Library/Frameworks/SystemConfiguration.framework/Versions/A/SystemConfiguration",
             "/System/Library/Frameworks/Security.framework/Versions/A/Security",
         ] {
@@ -749,7 +783,7 @@ mod tests {
             "@rpath/libvulkan.1.dylib",
             "/usr/local/lib/libMoltenVK.dylib",
             "/usr/lib/libSystem.dylib",
-            "/usr/lib/libc++.1.dylib",
+            "/usr/local/lib/libc++.1.dylib",
             "/System/Library/Frameworks/OpenCL.framework/Versions/A/OpenCL",
             "/System/Library/Frameworks/Metal.framework/Versions/A/Other",
             "/System/Library/Frameworks/Metal.framework/Versions/../Metal",
