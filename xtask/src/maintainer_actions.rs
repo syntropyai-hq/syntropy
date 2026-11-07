@@ -2,11 +2,11 @@
 
 //! The maintainer-action queue (ADR-0021 decision 4, RFC-0062 §12.3; QUAL-E1-T17).
 //!
-//! The epic files hold the tasks, one table row each. A task whose task cell opens a human-only
-//! step with `**Maintainer action**:`, `**Maintainer action:**` or `**Maintainer action, ...**`,
-//! or names the plural `**Maintainer actions**`, is on the queue. A cell that only mentions the
-//! singular phrase, as in `is a **Maintainer action** (QUAL-E1-T26)`, is not. The state of each queued task comes from the completion records in
-//! `governance/maintainer-actions.toml`:
+//! The epic files hold the tasks, one table row each. A task whose row opens a human-only step
+//! with `**Maintainer action**:`, `**Maintainer action:**` or `**Maintainer action, ...**`, or
+//! names the plural `**Maintainer actions**`, is on the queue. A row that only mentions the
+//! singular phrase, as in `is a **Maintainer action** (QUAL-E1-T26)`, is not. The state of each
+//! queued task comes from the completion records in `governance/maintainer-actions.toml`:
 //!
 //! ```toml
 //! [[completed]]
