@@ -544,7 +544,7 @@ Token types (`tokenizer.ggml.token_type`: normal, unknown, control, user-defined
     | Qwen3-30B-A3B (source @ `ad44e777`; GGUF as in the conformance run) | 151645 (`<|im_end|>`) | in source | [151645, 151643] | {151643, 151645} |
     | Qwen3-30B-A3B-Base (source @ `1b75feb7`; no GGUF read) | not read | in source | 151643 | not read |
 
-    In both GGUF files read, 151643, 151644 and 151645 are control tokens. A unit test replays the two Qwen3-0.6B layouts.
+    In both GGUF files read, 151643, 151644 and 151645 are control tokens. The last column of the two Qwen3-0.6B rows is what `from_gguf` gives on those files. The 30B-A3B row's is this rule applied to the EOS that the conformance run read from its header (an earlier commit, before this rule). A unit test replays the two Qwen3-0.6B layouts.
   - **Llama 3.** The entry follows the layout of its chat checkpoints' files. It is **unmeasured**, because those files are gated.
   - **Follow-up.** Reading the source's `generation_config.json`, where one sits beside the GGUF file, would replace the table.
 
