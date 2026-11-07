@@ -355,6 +355,14 @@ COMP-E1-T03 asked for the reference semantics of 23 M0 ops in one change, and 15
 | COMP-E5-T26 → COMP-E1-T17, added beside COMP-E1-T03 | COMP-E5-T26 | R9 | its CUDA `Act` is checked against the reference `Act`; its `RmsNorm`, `Add`, `Mul`, `RowGather` and `Convert` stay with COMP-E1-T03 |
 | COMP-E3-T03, COMP-E3-T07, COMP-E3-T22, COMP-E5-T01 and COMP-E13-T13 keep COMP-E1-T03 alone | — | R9 | their criteria use `Gemv`, `Gemm`, `GateUpAct`, `Logits`, `RowGather`, `Add`, `Mul` and `Convert`, or the bit-exact-class ops, all in COMP-E1-T03 |
 
+## COMP-E3-T03: the `X86V4` leg moves to the AVX-512 host (2026-11-07)
+
+COMP-E3-T03 (M0a) asks for op conformance "for every scheme and level", and `X86V4` is one of its levels. No machine the project runs M0a CI on has AVX-512: the hosted runners promise none, and the build host is an i7-12700F (AVX2). The `X86V4` kernels are built and gated at run time to hosts that report AVX-512, so they never run elsewhere. Running them needs the lab AVX-512 host, and QUAL-E4-T07 (M1a) already runs CPU conformance there. QUAL-E4-T07 reaches COMP-E3-T03 through QUAL-E4-T06, so no edge is added. This is a plan correction under R9. The lead approved it under the maintainer's standing instruction, and it is listed here for the maintainers' sign-off on the PR.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| COMP-E3-T03's criterion keeps op conformance at `X86V3`, `Arm82Dot` and `Arm86I8mm` (QUAL-E4-T06); the `X86V4` leg is QUAL-E4-T07's, on the lab AVX-512 host | COMP-E3-T03, QUAL-E4-T07 | R9 | a criterion must run on hardware the task can reach when it closes. No M0a host has AVX-512, and QUAL-E4-T07 already runs the CPU provider's conformance on the AVX-512 host and depends on COMP-E3-T03 through QUAL-E4-T06 |
+
 ## COMP-E17-T03: RFC-0060 corpus leg moves to the corpus import (2026-10-31)
 
 COMP-E17-T03 (M0a) asked for token-exact GGUF conversions "on the tokenizer corpus", which is RFC-0060's corpus. QUAL-E5-T22 publishes that corpus and its token streams, and it depends on COMP-E17-T03, so an edge from COMP-E17-T03 would make a cycle. COMP-E17-T03 keeps the check on a project-written corpus in its own crate, run on the publisher's GGUF files of both M0 nightly checkpoints. The rerun on the published corpus goes with the import. The `llama` family's M0 checkpoint is Qwen3-0.6B (RFC-0060 §12.2), and Llama-3.2-1B is lab-only, so the criterion's "M0 families" needs no gated file. Review of #2054.

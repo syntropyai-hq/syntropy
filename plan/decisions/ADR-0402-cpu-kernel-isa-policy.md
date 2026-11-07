@@ -43,6 +43,8 @@ Other facts:
 **Option C.**
 
 1. **`std::arch` intrinsics** for AVX2/FMA, AVX-512 (including VNNI, BF16 and FP16), AVX-VNNI and NEON (dotprod, I8MM, BF16, FP16), in `#[target_feature]` functions selected once at `open`.
+
+   *Revised 2026-10-31:* a correction of the stability record, not a change to this decision. On the pinned toolchain (1.99.1) the I8MM intrinsics (`vmmlaq_s32` and the rest) are unstable (`stdarch_neon_i8mm`, E0658), and stable Rust has no F16 vector type, so the F16 conversion intrinsics (`vcvt_f32_f16`) cannot be used either. COMP-E3-T03 therefore writes `smmla` and `fcvtl` as single-instruction `asm!` blocks inside `#[target_feature]` functions, as item 2 does for AMX, and moves them to `std::arch` under item 5 once they stabilise. RFC-0040 §7.3 and RFC-0001 §18.58 record it.
 2. **AMX** microkernels are single `asm!` blocks that configure tiles, load, multiply, store and release within the block. Tile registers are declared clobbered and never live across a block boundary. Detection is CPUID plus XCR0 plus, on Linux, a successful permission request; refusal falls back to AVX-512.
 3. **SME2** microkernels are complete leaf functions in `kernels-cpu/src/sme2/*.S`, assembled by the platform assembler through the `cc` crate and called through `extern "C"`. Each enters and leaves streaming mode itself and preserves the AAPCS64 callee-saved registers. Detection uses `is_aarch64_feature_detected!("sme2")` on Linux and `hw.optional.arm.FEAT_SME2` on macOS.
 
