@@ -24,6 +24,13 @@
 //!
 //! `copy_batch` is `cuMemcpyBatchAsync` where the driver has CUDA 13's entry point, and a loop of
 //! `cuMemcpyAsync` otherwise (RFC-0040 §7.7; ADR-0014).
+//!
+//! **Submissions.** Each stream counts its submissions: the driver calls that enqueue work on it
+//! while it is not being captured. A copy is one, a batch is one per driver call, a graph replay
+//! is one, and a doorbell operation outside a capture is one per memory operation
+//! ([`capture`](crate::capture)). Work enqueued while the stream is being captured becomes graph
+//! nodes, not submissions. [`DeviceStreams::submissions`] reads the count per stream, so compute
+//! and copy streams are counted apart (COMP-E4-T05).
 
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -34,7 +41,7 @@ use syntropy_kernels::{Error, Event, Stream, StreamPlan, StreamPriority};
 
 use crate::driver::{Driver, PrimaryContext, SystemDriver};
 
-mod system;
+pub(crate) mod system;
 
 pub use system::SystemStreams;
 
@@ -211,6 +218,10 @@ struct StreamSlot {
     raw: u64,
     prio: StreamPriority,
     handed_out: bool,
+    /// Whether a capture is recording this stream.
+    capturing: bool,
+    /// Driver calls that enqueued work on it outside a capture.
+    submissions: u64,
 }
 
 /// An event of the device: the driver's handle and whether it records timestamps.
@@ -298,6 +309,8 @@ impl DeviceStreams {
             raw,
             prio,
             handed_out: false,
+            capturing: false,
+            submissions: 0,
         });
         Ok(streams.len() - 1)
     }
@@ -351,10 +364,58 @@ impl DeviceStreams {
         })
     }
 
-    fn raw_stream(&self, s: &Stream) -> Result<u64, Error> {
+    /// The table index of `s`, if it is one of this device's streams.
+    fn slot(&self, s: &Stream) -> Result<usize, Error> {
         self.index(s.handle)
-            .and_then(|i| self.streams.borrow().get(i).map(|s| s.raw))
+            .filter(|&i| i < self.streams.borrow().len())
             .ok_or_else(|| internal(format!("no stream {:#x} on this device", s.handle)))
+    }
+
+    /// The driver's handle for `s`.
+    pub(crate) fn raw_stream(&self, s: &Stream) -> Result<u64, Error> {
+        let i = self.slot(s)?;
+        Ok(self.streams.borrow()[i].raw)
+    }
+
+    /// Notes `n` driver calls that enqueued work on `s`; they count as submissions unless a
+    /// capture is recording `s`.
+    pub(crate) fn submitted(&self, s: &Stream, n: u64) {
+        if let Ok(i) = self.slot(s) {
+            let slot = &mut self.streams.borrow_mut()[i];
+            if !slot.capturing {
+                slot.submissions += n;
+            }
+        }
+    }
+
+    /// Marks whether a capture is recording `s`.
+    pub(crate) fn set_capturing(&self, s: &Stream, on: bool) -> Result<(), Error> {
+        let i = self.slot(s)?;
+        self.streams.borrow_mut()[i].capturing = on;
+        Ok(())
+    }
+
+    /// Whether a capture is recording `s`.
+    pub(crate) fn capturing(&self, s: &Stream) -> Result<bool, Error> {
+        let i = self.slot(s)?;
+        Ok(self.streams.borrow()[i].capturing)
+    }
+
+    /// The submissions made on `s` so far: driver calls that enqueued work on it outside a
+    /// capture (module docs).
+    pub fn submissions(&self, s: &Stream) -> Result<u64, Error> {
+        let i = self.slot(s)?;
+        Ok(self.streams.borrow()[i].submissions)
+    }
+
+    /// Each stream's class and submissions, in creation order.
+    #[must_use]
+    pub fn submissions_by_stream(&self) -> Vec<(StreamPriority, u64)> {
+        self.streams
+            .borrow()
+            .iter()
+            .map(|s| (s.prio, s.submissions))
+            .collect()
     }
 
     fn raw_event(&self, e: &Event) -> Result<(u64, bool), Error> {
@@ -412,13 +473,15 @@ impl DeviceStreams {
     /// `src` and `dst` are addresses in the device's context valid for `bytes` until the copy
     /// completes.
     pub unsafe fn copy(&self, s: &Stream, dst: u64, src: u64, bytes: u64) -> Result<(), Error> {
-        let s = self.raw_stream(s)?;
+        let raw = self.raw_stream(s)?;
         let bytes = length(bytes)?;
         if bytes == 0 {
             return Ok(());
         }
-        // SAFETY: `s` is live (as in `record`); the caller vouches for the addresses.
-        unsafe { self.api.copy(s, dst, src, bytes) }.map_err(|f| stream_error(&f))
+        // SAFETY: `raw` is live (as in `record`); the caller vouches for the addresses.
+        unsafe { self.api.copy(raw, dst, src, bytes) }.map_err(|f| stream_error(&f))?;
+        self.submitted(s, 1);
+        Ok(())
     }
 
     /// Copies each `(dst, src, bytes)` on `s`, in order: one `cuMemcpyBatchAsync` per
@@ -434,6 +497,24 @@ impl DeviceStreams {
         s: &Stream,
         pairs: impl IntoIterator<Item = Result<(u64, u64, u64), Error>, IntoIter: Clone>,
     ) -> Result<(), Error> {
+        let calls = std::cell::Cell::new(0u64);
+        // SAFETY: the caller's contract, passed on unchanged.
+        let result = unsafe { self.copy_batch_counted(s, pairs, &calls) };
+        self.submitted(s, calls.get());
+        result
+    }
+
+    /// [`copy_batch`](Self::copy_batch), counting the driver calls it makes in `calls`.
+    ///
+    /// # Safety
+    ///
+    /// As [`copy`](Self::copy), for every pair.
+    unsafe fn copy_batch_counted(
+        &self,
+        s: &Stream,
+        pairs: impl IntoIterator<Item = Result<(u64, u64, u64), Error>, IntoIter: Clone>,
+        calls: &std::cell::Cell<u64>,
+    ) -> Result<(), Error> {
         let s = self.raw_stream(s)?;
         let pairs = pairs.into_iter();
         // Every pair is checked before any is enqueued, so a bad pair leaves the stream as it
@@ -448,6 +529,7 @@ impl DeviceStreams {
                 if bytes > 0 {
                     // SAFETY: as in `copy`.
                     unsafe { self.api.copy(s, dst, src, bytes) }.map_err(|f| stream_error(&f))?;
+                    calls.set(calls.get() + 1);
                 }
             }
             return Ok(());
@@ -462,7 +544,9 @@ impl DeviceStreams {
             }
             // SAFETY: as in `copy`; at most `BATCH_CHUNK` pairs, none empty.
             unsafe { self.api.copy_batch(s, &dsts[..n], &srcs[..n], &sizes[..n]) }
-                .map_err(|f| stream_error(&f))
+                .map_err(|f| stream_error(&f))?;
+            calls.set(calls.get() + 1);
+            Ok(())
         };
         for pair in pairs {
             let (dst, src, bytes) = pair?;

@@ -158,7 +158,7 @@ impl SystemStreams {
 /// sees: a sticky error fails both, and `f` names what the caller asked for. `NOT_READY` is not
 /// a failure: it is `cuEventQuery`'s answer for unfinished work, so a poll still reports a
 /// failed restore.
-pub(super) fn switched(
+pub(crate) fn switched(
     ctx: CUcontext,
     get: impl FnOnce(&mut CUcontext) -> Status,
     mut set: impl FnMut(CUcontext) -> Status,

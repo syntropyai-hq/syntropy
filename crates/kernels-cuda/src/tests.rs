@@ -7,19 +7,20 @@ use super::*;
 
 /// A driver of a chosen version and device set, which counts its retains and releases.
 #[derive(Default)]
-struct Fake {
+pub(crate) struct Fake {
     present: bool,
     version: i32,
     init: Option<Fault>,
     devices: Vec<RawDevice>,
-    retained: std::sync::Arc<std::sync::atomic::AtomicI32>,
-    streams: stream::fake::Shared,
+    pub(crate) retained: std::sync::Arc<std::sync::atomic::AtomicI32>,
+    /// The stream fake's state, which the capture fake shares.
+    pub(crate) streams: stream::fake::Shared,
     /// At each memory free, from [`FreeWatch`]: the streams and events still live, and the
     /// primary context's retain count.
     frees: std::sync::Arc<std::sync::Mutex<Vec<(usize, usize, i32)>>>,
 }
 
-struct FakeContext(std::sync::Arc<std::sync::atomic::AtomicI32>);
+pub(crate) struct FakeContext(std::sync::Arc<std::sync::atomic::AtomicI32>);
 
 impl Drop for FakeContext {
     fn drop(&mut self) {
@@ -55,6 +56,17 @@ impl StreamDriver for Fake {
     ) -> Result<Box<dyn stream::StreamApi>, stream::StreamFault> {
         self.streams.lock().unwrap().retained = Some(self.retained.clone());
         Ok(Box::new(stream::fake::FakeStreams(self.streams.clone())))
+    }
+}
+
+impl capture::CaptureDriver for Fake {
+    fn capture_api(
+        &self,
+        _: &FakeContext,
+    ) -> Result<std::sync::Arc<dyn capture::CaptureApi>, stream::StreamFault> {
+        Ok(std::sync::Arc::new(capture::fake::FakeCapture(
+            self.streams.clone(),
+        )))
     }
 }
 
@@ -117,7 +129,7 @@ impl crate::memory::MemoryOps for FreeWatch {
     }
 }
 
-fn gpu(ordinal: i32, cc: (i32, i32)) -> RawDevice {
+pub(crate) fn gpu(ordinal: i32, cc: (i32, i32)) -> RawDevice {
     RawDevice {
         ordinal,
         name: format!("GPU {ordinal}"),
@@ -134,7 +146,7 @@ fn gpu(ordinal: i32, cc: (i32, i32)) -> RawDevice {
     }
 }
 
-fn fake(version: i32, devices: Vec<RawDevice>) -> CudaProvider<Fake> {
+pub(crate) fn fake(version: i32, devices: Vec<RawDevice>) -> CudaProvider<Fake> {
     CudaProvider::with_driver(Fake {
         present: true,
         version,
