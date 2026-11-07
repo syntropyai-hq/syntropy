@@ -797,6 +797,10 @@ pub struct TensorCensus {
     /// Placement units. The solver assigns groups, never single tensors.
     pub groups: Vec<TensorGroup>,
     pub totals: ClassTotals,                    // bytes stored and read per token, per class
+    /// Added 2026-11-07 (COMP-E10-T16): the prologue's one token-embedding record, and the
+    /// LM head record (`None` when tied), from which `vocab_limit` is derived (RFC-0050 §2.3).
+    pub token_embedding: Option<TensorId>,
+    pub lm_head: Option<TensorId>,
 }
 
 pub struct TensorRecord {

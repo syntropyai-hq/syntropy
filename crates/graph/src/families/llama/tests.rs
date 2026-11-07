@@ -480,6 +480,15 @@ fn check_qwen3_census(config: &HfConfig, header: &SafetensorsHeader, rewrite: bo
     })
     .unwrap();
     assert_eq!(manifest.family, "llama");
+    // Qwen3-0.6B ties its head: the token embedding is marked, there is no head record, and
+    // vocab_limit is the embedding's 151,936 rows (COMP-E10-T16).
+    assert_eq!(manifest.census.lm_head, None);
+    let embed = manifest.census.token_embedding.expect("marked");
+    assert_eq!(
+        manifest.census.tensors[embed.0 as usize].name,
+        "model.embed_tokens.weight"
+    );
+    assert_eq!(manifest.vocab_limit(), Ok(151_936));
     assert_eq!(
         manifest.hparams, hp,
         "the builder's hyperparameters are the family's"

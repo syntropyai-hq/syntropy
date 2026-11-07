@@ -417,6 +417,20 @@ fn check_census(config: &HfConfig, headers: &[SafetensorsHeader], rewrite: bool)
     })
     .unwrap();
     assert_eq!(manifest.family, TAG);
+    // Qwen3-30B-A3B has its own head: both are marked, and vocab_limit is 151,936
+    // (COMP-E10-T16).
+    let name = |id: syntropy_manifest::census::TensorId| {
+        manifest.census.tensors[id.0 as usize].name.clone()
+    };
+    assert_eq!(
+        manifest.census.token_embedding.map(name).as_deref(),
+        Some("model.embed_tokens.weight")
+    );
+    assert_eq!(
+        manifest.census.lm_head.map(name).as_deref(),
+        Some("lm_head.weight")
+    );
+    assert_eq!(manifest.vocab_limit(), Ok(151_936));
     assert_eq!(
         manifest.hparams, hp,
         "the builder's hyperparameters are the family's"

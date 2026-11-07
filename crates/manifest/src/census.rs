@@ -208,6 +208,14 @@ pub struct TensorCensus {
     pub groups: Vec<TensorGroup>,
     /// The groups' bytes, per class.
     pub totals: ClassTotals,
+    /// The token embedding: the prologue's one `RowLookup` record that maps token IDs to rows
+    /// (RFC-0043 §5.2). An n-gram or per-layer table is never it. `None` only in a census built
+    /// by hand without one, from which [`ModelManifest::vocab_limit`] refuses to derive a
+    /// limit.
+    pub token_embedding: Option<TensorId>,
+    /// The LM head record, or `None` when the head is tied to the embedding: there is no head
+    /// record, and the embedding serves as the head (RFC-0041 §3.1).
+    pub lm_head: Option<TensorId>,
 }
 
 impl TensorCensus {
@@ -257,8 +265,9 @@ pub struct ModelManifest {
     pub ignored: Vec<(String, String)>,
 }
 
-/// The format tag that starts a stored manifest, so a later layout is told apart.
-const MANIFEST_TAG: &[u8; 8] = b"SYNMAN01";
+/// The format tag that starts a stored manifest, so a later layout is told apart. `SYNMAN02`
+/// added [`TensorCensus::token_embedding`] and [`TensorCensus::lm_head`] (COMP-E10-T16).
+const MANIFEST_TAG: &[u8; 8] = b"SYNMAN02";
 
 /// The zstd level a manifest is stored at: 3, zstd's default \[target\].
 const ZSTD_LEVEL: i32 = 3;
@@ -291,7 +300,104 @@ impl fmt::Display for ManifestCodecError {
 
 impl std::error::Error for ManifestCodecError {}
 
+/// Why a manifest gives no `vocab_limit`: `HeaderInvalid` (RFC-0041 §10 code 6), class
+/// `Integrity`. The limit guards device tables, so a census that cannot name its token
+/// embedding or LM head fails closed rather than guess.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VocabLimitError {
+    /// What is wrong.
+    pub reason: String,
+}
+
+impl VocabLimitError {
+    /// RFC-0041 §10's code, `HeaderInvalid`.
+    #[must_use]
+    pub fn code(&self) -> u16 {
+        6
+    }
+
+    /// The error class.
+    #[must_use]
+    pub fn class(&self) -> syntropy_core::ErrorClass {
+        syntropy_core::ErrorClass::Integrity
+    }
+}
+
+impl fmt::Display for VocabLimitError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "no vocab_limit: {}", self.reason)
+    }
+}
+
+impl std::error::Error for VocabLimitError {}
+
 impl ModelManifest {
+    /// `vocab_limit = min(token-embedding rows, LM-head rows, hparams.vocab)`, the bound every
+    /// token ID a request carries must stay below (RFC-0050 §2.3, A9). The sampler's count
+    /// tables have `hparams.vocab` entries (RFC-0012 §8.1). A table's rows are its outermost
+    /// dimension: the first of a safetensors shape, the last of GGUF's `ne`. A tied model has
+    /// no head record, and its head's rows are the embedding's.
+    ///
+    /// # Errors
+    ///
+    /// [`VocabLimitError`] when the census marks no token embedding, or a marked record is
+    /// missing, of the wrong class, or not a two-dimensional table.
+    pub fn vocab_limit(&self) -> Result<u32, VocabLimitError> {
+        let fail = |reason: String| Err(VocabLimitError { reason });
+        let Some(embedding) = self.census.token_embedding else {
+            return fail("the census marks no token embedding".into());
+        };
+        let embed_rows = self.table_rows(embedding, ClassKind::RowLookup, "token embedding")?;
+        let head_rows = match self.census.lm_head {
+            Some(head) => self.table_rows(head, ClassKind::Head, "LM head")?,
+            None => embed_rows,
+        };
+        let limit = embed_rows.min(head_rows).min(u64::from(self.hparams.vocab));
+        if limit == 0 {
+            return fail("the vocabulary is empty".into());
+        }
+        // At most `hparams.vocab`, a `u32`.
+        Ok(u32::try_from(limit).unwrap_or(self.hparams.vocab))
+    }
+
+    /// The rows of record `id`, which must be a two-dimensional table of class `kind`.
+    fn table_rows(
+        &self,
+        id: TensorId,
+        kind: ClassKind,
+        what: &str,
+    ) -> Result<u64, VocabLimitError> {
+        let fail = |reason: String| VocabLimitError { reason };
+        let record = self
+            .census
+            .tensors
+            .get(id.0 as usize)
+            .filter(|r| r.id == id)
+            .ok_or_else(|| {
+                fail(format!(
+                    "the {what} names record {}, which does not exist",
+                    id.0
+                ))
+            })?;
+        if record.class.kind() != kind {
+            return Err(fail(format!(
+                "the {what} `{}` is of class {:?}, not {kind:?}",
+                record.name,
+                record.class.kind()
+            )));
+        }
+        let [a, b] = record.shape[..] else {
+            return Err(fail(format!(
+                "the {what} `{}` has shape {:?}, not two dimensions",
+                record.name, record.shape
+            )));
+        };
+        Ok(match self.format {
+            SourceFormat::Gguf { .. } => b,
+            SourceFormat::Safetensors => a,
+        })
+    }
+
     /// The stored form: an 8-byte format tag, then the manifest as postcard, compressed with
     /// zstd (RFC-0041 §3.2).
     ///

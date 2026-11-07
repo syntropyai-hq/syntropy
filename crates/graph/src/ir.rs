@@ -281,8 +281,17 @@ pub enum TensorRole {
     RouterBias,
     /// A norm's weight.
     Norm,
-    /// An embedding table.
+    /// The token embedding: the table that maps a token ID to its input row. In the prologue
+    /// exactly one tensor has this role, and the census marks it as the token embedding
+    /// (`TensorCensus::token_embedding`; COMP-E10-T16). An MTP module's own embedding has it
+    /// too, in its module's block.
     Embed,
+    /// An n-gram embedding table (`NgramEmbed`): a `RowLookup` table that is not the token
+    /// embedding.
+    NgramTable,
+    /// A per-layer embedding table (`PerLayerEmbed`): a `RowLookup` table that is not the token
+    /// embedding.
+    PerLayerTable,
     /// The LM head.
     Head,
     /// Sparse-attention indexer weights.
