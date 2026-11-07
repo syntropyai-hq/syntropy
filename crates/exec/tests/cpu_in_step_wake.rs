@@ -211,7 +211,9 @@ fn a_10ms_cpu_segment_per_layer_wakes_the_parked_dispatcher_every_time() {
         },
         doorbell_slots: 8,
         capture: true,
-        deterministic: true,
+        // Stand-in kernels declare no capabilities, which a device opened deterministic
+        // refuses (RFC-0040 §3.3).
+        deterministic: false,
         power: PowerHint::Mains,
     };
     let dev = DeviceId {
