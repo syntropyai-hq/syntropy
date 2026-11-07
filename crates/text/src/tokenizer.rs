@@ -9,7 +9,8 @@
 //! from GGUF metadata at census time (RFC-0043 §8.3).
 //!
 //! [`SpanEncoder`] encodes a rendered prompt's segment map with content tokenized literally
-//! (RFC-0043 §8.7), and [`injection`] holds the injection cases of §8.6. Detokenization is planned.
+//! (RFC-0043 §8.7), and [`injection`] holds the injection cases of §8.6. Detokenization is
+//! [`crate::detok`]'s (RFC-0050 §5.2).
 
 pub mod injection;
 mod spans;

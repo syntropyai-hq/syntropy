@@ -435,6 +435,11 @@ All streams are Server-Sent Events (`Content-Type: text/event-stream`, `Cache-Co
 - **Stop strings** can span tokens. The stop matcher holds back the longest suffix of released text that is a proper prefix of some stop string (at most `max_stop_len − 1` bytes). On a match it releases the text before the stop string, finishes the choice with `StopSequence`, and sends `Cancel`. Tokens the tail produced after the matched one, at most one ring traversal's worth (RFC-0001 §6.2), are discarded and not counted in usage.
 - **Parsers** for reasoning (§8) and tool calls (§6) run after the stop matcher, on released text, with their own hold-back for marker prefixes.
 
+*Note 2026-11-07 (PROD-E2-T03), as built in `syntropy_text::detok` and `syntropy_text::stop`.*
+- **Byte runs.** The detokenizer also holds text while the last token that decodes is spelled `<0xNN>`. The byte-fallback decoder joins a run of such tokens. When the run's bytes are not valid UTF-8, it writes U+FFFD for every byte of the run, so a later byte token could turn text already released into replacement characters. A token of another spelling ends the run. A special token skipped in decoding does not.
+- **Flush.** `finish` releases the pending text, replacement characters included. So the deltas always concatenate to the decode of the whole list.
+- **Stop order.** A stop string matches as soon as its last byte arrives. When two complete at the same byte, the one that starts first wins. Empty stop strings never match.
+
 #### 5.3 Back-pressure and disconnects
 
 - Each choice buffers at most `api.max_buffered_tokens` (256) undelivered tokens. Above that, ingress sends `Pause` to the tail and `Resume` when the buffer drains below half (RFC-0001 §8.4 rule 3). The ring never waits for a client.
