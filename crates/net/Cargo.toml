@@ -32,6 +32,11 @@ tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "sync"
 tokio-rustls.workspace = true
 zstd.workspace = true
 
+[features]
+# Test-only (RFC-0001 §4.2 rule 10): `endpoint::test_relay` runs iroh's test relay server on this
+# host, for tests of crates above `net`, which rule 6 keeps from naming iroh. No release turns it on.
+test-relay = ["iroh/test-utils"]
+
 [dev-dependencies]
 # `hazmat` signs with a chosen public key in the challenge, and `digest` exports its SHA-512, to
 # build the mixed-order key vector.

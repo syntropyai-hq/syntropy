@@ -1,0 +1,27 @@
+[package]
+name = "syntropy-netprobe"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "syntropy-netprobe"
+path = "src/main.rs"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+# The `Entropy` trait, through which the probe's node key comes from `io`'s `OsEntropy`.
+syntropy-core = { path = "../core" }
+# `OsEntropy`, the OS CSPRNG (RFC-0001 §4.2 rule 6: `getrandom` only in `io`).
+syntropy-io = { path = "../io" }
+# The endpoint of DIST-E7-T23, on the daemon's iroh version; `net` is the only crate that links
+# iroh (rule 6).
+syntropy-net = { path = "../net" }
+# The probe's runtime: `sync` adds the channels between its tasks.
+tokio = { workspace = true, features = ["sync"] }
+
+[dev-dependencies]
+# `test-relay` runs a relay server on this host for the forced-relay test (rule 10: test only).
+syntropy-net = { path = "../net", features = ["test-relay"] }

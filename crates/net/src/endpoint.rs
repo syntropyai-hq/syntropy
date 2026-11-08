@@ -19,14 +19,21 @@
 //!
 //! [`Config::direct_paths`] set to `false` removes the endpoint's direct (IP) transports, so every
 //! connection goes through a relay: the forced relay the probe reports as relayed.
+//!
+//! A [`Connection`] also carries unreliable datagrams (RFC 9221), the way RFC-0030 §5.2's
+//! heartbeats travel; the field probe times its echoes over them.
+//!
+//! With the `test-relay` feature, `test_relay` runs a relay server on this host for tests of the
+//! crates above `net`, which rule 6 keeps from naming iroh. It is a test-only feature (RFC-0001
+//! §4.2 rule 10): no release turns it on.
 
 use std::fmt;
 use std::net::SocketAddr;
 use std::str::FromStr;
 use std::time::Duration;
 
-use iroh::endpoint::{Builder, presets};
-use iroh::{EndpointAddr, PublicKey, RelayMode, SecretKey};
+use iroh::endpoint::{Builder, SendDatagramError, presets};
+use iroh::{EndpointAddr, PublicKey, RelayMode, SecretKey, TransportAddr};
 
 /// The kind of path a connection's packets take (RFC-0030 §5, `PathKind`): `Direct` or `Relay`,
 /// as iroh reports the selected path. DIST-E4-T01's membership core and DIST-E7-T03's backend use
@@ -141,6 +148,11 @@ pub enum EndpointError {
     Accept(String),
     /// The endpoint is closed.
     Closed,
+    /// The connection is closed or lost: closed by either side, reset, or timed out.
+    ConnectionLost(String),
+    /// A datagram cannot be sent: it is larger than the path takes, or the peer or this endpoint
+    /// does not accept datagrams.
+    Datagram(String),
 }
 
 impl fmt::Display for EndpointError {
@@ -158,6 +170,8 @@ impl fmt::Display for EndpointError {
             Self::Connect(error) => write!(f, "cannot connect: {error}"),
             Self::Accept(error) => write!(f, "cannot accept a connection: {error}"),
             Self::Closed => write!(f, "the endpoint is closed"),
+            Self::ConnectionLost(error) => write!(f, "the connection is lost: {error}"),
+            Self::Datagram(error) => write!(f, "cannot send the datagram: {error}"),
         }
     }
 }
@@ -212,7 +226,9 @@ impl NodeAddr {
 }
 
 /// A bound iroh endpoint. Its `Debug` shows the node ID only: iroh's own carries the host's
-/// addresses, which must stay out of logs and of the field probe's report (DIST-E4-T15).
+/// addresses, which must stay out of logs and of the field probe's report (DIST-E4-T15). A clone
+/// is another handle to the same endpoint.
+#[derive(Clone)]
 pub struct Endpoint {
     /// The iroh endpoint, for the transport code in this crate (DIST-E7-T03) to connect and
     /// accept with its own transport configuration.
@@ -372,9 +388,104 @@ impl Connection {
         Some(selected.rtt())
     }
 
+    /// The address of the selected path when it is direct, or `None` when the connection is
+    /// relayed or has no selected path. The field probe uses it only to find which local interface
+    /// the path leaves from, and never records it.
+    pub fn remote_direct_addr(&self) -> Option<SocketAddr> {
+        let paths = self.inner.paths();
+        let selected = paths.iter().find(|path| path.is_selected())?;
+        match selected.remote_addr() {
+            TransportAddr::Ip(addr) => Some(*addr),
+            _ => None,
+        }
+    }
+
+    /// Sends `data` as one unreliable, unordered datagram. It may be lost or reordered, and it
+    /// must fit [`max_datagram_size`](Self::max_datagram_size).
+    pub fn send_datagram(&self, data: &[u8]) -> Result<(), EndpointError> {
+        self.inner
+            .send_datagram(data.to_vec().into())
+            .map_err(|error| match error {
+                SendDatagramError::ConnectionLost(error) => {
+                    EndpointError::ConnectionLost(error.to_string())
+                }
+                other => EndpointError::Datagram(other.to_string()),
+            })
+    }
+
+    /// Waits for the next datagram from the peer. Fails with [`EndpointError::ConnectionLost`]
+    /// once the connection is closed or lost.
+    pub async fn read_datagram(&self) -> Result<Vec<u8>, EndpointError> {
+        self.inner
+            .read_datagram()
+            .await
+            .map(|data| data.to_vec())
+            .map_err(|error| EndpointError::ConnectionLost(error.to_string()))
+    }
+
+    /// The largest datagram [`send_datagram`](Self::send_datagram) takes now, or `None` if the peer
+    /// does not accept datagrams. It follows the path's MTU estimate, and is a little over a
+    /// kilobyte at least when datagrams are accepted.
+    pub fn max_datagram_size(&self) -> Option<usize> {
+        self.inner.max_datagram_size()
+    }
+
     /// Closes the connection.
     pub fn close(&self) {
         self.inner.close(0u8.into(), b"closed");
+    }
+}
+
+/// A relay server on this host, for tests of the crates above `net` (the `test-relay` feature).
+/// Rule 6 keeps those crates from naming iroh, so they reach iroh's test relay through here.
+#[cfg(feature = "test-relay")]
+pub mod test_relay {
+    use iroh::tls::CaTlsConfig;
+
+    use super::{Config, Endpoint, EndpointError, RelayUrl};
+
+    /// A running relay server. It stops when dropped.
+    pub struct TestRelay {
+        url: RelayUrl,
+        _server: Box<dyn std::any::Any + Send + Sync>,
+    }
+
+    impl std::fmt::Debug for TestRelay {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("TestRelay")
+                .field("url", &self.url)
+                .finish_non_exhaustive()
+        }
+    }
+
+    impl TestRelay {
+        /// Starts a relay server on a loopback port, with a self-signed certificate.
+        pub async fn start() -> Result<Self, EndpointError> {
+            let (_map, url, server) = iroh::test_utils::run_relay_server()
+                .await
+                .map_err(|error| EndpointError::Bind(error.to_string()))?;
+            Ok(Self {
+                url: RelayUrl(url),
+                _server: Box::new(server),
+            })
+        }
+
+        /// The relay's URL, for [`super::Relays::Url`].
+        pub fn url(&self) -> RelayUrl {
+            self.url.clone()
+        }
+    }
+
+    /// [`Endpoint::bind`], trusting any relay certificate, so the endpoint accepts the test relay's
+    /// self-signed one. For tests only: it skips the relay's certificate check.
+    pub async fn bind_trusting_any_relay(
+        secret_key: [u8; 32],
+        config: Config,
+    ) -> Result<Endpoint, EndpointError> {
+        Endpoint::bind_with(secret_key, config, |builder| {
+            builder.ca_tls_config(CaTlsConfig::insecure_skip_verify())
+        })
+        .await
     }
 }
 
@@ -491,6 +602,84 @@ mod tests {
         );
     }
 
+    /// Accepts one connection and sends back every datagram it reads, until the client closes.
+    fn echo(server: Endpoint) -> tokio::task::JoinHandle<usize> {
+        tokio::spawn(async move {
+            let conn = server.accept().await.unwrap();
+            let mut echoed = 0;
+            while let Ok(data) = conn.read_datagram().await {
+                if conn.send_datagram(&data).is_ok() {
+                    echoed += 1;
+                }
+            }
+            server.close().await;
+            echoed
+        })
+    }
+
+    /// Sends `payload` until its echo comes back, and returns the echo. Datagrams may be lost,
+    /// so each try waits 1 s; ten tries bound the test.
+    async fn echoed(conn: &Connection, payload: &[u8]) -> Vec<u8> {
+        for _ in 0..10 {
+            conn.send_datagram(payload).unwrap();
+            if let Ok(back) =
+                tokio::time::timeout(Duration::from_secs(1), conn.read_datagram()).await
+            {
+                return back.unwrap();
+            }
+        }
+        panic!("no echo in ten tries");
+    }
+
+    #[tokio::test]
+    async fn datagrams_echo_on_a_direct_path() {
+        let server = Endpoint::bind(key(12), Config::default().accept_alpn(DATA))
+            .await
+            .unwrap();
+        let peer = direct_addr(&server);
+        let peer_addrs = peer.direct_addrs();
+        let echoing = echo(server);
+        let client = Endpoint::bind(key(13), Config::default()).await.unwrap();
+        let conn = client.connect(peer, DATA).await.unwrap();
+
+        // The selected path's address is one the client was given, and datagrams fit a heartbeat
+        // body of RFC-0030 §5.2 (1,150 bytes).
+        let addr = conn
+            .remote_direct_addr()
+            .expect("a direct path has an address");
+        assert!(
+            peer_addrs.contains(&addr),
+            "{addr} is not one of {peer_addrs:?}"
+        );
+        let max = conn
+            .max_datagram_size()
+            .expect("the peer accepts datagrams");
+        assert!(max >= 1_150, "max datagram size {max}");
+        for payload in [b"beat 1".to_vec(), vec![7; 1_150]] {
+            assert_eq!(echoed(&conn, &payload).await, payload);
+        }
+        // Larger than any QUIC packet. The size limit itself moves with the path MTU estimate, so
+        // one byte over a size read earlier may fit by the time it is sent.
+        let refused = conn.send_datagram(&vec![0; 64 * 1024]);
+        assert!(
+            matches!(refused, Err(EndpointError::Datagram(_))),
+            "{refused:?}"
+        );
+
+        conn.close();
+        client.close().await;
+        assert!(echoing.await.unwrap() >= 2);
+        let late = conn.send_datagram(b"late");
+        assert!(
+            matches!(late, Err(EndpointError::ConnectionLost(_))),
+            "{late:?}"
+        );
+        assert!(matches!(
+            conn.read_datagram().await,
+            Err(EndpointError::ConnectionLost(_))
+        ));
+    }
+
     #[tokio::test]
     async fn one_endpoint_accepts_each_protocol_and_reports_which() {
         // Two accepted protocols on one server; a client connects with each in turn.
@@ -581,10 +770,38 @@ mod tests {
             .unwrap();
         assert_eq!(conn.path_kind(), Some(PathKind::Relay));
         assert!(conn.rtt().is_some_and(|rtt| rtt > Duration::ZERO));
+        assert_eq!(
+            conn.remote_direct_addr(),
+            None,
+            "a relayed path has no direct address"
+        );
 
         conn.close();
         client.close().await;
         served.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn datagrams_echo_through_a_relay() {
+        let (_map, relay_url, _relay) = iroh::test_utils::run_relay_server().await.unwrap();
+        let url: RelayUrl = relay_url.to_string().parse().unwrap();
+        let trust = |builder: Builder| builder.ca_tls_config(CaTlsConfig::insecure_skip_verify());
+        let relayed = Config::default()
+            .relays(Relays::Url(url.clone()))
+            .direct_paths(false);
+        let server = Endpoint::bind_with(key(14), relayed.clone().accept_alpn(DATA), trust)
+            .await
+            .unwrap();
+        server.online().await;
+        let peer = NodeAddr::new(server.node_id()).unwrap().with_relay_url(url);
+        let echoing = echo(server);
+        let client = Endpoint::bind_with(key(15), relayed, trust).await.unwrap();
+        let conn = client.connect(peer, DATA).await.unwrap();
+        assert_eq!(conn.path_kind(), Some(PathKind::Relay));
+        assert_eq!(echoed(&conn, b"beat").await, b"beat");
+        conn.close();
+        client.close().await;
+        assert!(echoing.await.unwrap() >= 1);
     }
 
     #[tokio::test]
