@@ -401,10 +401,12 @@ fn closing_a_channel_lowers_the_receive_window_again() {
     let mut pair = Pair::new();
     let per_channel = 4 * SLOT as u64 + u64::from(CONTROL_RECEIVES) * MAX_CONTROL_FRAME as u64;
     let floor = QuicSettings::receive_window_floor();
-    let wait_for = |pair: &Pair, channels: usize| {
+    // Each side gives its share back when its own connection task sees the channel close, so
+    // each side is polled: under a sanitizer's slowdown the dialling side can lag the other.
+    let wait_for = |transport: &QuicTransport, channels: usize| {
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         loop {
-            let windows = Pair::windows(&pair.b);
+            let windows = Pair::windows(transport);
             if windows.len() == 1 && windows[0].channels == channels {
                 return windows[0];
             }
@@ -419,14 +421,14 @@ fn closing_a_channel_lowers_the_receive_window_again() {
         let channels = pair
             .open(key(ChannelPurpose::Activations, round), 4)
             .expect("open");
-        let open = wait_for(&pair, 1);
+        let open = wait_for(&pair.b, 1);
         assert_eq!(
             (open.credited, open.window),
             (per_channel, per_channel),
             "round {round}"
         );
         drop(channels);
-        let closed = wait_for(&pair, 0);
+        let closed = wait_for(&pair.b, 0);
         assert_eq!(
             (closed.credited, closed.window),
             (0, floor),
@@ -434,9 +436,7 @@ fn closing_a_channel_lowers_the_receive_window_again() {
         );
     }
     // The opening side gives its share back too.
-    let dialled = Pair::windows(&pair.a);
-    assert_eq!(dialled.len(), 1);
-    assert_eq!(dialled[0].channels, 0, "{dialled:#?}");
+    wait_for(&pair.a, 0);
 }
 
 /// A third endpoint in a `net` domain of its own, for the tests that need a second peer of `b`.
@@ -641,6 +641,11 @@ fn one_peer_cannot_take_every_early_stream() {
 /// A second stream for a held key from the same peer replaces the first, as a reconnect would:
 /// `accept` opens the channel on the second, and the first stream is closed, a link failure
 /// rather than a refusal.
+///
+/// "First" and "second" are the order in which b routes the two streams, which the order of the
+/// two connects does not fix: b reads each stream's `Hello` on a task of its own. So the test
+/// waits for the replacement itself, one connect failing, and only then accepts, which the
+/// other connect's stream must answer.
 #[test]
 fn a_second_stream_for_a_held_key_from_its_peer_replaces_the_first() {
     let mut pair = Pair::new();
@@ -648,29 +653,31 @@ fn a_second_stream_for_a_held_key_from_its_peer_replaces_the_first() {
     let (_, b_pool) = pair.pool(false, 4 + u32::from(CONTROL_RECEIVES));
     let to_b = pair.remote_b();
     let channel = key(ChannelPurpose::Activations, 21);
-    let (first, second, receiver) = pair.runtime.block_on(async {
-        tokio::join!(
-            pair.a.connect(&to_b, channel_spec(channel, a_pool, 0)),
-            async {
-                tokio::time::sleep(Duration::from_millis(200)).await;
-                pair.a
-                    .connect(&to_b, channel_spec(channel, a_pool, 0))
-                    .await
-            },
-            async {
-                tokio::time::sleep(Duration::from_millis(400)).await;
-                pair.b.accept(channel_spec(channel, b_pool, 4)).await
-            }
-        )
+    let (replaced, opened, receiver) = pair.runtime.block_on(async {
+        let mut one = std::pin::pin!(pair.a.connect(&to_b, channel_spec(channel, a_pool, 0)));
+        let mut two = std::pin::pin!(pair.a.connect(&to_b, channel_spec(channel, a_pool, 0)));
+        let (replaced, survivor) = tokio::select! {
+            replaced = &mut one => (replaced, two),
+            replaced = &mut two => (replaced, one),
+        };
+        let (opened, receiver) =
+            tokio::join!(survivor, pair.b.accept(channel_spec(channel, b_pool, 4)));
+        (replaced, opened, receiver)
     });
-    let error = first.expect_err("the replaced stream");
+    let error = replaced.expect_err("the replaced stream");
     assert_eq!(error.class, ErrorClass::Link, "{error}");
-    assert_eq!(*second.expect("the second stream's channel").key(), channel);
+    assert_eq!(error.code, None, "closed, not refused: {error}");
+    assert_eq!(*opened.expect("the second stream's channel").key(), channel);
     assert_eq!(*receiver.expect("the channel at b").key(), channel);
 }
 
 /// A stream for a held key from another peer is refused at once, and leaves the held one in
 /// place.
+///
+/// Which of the two peers' streams b holds is the order in which it routes them, each on a task
+/// of its own, which the order of the two connects does not fix. So the test waits for the
+/// refusal itself, one connect failing, and only then accepts, which the other connect's stream
+/// must answer.
 #[test]
 fn a_held_stream_is_not_replaced_by_another_peer() {
     let mut pair = Pair::new();
@@ -681,29 +688,24 @@ fn a_held_stream_is_not_replaced_by_another_peer() {
     let to_b = pair.remote_b();
     let channel = key(ChannelPurpose::Activations, 22);
     let hold = settings().early_hold();
-    let (first, (other, took), receiver) = pair.runtime.block_on(async {
-        tokio::join!(
-            pair.a.connect(&to_b, channel_spec(channel, a_pool, 0)),
-            async {
-                tokio::time::sleep(Duration::from_millis(200)).await;
-                let started = std::time::Instant::now();
-                let refused = c
-                    .transport
-                    .connect(&to_b, channel_spec(channel, c_pool, 0))
-                    .await;
-                (refused, started.elapsed())
-            },
-            async {
-                // Late enough for c's dial and its refusal.
-                tokio::time::sleep(Duration::from_millis(1000)).await;
-                pair.b.accept(channel_spec(channel, b_pool, 4)).await
-            }
-        )
+    let ((refused, took), held, receiver) = pair.runtime.block_on(async {
+        let started = std::time::Instant::now();
+        let mut from_a = std::pin::pin!(pair.a.connect(&to_b, channel_spec(channel, a_pool, 0)));
+        let mut from_c =
+            std::pin::pin!(c.transport.connect(&to_b, channel_spec(channel, c_pool, 0)));
+        let (refused, survivor) = tokio::select! {
+            refused = &mut from_a => (refused, from_c),
+            refused = &mut from_c => (refused, from_a),
+        };
+        let took = started.elapsed();
+        let (held, receiver) =
+            tokio::join!(survivor, pair.b.accept(channel_spec(channel, b_pool, 4)));
+        ((refused, took), held, receiver)
     });
-    let refused = other.expect_err("c's stream for a's key");
+    let refused = refused.expect_err("the other peer's stream for the held key");
     assert_eq!(refused.code, Some(ErrorCode::NOT_A_NEIGHBOUR), "{refused}");
-    assert!(took < hold, "c's stream was held: {took:?}");
-    assert_eq!(*first.expect("a's channel").key(), channel);
+    assert!(took < hold, "the other peer's stream was held: {took:?}");
+    assert_eq!(*held.expect("the held stream's channel").key(), channel);
     assert_eq!(*receiver.expect("the channel at b").key(), channel);
 }
 

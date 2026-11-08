@@ -109,8 +109,10 @@ impl Policy {
     }
 }
 
-/// Why the supervisor killed a runner.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Why the supervisor killed a runner. Serialised, in snake case, into the crash record the
+/// process host writes for the kill (`crash::HostKill`, PROD-E9-T12).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum KillReason {
     /// No heartbeat for `liveness_timeout`.
     Hung,

@@ -7,6 +7,7 @@
 
 use smallvec::smallvec;
 use syntropy_core::Blake3;
+use syntropy_core::budget::NodeMem;
 use syntropy_core::ids::{DeviceId, NodeId, TierId};
 use syntropy_core::resource::caps::PowerSource;
 use syntropy_core::resource::ordinal::{DeviceCandidate, Enumerated, HostDomain};
@@ -38,6 +39,17 @@ impl Syscalls for FixtureCalls {
     fn io_uring_setup(&self) -> RawCall {
         RawCall::Ok
     }
+}
+
+/// A domain's reclaimable memory as the fixture's `meminfo` gives it, in KiB: `MemFree`, then
+/// `Active(file)`, `Inactive(file)` and `SReclaimable` (`generate.py`'s `*_RECLAIM`).
+fn node_mem(free: u64, (active, inactive, sreclaimable): (u64, u64, u64)) -> Option<NodeMem> {
+    Some(NodeMem {
+        mem_free: Bytes(free * KIB),
+        active_file: Bytes(active * KIB),
+        inactive_file: Bytes(inactive * KIB),
+        sreclaimable: Bytes(sreclaimable * KIB),
+    })
 }
 
 fn run(scenario: &str) -> LinuxHost {
@@ -136,6 +148,7 @@ fn desktop_hybrid() {
                 large_pages: Some(Bytes(2 * MIB)),
                 lock: None,
             },
+            node_mem: node_mem(18_304_412, (2_310_456, 3_402_108, 389_204)),
         }]
     );
     assert_eq!(
@@ -219,7 +232,7 @@ fn dual_socket_two_numa_domains() {
         },
     };
     assert_eq!(host.cpus, vec![socket(0, [0, 1]), socket(1, [2, 3])]);
-    let mem = |numa: u16, node_total: u64, numa_free: u64| NumaHostMem {
+    let mem = |numa: u16, node_total: u64, numa_free: u64, reclaim| NumaHostMem {
         numa,
         node_total: Bytes(node_total * KIB),
         mem: HostMemInfo {
@@ -235,12 +248,13 @@ fn dual_socket_two_numa_domains() {
             large_pages: Some(Bytes(2 * MIB)),
             lock: None,
         },
+        node_mem: node_mem(numa_free, reclaim),
     };
     assert_eq!(
         host.host_mem,
         vec![
-            mem(0, 131_854_356, 120_112_508),
-            mem(1, 132_001_692, 120_889_808),
+            mem(0, 131_854_356, 120_112_508, (1_602_340, 2_104_772, 512_388)),
+            mem(1, 132_001_692, 120_889_808, (1_498_116, 1_987_204, 498_772)),
         ]
     );
     assert_eq!(
@@ -341,6 +355,7 @@ fn wsl2() {
                 large_pages: Some(Bytes(2 * MIB)),
                 lock: None,
             },
+            node_mem: node_mem(30_112_708, (312_444, 401_256, 98_312)),
         }]
     );
     assert_eq!(
@@ -418,6 +433,7 @@ fn docker_cgroup_v2_limit() {
                 large_pages: Some(Bytes(2 * MIB)),
                 lock: None,
             },
+            node_mem: node_mem(40_221_396, (2_198_004, 3_011_552, 402_876)),
         }]
     );
     assert_eq!(
@@ -498,6 +514,8 @@ fn raspberry_pi_5() {
                 large_pages: Some(Bytes(32 * MIB)),
                 lock: None,
             },
+            // No NUMA directory: from /proc/meminfo.
+            node_mem: node_mem(6_922_480, (301_224, 289_908, 61_004)),
         }]
     );
     assert_eq!(

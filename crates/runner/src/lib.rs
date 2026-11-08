@@ -11,4 +11,5 @@
 #![warn(missing_docs)]
 
 pub mod lifecycle;
+pub mod probe;
 pub mod process;

@@ -171,7 +171,7 @@ where
                     idle_since = None;
                     backoff.reset();
                 }
-                PollOutcome::Fault(error) => return Err(error),
+                PollOutcome::Fault(error) => return Err(*error),
             }
         }
     }
@@ -195,7 +195,7 @@ where
         }
         waiter.disarm(waker);
         match outcome {
-            PollOutcome::Fault(error) => Err(error),
+            PollOutcome::Fault(error) => Err(*error),
             _ => Ok(true),
         }
     }

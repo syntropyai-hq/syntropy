@@ -19,5 +19,7 @@ syntropy-spsc = { path = "../spsc" }
 cc.workspace = true
 
 [dev-dependencies]
+# Property tests over shapes and seeds (GEMV).
+proptest.workspace = true
 # `CountingAlloc`, for the test that steady-state steps allocate nothing (RFC-0060 §3.5).
 syntropy-testkit = { path = "../testkit" }

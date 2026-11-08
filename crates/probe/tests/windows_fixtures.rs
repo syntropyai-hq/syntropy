@@ -13,6 +13,7 @@ mod common;
 
 use smallvec::smallvec;
 use syntropy_core::Blake3;
+use syntropy_core::budget::NodeMem;
 use syntropy_core::ids::{DeviceId, NodeId, TierId};
 use syntropy_core::resource::caps::PowerSource;
 use syntropy_core::resource::ordinal::{DeviceCandidate, Enumerated, HostDomain};
@@ -62,6 +63,14 @@ fn tier(ordinal: u16) -> TierId {
         node: NODE,
         ordinal,
     }
+}
+
+/// `GetNumaAvailableMemoryNodeEx`'s figure as the domain's reclaimable memory.
+fn node_mem(free: u64) -> Option<NodeMem> {
+    Some(NodeMem {
+        mem_free: Bytes(free),
+        ..NodeMem::default()
+    })
 }
 
 fn mem(total: u64, available: u64, free: u64, lockable: u64) -> HostMemInfo {
@@ -128,6 +137,7 @@ fn desktop_hybrid() {
             // One node: the whole host's `ullTotalPhys`.
             node_total: Bytes(34_190_000_128),
             mem: mem(34_190_000_128, 25_769_803_776, 25_769_803_776, 30 * GIB),
+            node_mem: node_mem(25_769_803_776),
         }]
     );
     assert_eq!(host.env, WindowsEnv { build: 26100 });
@@ -204,11 +214,13 @@ fn dual_socket_two_numa_nodes() {
                 // The SRAT's two ranges for proximity domain 0.
                 node_total: Bytes(128 * GIB),
                 mem: mem(total, 250 * GIB, 120 * GIB, 200 * GIB),
+                node_mem: node_mem(120 * GIB),
             },
             NumaHostMem {
                 numa: 1,
                 node_total: Bytes(128 * GIB),
                 mem: mem(total, 250 * GIB, 126 * GIB, 200 * GIB),
+                node_mem: node_mem(126 * GIB),
             },
         ]
     );
@@ -270,6 +282,7 @@ fn windows_2025_runner_capture() {
                 14_142_144_512,
                 16_106_332_160
             ),
+            node_mem: node_mem(14_142_144_512),
         }]
     );
     assert_eq!(host.env, WindowsEnv { build: 26100 });

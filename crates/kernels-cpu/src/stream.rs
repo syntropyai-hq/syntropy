@@ -18,17 +18,18 @@
 //! row).
 //!
 //! Pushing and running allocate nothing and take no lock: the ring is preallocated, and an item
-//! holds only plain values, a kernel's entry point, and `Arc` handles that a push clones.
+//! holds only plain values (a launch's plan and operands among them, held by value), a kernel's
+//! entry point, and `Arc` handles that a push clones.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU16, AtomicU64, Ordering};
 use std::time::Duration;
 
-use syntropy_kernels::{BufferSlice, Error, HostFlag, OpArgs, WaitCmp};
+use syntropy_kernels::{BufferSlice, Error, HostFlag, WaitCmp};
 use syntropy_spsc::{Consumer, PopError};
 
-use crate::dispatch::KernelFn;
 use crate::doorbell::Doorbells;
+use crate::launch::{KernelFn, Launch, Plan, Resolved, Unresolved};
 use crate::wake::{CpuWaker, Parked};
 
 /// The items one stream's ring holds: 4096 \[target\], a chosen budget. A decode step's op list
@@ -104,8 +105,20 @@ impl Health {
 /// One unit of a stream's work.
 #[derive(Clone, Debug)]
 pub(crate) enum Item {
-    /// Runs a kernel on the runner's thread.
-    Launch(KernelFn),
+    /// Runs a kernel on the runner's thread, over operands resolved to host addresses at push.
+    Launch {
+        kernel: KernelFn,
+        plan: Plan,
+        args: Resolved,
+    },
+    /// A launch named by buffer handles, as `launch` builds it and a captured op list keeps
+    /// it. It is resolved to an [`Item::Launch`] each time it is pushed, under a copy's rules:
+    /// a buffer freed since the capture fails the replay. It never reaches a ring.
+    LaunchRef {
+        kernel: KernelFn,
+        plan: Plan,
+        args: Unresolved,
+    },
     /// Copies `len` bytes between two host addresses, resolved and bounds-checked at push.
     Copy { src: u64, dst: u64, len: usize },
     /// A copy named by buffer handles, as a captured op list keeps it. It is resolved to a
@@ -272,11 +285,16 @@ impl StreamRunner {
 
     fn execute(&self, item: &Item) -> Result<Run, Error> {
         match item {
-            Item::Launch(kernel) => {
-                if let Err(error) = kernel(&OpArgs::none()) {
-                    self.shared.health.stick(error.code.0);
+            Item::Launch { kernel, plan, args } => {
+                if let Err(error) = kernel(&Launch::new(plan, args)) {
+                    self.shared.health.stick(error.code.code);
                     return Err(error);
                 }
+            }
+            Item::LaunchRef { .. } => {
+                return Err(crate::device::internal(
+                    "an unresolved launch reached a stream's ring".to_owned(),
+                ));
             }
             Item::Copy { src, dst, len } => {
                 // SAFETY: the provider resolved both addresses at push from buffers of this
@@ -342,9 +360,9 @@ pub struct Parks {
 
 /// The error a device with a sticky error returns.
 pub(crate) fn sticky(code: u16) -> Error {
-    Error {
-        class: syntropy_core::ErrorClass::Device,
-        code: syntropy_kernels::ErrorCode(code),
-        message: "the CPU device has a sticky error from an earlier kernel".to_owned(),
-    }
+    Error::new(
+        syntropy_core::ErrorClass::Device,
+        syntropy_kernels::ErrorCode::new(syntropy_core::Domain::Kernels, code),
+        "the CPU device has a sticky error from an earlier kernel".to_owned(),
+    )
 }

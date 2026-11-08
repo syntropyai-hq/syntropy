@@ -6,8 +6,9 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::thread;
 use std::time::Duration;
 
+use syntropy_core::error::codes::{exec as exec_codes, kernels as kernel_codes};
 use syntropy_core::{DeviceClockSync, ErrorClass, MonoTime, Nanos, TickRate, TickSource};
-use syntropy_kernels::{Error, ErrorCode, HostWaker, WakeKind};
+use syntropy_kernels::{Error, HostWaker, WakeKind};
 use syntropy_spsc::{Arm, Consumer, PopError, Producer, PushError};
 
 use super::*;
@@ -219,7 +220,7 @@ impl StepDevice<u32> for FakeDevice {
         if let Some(error) = self.abandon.take() {
             return Ok(Serviced {
                 fired: 0,
-                progress: StepProgress::Abandoned(error),
+                progress: StepProgress::Abandoned(Box::new(error)),
             });
         }
         let written = self.written.load(Ordering::SeqCst).min(self.doorbells + 1);
@@ -237,23 +238,23 @@ impl StepDevice<u32> for FakeDevice {
     }
 }
 
+/// `DeviceSticky`, `(Kernels, 8)`: the device fault the fake device reports (RFC-0040 §13).
 fn device_error() -> Error {
-    Error {
-        class: ErrorClass::Device,
-        code: ErrorCode(9),
-        message: "sticky device error".to_owned(),
-    }
+    Error::new(
+        ErrorClass::Device,
+        kernel_codes::DEVICE_STICKY,
+        "sticky device error",
+    )
 }
 
-/// The test's error for a closed outbound ring. `kernels`' `Error` is a stand-in until `core`
-/// has RFC-0001 §5.12's `Error` (issue #1525 item 2), and its codes are Kernels codes, none of
-/// which names this case, so the test uses one no RFC lists.
+/// `RingClosed`, `(Exec, 0x0601)`: the outbound ring has closed because its `net` domain is
+/// gone (RFC-0012 §13, note of 2026-10-28).
 fn closed_error() -> Error {
-    Error {
-        class: ErrorClass::Link,
-        code: ErrorCode(u16::MAX),
-        message: "the outbound ring has closed".to_owned(),
-    }
+    Error::new(
+        ErrorClass::Internal,
+        exec_codes::RING_CLOSED,
+        "the outbound ring has closed",
+    )
 }
 
 type TestDispatcher = Dispatcher<FakeScheduler, FakeDevice, TestTicks>;
@@ -372,7 +373,7 @@ fn a_closed_outbound_ring_faults_instead_of_holding_the_step() {
     assert_eq!(poll(&mut d, MonoTime(0)), PollOutcome::Progress, "launch");
     assert_eq!(
         poll(&mut d, MonoTime(0)),
-        PollOutcome::Fault(closed_error())
+        PollOutcome::Fault(Box::new(closed_error()))
     );
 
     let mut device = FakeDevice::new(0);
@@ -388,11 +389,11 @@ fn a_closed_outbound_ring_faults_instead_of_holding_the_step() {
 
 /// `DoorbellTimeout`, `(Kernels, 11)`: an in-step host wait past its budget (RFC-0040 §13).
 fn doorbell_timeout() -> Error {
-    Error {
-        class: ErrorClass::Timeout,
-        code: ErrorCode(11),
-        message: "a host wait passed its budget".to_owned(),
-    }
+    Error::new(
+        ErrorClass::Timeout,
+        kernel_codes::DOORBELL_TIMEOUT,
+        "a host wait passed its budget",
+    )
 }
 
 /// An abandoned step is survived, not a fault. The scheduler gets it back with its error, the
@@ -437,11 +438,11 @@ fn a_device_error_is_a_fault_that_stays() {
     assert_eq!(poll(&mut d, MonoTime(0)), PollOutcome::Progress);
     assert_eq!(
         poll(&mut d, MonoTime(0)),
-        PollOutcome::Fault(device_error())
+        PollOutcome::Fault(Box::new(device_error()))
     );
     assert_eq!(
         poll(&mut d, MonoTime(0)),
-        PollOutcome::Fault(device_error())
+        PollOutcome::Fault(Box::new(device_error()))
     );
     assert_eq!(d.device().services, 1);
 }
@@ -852,5 +853,21 @@ fn the_loop_returns_the_first_fault() {
     assert_eq!(
         d.run(&LoopConfig::MAINS, &mut NoDeviceWake),
         Err(device_error())
+    );
+}
+
+/// The outcome of a pass and a step's progress stay small, though `core::Error` is 344 bytes
+/// with its fields inline: both hold it boxed (COMP-E13-T15). Built and matched on every pass.
+#[test]
+fn the_per_pass_enums_stay_small() {
+    assert!(
+        std::mem::size_of::<PollOutcome>() <= 64,
+        "PollOutcome is {} bytes",
+        std::mem::size_of::<PollOutcome>()
+    );
+    assert!(
+        std::mem::size_of::<StepProgress>() <= 64,
+        "StepProgress is {} bytes",
+        std::mem::size_of::<StepProgress>()
     );
 }

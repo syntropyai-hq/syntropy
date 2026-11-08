@@ -318,6 +318,13 @@ pub trait Family: Send + Sync {
 - **Errors.** `UnknownArchitecture` (1) and `HyperParamInvalid` (3) are `FamilyError` variants, and `code()` gives the number. A wrong type, a missing required key and a value outside the family's range are all code 3. `core` has no `Domain::Graph` yet.
 - **`HyperParams`.** `HyperParams` lives in `syntropy_manifest::hparams`, with the shared fields and `extra`. `LayerSpec` is added with the blocks.
 
+*Note 2026-10-31 (COMP-E10-T07): `kv_formula` and `tokenizer_spec` join the trait.* The census needs both (RFC-0041 §3 step 8), and their types now exist.
+- **`kv_formula(&self, hp, source: KvSource) -> KvFormula`.** The source parameter is `syntropy_manifest::kv::KvSource`, the type RFC-0042 §4.2's rule (`KvDTypeRule`) already takes, in place of the `SourceFormat` named above. It carries what the rule reads: GGUF, or safetensors with its compute dtype and whether the weights are quantised.
+- **`tokenizer_spec(&self, sources: TokenizerSources) -> Result<TokenizerSpec, TokenizerSpecError>`.**
+  - It takes the tokenizer side files, not a `MetaView`, because the spec is built from `tokenizer.json` and its companions (§8.1's note of 2026-10-22), which `MetaView` does not hold.
+  - It has a default, `TokenizerSpec::from_sources`. A family overrides it only to supply what its checkpoints leave out.
+  - GGUF sources, converted from metadata (§8.3), come with that conversion's task.
+
 #### 5.2 Hyperparameters
 
 `HyperParams` (RFC-0001 §5.3) keeps per-family values in `extra`. This RFC fixes the shared fields every family fills: `n_layers`, `hidden`, `vocab`, `residual_streams`, and per layer a `LayerSpec { mixer: MixerKind, ffn: FfnKind, mtp: bool }`, where `MixerKind` and `FfnKind` carry the block parameters of §3. `parse_hparams` normalises names and defaults, so the same model from GGUF and from safetensors yields equal `HyperParams`. `ModelId` does not hash `HyperParams` (RFC-0041 §1), so these types can grow between releases without changing any ID.
@@ -354,6 +361,41 @@ pub trait Family: Send + Sync {
 | `bert` (M2) | BERT- and XLM-RoBERTa-class encoder-only embedding models | `TokenTypeEmbed`, `Embed`, `EncoderAttn`, `DenseFfn`, `Pool` | encoder-only, single node only, CPU and CUDA; absolute or rotary positions and pre- or post-norm read from the configuration (§5.4) |
 
 Facts about each model come from its configuration (`backends-and-portability.md` §4.1). The table names what the module must handle; the conformance gate (§9) decides when each family ships on each backend (RFC-0040 §11.5).
+
+*Note 2026-10-31 (COMP-E16-T03, as built): the `llama` module.* `syntropy_graph::families::llama` is registered in `graph::families()`.
+- **Accepts.** GGUF `llama`, `qwen2` and `qwen3`, and `config.json` `LlamaForCausalLM`, `MistralForCausalLM`, `Qwen2ForCausalLM` and `Qwen3ForCausalLM`, with their `model_type` values. The name picks the variant: Qwen3 has QK-norm, Qwen2 has a bias on Q, K and V, and Llama and Mistral have neither. The variant is stored as the `qk_norm` and `qkv_bias` flags in `HyperParams::extra`. The norm and bias rules apply only where the flag is set, so a tensor the variant does not have is `Unknown`.
+- **Equal across sources.** GGUF and `config.json` give equal `HyperParams`, with floats kept at F32 precision (§5.2). The one exception is tied embeddings: GGUF has no key for them, so a GGUF file reads as untied, and a GGUF file with no `output.weight` is tied by §4.2's first rule.
+- **Tied with a stored head.** When `tie_word_embeddings` is set and the checkpoint also stores `lm_head.weight`, as Qwen3-0.6B does, the head reads the token table, as the reference does. The stored tensor is shape-checked and classified `Ignored`, so it is never fetched.
+- **RoPE parameters.** §3.1 names the Llama-3-style and YaRN rules but lists no parameters. The `Gqa` block's `RopeScaling` now carries them, read from `config.json`'s `rope_scaling`:
+  - Llama-3-style: `factor`, `low_freq_factor`, `high_freq_factor`, `original_max_position_embeddings`.
+  - YaRN: `factor` and `original_max_position_embeddings` (default `max_position_embeddings`); `beta_fast` (default 32) and `beta_slow` (default 1); and `attention_factor`, carried only when stated.
+
+  Each parameter becomes a `rope_*` attribute of `KvWrite` and of the attention op, with `rope_kind` codes 2 and 3.
+- **Refused as `HyperParamInvalid` (3), never ignored:**
+  - a RoPE rule other than plain, linear, Llama-3-style or YaRN;
+  - YaRN with `mscale`, `mscale_all_dim` or `truncate: false`;
+  - YaRN from GGUF, whose parameter keys this module does not map;
+  - the newer `rope_parameters` layout;
+  - a sliding window in effect;
+  - a bias on O or in the FFN;
+  - partial rotary;
+  - an activation other than SiLU.
+- **Llama-3-style scaling in GGUF.** GGUF stores it as a `rope_freqs.weight` table, which no rule classifies. So such a file is refused as `Unknown` until the `Rope` op can take a frequency table.
+- **KV.** `kv_formula` gives `PerToken { 2 · n_kv_heads · d_head }` on every layer, with RFC-0042 §4.2's rule (`KvDTypeRule::reference`): F16 for GGUF and the compute dtype for a BF16 or F16 safetensors checkpoint.
+- **`FamilySpec`.** `syntropy_graph::spec::FamilySpec` lists variants, because QK-norm, QKV bias and tied embeddings are fixed for a whole checkpoint. For `llama` there are four, which between them cover every rule and every RoPE kind. `llama::fixture_spec()` returns it. The trait method joins `Family` with the generator (QUAL-E7-T01).
+- **Chat format.** The chat format is COMP-E17-T04's, which adds `ChatFormat`.
+- **The golden census.** In CI it runs on a header derived from Qwen3-0.6B's published configuration: names and shapes only, with no file of the checkpoint in the repository. An opt-in test runs the same census on the fixture store's recorded Qwen3-0.6B files (QUAL-E7-T06), found through `SYNTROPY_QWEN3_0_6B_DIR`, against the same golden file. CI does not run that test.
+- **Conformance checks.** RFC-0060 §7.2 checks 1–3 for `llama` are QUAL-E6-T06's and QUAL-E6-T22's: on the `nano` and `micro` fixtures, on Qwen3-0.6B's recorded headers (checks 1–2) and on its weights (check 3). See `dependency-fixes.md`, 2026-10-31.
+
+*Note 2026-10-31 (COMP-E16-T04, as built): the `qwen_moe` module.* `syntropy_graph::families::qwen_moe` is registered in `graph::families()` after `llama`.
+- **Accepts.** GGUF `qwen3moe`, and `config.json` `Qwen3MoeForCausalLM` with `model_type` `qwen3_moe`. None of these names is one `llama` accepts, which the registry checks.
+- **Shared with `llama`.** The attention block, RoPE, tied embeddings, the KV formula and their refusals are `llama`'s Qwen3 variant (QK-norm, no projection bias). The module reads, classifies and parameterises them with `llama`'s own functions, so the two cannot drift apart.
+- **Expert hyperparameters.** `num_experts` (`{arch}.expert_count`), `num_experts_per_tok` (`{arch}.expert_used_count`, 1 to `num_experts`), `moe_intermediate_size` (`{arch}.expert_feed_forward_length`), and `norm_topk_prob`, which becomes `MoeParams::renormalize`. `config.json` without `norm_topk_prob` reads false, the configuration class's default. GGUF states it only as `{arch}.expert_weights_norm`, which Qwen3-MoE conversions do not write, so a GGUF file without it reads true, the setting of every published Qwen3-MoE checkpoint.
+- **Refused as `HyperParamInvalid` (3), never ignored:** `decoder_sparse_step` other than 1; a non-empty `mlp_only_layers`; a shared expert (`shared_expert_intermediate_size`, `num_shared_experts` or `n_shared_experts` above 0, or GGUF `{arch}.expert_shared_count` or `{arch}.expert_shared_feed_forward_length` above 0); routing other than softmax (`scoring_func`, or GGUF `{arch}.expert_gating_func` other than 1); and everything `llama` refuses.
+- **Classification.** safetensors stores one tensor per expert and projection (`model.layers.{L}.mlp.experts.{E}.{gate,up,down}_proj.weight`) and the router as `mlp.gate.weight`. GGUF stacks each projection of a layer's experts in one tensor, the expert index outermost (`blk.{L}.ffn_{gate,up,down}_exps.weight`), which the census slices, and stores the router as `ffn_gate_inp.weight`. The pre-FFN norm belongs to the `Moe` block, so it joins the router group (RFC-0041 §3.1). An expert index at or past `num_experts`, a wrong shape, and a tensor with no rule (a shared expert's, a router bias, a dense FFN's) are `Unknown`.
+- **`FamilySpec`.** One variant, Qwen3-30B-A3B's form: `GqaMoe` layers, `MoeSpec { experts: 128, top_k: 8, shared: 0, latent: false, router_bias: false }`, QK-norm, plain RoPE, untied.
+- **The golden census.** Qwen3-30B-A3B has 18,867 tensors, so its golden file folds layer and expert indices out of each line and counts equal lines; the test checks apart that every layer and every (layer, expert) group is present. In CI it runs on a header derived from the published configuration. An opt-in test, through `SYNTROPY_QWEN3_30B_A3B_DIR`, runs the same census on the 16 recorded shard headers (QUAL-E7-T06), each parsed against its shard's size on the Hub, against the same golden file.
+- **Conformance checks.** RFC-0060 §7.2 checks 1–2 on the recorded headers and check 3 on the weights are QUAL-E6-T06's, and checks 1–3 on the `nano` and `micro` fixtures are QUAL-E6-T06's and QUAL-E6-T22's. See `dependency-fixes.md`, 2026-10-31.
 
 ### 6. Stage cut points, segments and tensor-parallel sharding
 
@@ -466,6 +508,8 @@ pub struct TokenizerSpec {
 - **`TokenizerId`** is BLAKE3 over `"syntropy/tokenizer-id/v1"`, `model`, the specials, `add_bos`, `add_eos` and the template in use, with every field length-prefixed. No input depends on listing order. The specials are single IDs plus the end-of-turn set, which `TokenizerSpec::new` sorts and deduplicates. `model` is hashed as the shipped bytes, so its added tokens and maps are covered through the file and never re-encoded. The two flags are included because they change the tokens of a prompt. The source tag is not hashed, so an override equal to the shipped text keeps the ID. `TokenizerSpec::id` is the value RFC-0022's saved sessions record in their metadata; nothing keys on it (Open question 6, OQ-MF-14).
 - **Errors.** A malformed or inconsistent side file is `TokenizerSpecError`, class `Integrity`, naming the file. No code is assigned yet; the codes are COMP-E10-T09's.
 
+*Note 2026-10-31 (COMP-E17-T14, the real M0 repositories):* the specs of the M0 checkpoints' recorded files (RFC-0060 §12.2) are checked against IDs read from the files by hand, in `crates/manifest/tests/data/tokenizer/real-m0.json`. The test reads the files from the fixture cache, by their `testdata/fixtures.toml` names, and refuses a file pinned to another revision, bytes whose BLAKE3 differs, and a gated or non-OSI file without the lab credential. Qwen3-0.6B (`llama`) and Qwen3-30B-A3B (`qwen_moe`) ship byte-identical tokenizer files: BOS none (`bos_token` is null), EOS 151645, end-of-turn {151643, 151645}, pad 151643, FIM 151659–151661, neither flag set. Llama-3.2-1B's files wait for QUAL-E7-T15's import. A `tokenizer.json` whose `model.type` is outside `MODEL_TYPES` (BPE, Unigram, WordLevel, WordPiece) is now a `TokenizerSpecError`, because §8.2's engine could not load it; a file without a `type` is read as before.
+
 #### 8.2 The engine
 
 Tokenization uses the HF `tokenizers` crate, version-pinned and built without its C regex dependency (its pure-Rust regex feature), so it cross-compiles to every target in ADR-0020, including iOS and Android. Its licence (Apache-2.0) is compatible with ADR-0018. For safetensors sources it reads the shipped `tokenizer.json` directly, which gives the publisher's own behaviour.
@@ -501,7 +545,7 @@ pub enum Marker { Special(u32), Text(&'static str) }
 
 | Module | Tool calls (RFC-0050 §6.2) | Reasoning |
 |---|---|---|
-| `llama` | `TaggedJson`, or `BareJsonList` for Mistral-class checkpoints (chosen from the template) | markers where the template declares them |
+| `llama` | `TaggedJson`, or `BareJsonList` for Mistral-class checkpoints, or `None` where the template declares neither, as Llama 3.x's does (chosen from the template) | markers where the template declares them |
 | `gemma` | read from the shipped template at M1; `None` if it declares no syntax, in which case RFC-0050 falls back to grammar-constrained JSON | none |
 | `gptoss` | `ChannelAddressed` | `Channel { name: "analysis" }` |
 | `deepseek3`, `deepseek4`, `kimi3` | `SpecialTokenSections` | markers from the tokenizer's special tokens; `starts_open` where the template opens the section |
@@ -509,6 +553,16 @@ pub enum Marker { Special(u32), Text(&'static str) }
 | `glm` | `TaggedKeyValue` | markers from the tokenizer's special tokens |
 
 Marker strings are read from the tokenizer's special tokens and the template, never hard-coded per model size. Each marker is resolved at census time: `Marker::Special(id)` when the tokenizer lists its string as a special token, `Marker::Text` otherwise.
+
+*Note 2026-10-31 (COMP-E17-T04, `ChatFormat` for `llama` and `qwen_moe` as built):* `syntropy_graph::chat::resolve` takes a family's `ChatRule` (the patterns it declares: `chat::LLAMA` accepts `TaggedJson` and `BareJsonList`, `chat::QWEN_MOE` accepts `TaggedJson`, both accept reasoning markers) and a `TokenizerSpec`, and reads every marker from the template in use and the tokenizer's added tokens. No marker text is written down per family or per model size. The parts the sketch above leaves open:
+- **`Marker::Text` holds a `String`**, because the text is read from the checkpoint at census time.
+- **Tool calls.** `TaggedJson` when the template writes a tag `<X>` directly before an object whose first key is `"name"` (whitespace, `\n`-style escapes and escaped quotes allowed between), with `</X>` as the close tag, which the template must also write. Otherwise `BareJsonList` when it writes an added token directly before `[` and then such an object, with no other added token between. Otherwise `None` (the `llama` row above): Llama 3.x templates write calls as bare JSON with no marker, and RFC-0050 falls back to grammar-constrained JSON as for `gemma`.
+- **Reasoning.** The close tag is a `</X>` the template splits content on (`.split('</X>')`), or the close of a tag `<X>` the `{% if add_generation_prompt %}` block writes when `</X>` also appears. `starts_open` is set when that block writes the open tag without the close one.
+- **Special means added.** A marker is `Marker::Special(id)` when its text is one of `tokenizer.json`'s added tokens, whether or not the file marks it `special`, as for FIM in §8.1: the Qwen3 repositories ship `<tool_call>`, `</tool_call>`, `<think>` and `</think>` as added but not special. The engine splits an added token out of any text, so the model emits it as its ID, and a content span holding its text would too. §8.7 step 3 therefore covers every added token, not only the tokens marked special.
+- **`stop`** is the end-of-turn set without EOS. For both Qwen3 checkpoints that is {151643}.
+- **Fails closed.** Two different tool-call or reasoning tags, a tool-call tag with no close, or a pattern the family's rule does not declare is `ChatFormatError` (class `Unsupported`; `Integrity` when the added tokens cannot be read). No code is assigned yet.
+- **The trait method.** `llama::chat_format` resolves under `chat::LLAMA`; `qwen_moe`'s module (COMP-E16-T04) does the same under `chat::QWEN_MOE`. `Family::chat_format` takes the `TokenizerSpec` rather than §5.1's `MetaView`, since the markers live in the tokenizer files; it joins the trait in a separate change, because `families.rs` is code-owned.
+- **Checked** on synthetic files laid out like the M0 repositories, including one with every tag renamed and every ID renumbered, and on Qwen3-0.6B (`llama`) and Qwen3-30B-A3B (`qwen_moe`) from the fixture cache, whose `TokenizerId` must equal COMP-E17-T14's. Llama-3.2-1B waits for QUAL-E7-T15's import.
 
 #### 8.5 Templates
 
@@ -528,10 +582,12 @@ A template renders one string, so a user message, tool result, retrieved documen
 
 1. **Spans.** Rendering produces a segment map of template spans (text the template itself emits) and content spans (text taken from the request: messages of every role, tool results, tool definitions' free text, documents). RFC-0050's renderer produces the map; this RFC fixes what the tokenizer does with it.
 2. **Template spans** are tokenized with special-token matching on, as the publisher's template intends.
-3. **Content spans** are tokenized with special-token matching off: every byte of content becomes ordinary tokens, and no special token ID can arise from content. Content is never stripped or rewritten, so it round-trips byte for byte. The tokenizer engine encodes special-token strings as plain text when matching is off (ADR-0431).
+3. **Content spans** are tokenized with special-token matching off: every byte of content becomes ordinary tokens, and no special token ID can arise from content. Content is never stripped or rewritten, so it round-trips byte for byte. The tokenizer engine encodes special-token strings as plain text when matching is off (ADR-0431). *Added 2026-10-31 (COMP-E17-T04):* "special token" in this step means every added token, marked `special` or not. The engine's switch covers only tokens marked `special`, and it would still split an unmarked added token, such as the Qwen3 repositories' `<tool_call>` or `<think>`, out of content as its ID: a forged call or reasoning section. So content spans must also encode every unmarked added token's text as ordinary text, and COMP-E17-T13's property test covers every added-token ID, including each one a `ChatFormat` resolves to `Marker::Special` (§8.4).
 4. **Raw special tokens** reach the model only through an explicit opt-in on the native API (RFC-0050), never through the compatibility surfaces, and RFC-0050's token-ID range check still applies to them.
 5. **Output markers are parsed on token IDs** where the family's markers are special tokens (`Marker::Special`, §8.4): a tool call or reasoning section starts only when the model emitted that token ID, so a model that quotes a document containing a marker's text produces text, not a call. Text parsing remains only for formats whose markers are ordinary text (`Marker::Text`), and RFC-0050 labels those parses as text-matched.
 6. **Prefix and session keys** are over token IDs, so the same characters in a template span and a content span never share a cache entry.
+
+*As built, 2026-11-07 (COMP-E17-T13):* `syntropy_text::tokenizer::SpanEncoder` encodes a segment map (`Span`, `SpanKind::{Template, Content}`) in one call. It matches the tokenizer's added tokens, special or not, only inside template spans: leftmost-longest, as the engine matches them in a whole string, with `lstrip` and `rstrip` taking whitespace from the template span only. It encodes the text between matches with a copy of the tokenizer that matches no added token. So with no control text in content the IDs equal the engine's encoding of the whole string. A control token's text in content, or spelled across a template-content boundary, stays ordinary text. `SpecialTokens::Raw` is step 4's opt-in and gives the engine's own encoding. The encoder fails closed, with class `Unsupported`, on an added token marked `normalized` or `single_word` or with empty text, which it cannot match as the engine does, and on an encoding in which ordinary text yields an added token's ID. `syntropy_text::tokenizer::injection` holds §8.6's injection cases: every added token's text, the `ChatFormat` marker texts and the role headers the caller passes, in several wrappings, at the system, user, tool-result and document positions. PROD's renderer and parser tests reuse them. The fuzz target runs in the unit suite through `syntropy-testkit`'s fuzz harness (RFC-0060 §10.2). The CI tests use synthetic tokenizers laid out like Qwen3's, which both M0 families' checkpoints ship, and like Llama 3's. The same checks on the real Qwen3 files stay `#[ignore]`d until a CI job fetches fixtures.
 
 ### 9. The conformance gate per family
 

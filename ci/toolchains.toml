@@ -1,0 +1,141 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+#
+# The pinned build toolchains of RFC-0062 §4.2 for the Linux build image and the Tier 1 hosted
+# environments (QUAL-E16-T24). Rust is pinned in `rust-toolchain.toml`, not here.
+#
+# `lint`'s `toolchains` step checks this file's schema, and that the Linux pins appear in
+# `ci/images/cuda-13/Dockerfile`, so the two cannot drift apart. A checksum is the SHA-256 the
+# publisher lists: NVIDIA's `redistrib_13.4.3.json` and Kitware's `cmake-4.4.4-SHA-256.txt`.
+#
+# The Windows MSVC toolchain and the macOS Xcode come with the hosted runner images that `pr.yml`
+# names, `windows-2025` and `macos-26`. Their pins come from each image's own report, the readme in
+# actions/runner-images at the tag of the image the version-print job ran on, or, where the report
+# does not give a version, from that job's print on the runner (RFC-0062 §4.1; QUAL-E16-T30, PR
+# #2002, jobs 124315799952 and 124315799909 on 2026-10-30):
+# - `windows-2025` serves the "Windows Server 2025 with Visual Studio 2026" image (runner-images
+#   issue 14017, which announced the move for June 2026 and closed on 2026-07-06; the job's log
+#   names `windows-2025-vs2026`, image 20261030.294.1): images/windows/Windows2025-VS2026-Readme.md
+#   at tag win25-vs2026/20261030.294 (commit 0dfe95c53f99).
+# - `macos-26` served image 20261013.0424.1: images/macos/macos-26-arm64-Readme.md at tag
+#   macos-26-arm64/20261013.0424 (commit 49bfbe040355).
+#
+# A hosted image update can change these. The jobs then fail, and the pin is bumped from the new
+# image's report and print.
+#
+# The Windows image carries no CUDA compiler, and its CMake varies with the image version (4.4.4
+# on 20261021.278.1, 4.4.5 on 20261030.294.1). The macOS image carries a Homebrew CMake. So both
+# jobs fetch Kitware's 4.4.4 archives at the pin and check their checksums before they run them,
+# whatever the image holds (QUAL-E16-T30).
+
+format = 1
+
+[linux.image]
+dockerfile = "ci/images/cuda-13/Dockerfile"
+base = "ubuntu:jammy-20260930@sha256:0a9887931b0e38af2e3487ed39e29436b0535c4f3f52e57745baaf79d1898956"
+syntax = "docker/dockerfile:1.27.1@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e"
+apt_snapshot = "20261020T000000Z"
+# 2026-10-20T00:00:00Z, the snapshot's own time.
+source_date_epoch = 1792454400
+# ADR-0020's floor.
+glibc = "2.35"
+# The BuildKit image of the `docker-container` builder that `cargo xtask ci toolchains-linux`
+# creates for the image export, by digest, so the builder that makes the byte-identical
+# comparison is pinned too. buildx's default `docker` driver cannot export an image tarball.
+buildkit = "moby/buildkit:v0.34.1@sha256:99368f3e46177c6405b9740e4461d91cee004128daeecca78d4ceac50ec1da5c"
+
+[linux.compiler]
+gxx = "11.4.0-1ubuntu1~22.04.3"
+
+[linux.cmake]
+version = "4.4.4"
+sha256 = "e5bb807f7728cb60cd8b27ebc97a2edb469b68655f21e844a600c3575b76f5bb"
+
+[linux.cuda]
+release = "13.4.3"
+
+[[linux.cuda.component]]
+name = "cuda_nvcc"
+version = "13.4.92"
+sha256 = "60998f40cc9df5826b2a846e2dcc328133fbc5ef539398ce0a21cf5dcac7193d"
+
+[[linux.cuda.component]]
+name = "cuda_crt"
+version = "13.4.92"
+sha256 = "c969e61ded12dbf0cf20ace72867f1622ec0e8ea1e1d305e27761012025f7aaa"
+
+[[linux.cuda.component]]
+name = "libnvvm"
+version = "13.4.92"
+sha256 = "0e619cf3d5b27f7c812665599ca9761fc296e56129b24a85d822a5d8a1a3bd75"
+
+[[linux.cuda.component]]
+name = "cuda_cudart"
+version = "13.4.92"
+sha256 = "0ac5dbc538d04e9983bc493b410cce4b459e1ee9f5f6654b6464ef7b3e14a8b5"
+
+[[linux.cuda.component]]
+name = "cccl"
+version = "13.3.4.3.1"
+sha256 = "6b7516074f42f80dd3feb9c11318c8e1c5ab56cdd9f18fff4c5ace2e7e0a8209"
+
+[windows.cmake]
+version = "4.4.4"
+sha256 = "bace36e94b31c68ab6fa295f26dfa11219e0701cf7c94b0284a7d1cb13dac536"
+
+[windows.cuda]
+release = "13.4.3"
+
+[[windows.cuda.component]]
+name = "cuda_nvcc"
+version = "13.4.92"
+sha256 = "23950047aa5405993129a982a99924b4e6d5eb9bc312300030f3afd9b3b49ea4"
+
+[[windows.cuda.component]]
+name = "cuda_crt"
+version = "13.4.92"
+sha256 = "a38e3aa75e259128a1c7fb46e706182e4babca407cd3f3c447d21ab7fb14c7fd"
+
+[[windows.cuda.component]]
+name = "libnvvm"
+version = "13.4.92"
+sha256 = "64fa39ad6332d6c40a02115d64827272f6befbc86e50568254f44d37d924e10b"
+
+[[windows.cuda.component]]
+name = "cuda_cudart"
+version = "13.4.92"
+sha256 = "621a70c4778287b1abf8c27c61b841d797fda2aeff01033374dd19624bcfa249"
+
+[[windows.cuda.component]]
+name = "cccl"
+version = "13.3.4.3.1"
+sha256 = "17d0ca1592c0dfc974a5fc39f470a6b7bae40da239e3e19bd0752017735acbca"
+
+[windows.msvc]
+# Visual Studio's servicing line: "Visual Studio Enterprise 2026 | 18.11.12328.437" in the report
+# of image 20261030.294.1, and 18.11.12315.225 in that of 20261021.278.1 (tag
+# win25-vs2026/20261021.278, commit ca1c9228ba0c). The label served both on 2026-10-30, so the pin
+# is the line both share; the toolset and `cl` below stay exact (RFC-0062 §4.2, note 2026-10-31).
+visual_studio = "18.11"
+# The report lists neither the default toolset nor `cl`'s version; job 124315799952 printed both.
+toolset = "14.51.36231"
+cl = "19.51.36260"
+
+[macos.cmake]
+version = "4.4.4"
+sha256 = "4b7b73704b1db9b374e5c9ab8e17ac6148b817b6396ee75cd94a852cbac9d305"
+
+[macos.xcode]
+# "26.6 (default) | 17F113" in the image report.
+version = "26.6"
+build = "17F113"
+# The report lists "Clang/LLVM 21.0.0"; job 124315799909 printed the full version.
+clang = "21.0.0 (clang-2100.1.1.101)"
+
+# From Xcode 26 the Metal toolchain is a component of its own, and the report does not list it.
+# When the image lacks it, `toolchains-macos` fetches it with `xcodebuild -downloadComponent
+# MetalToolchain`, and says so in its log. That download has no checksum pin of ours: Apple serves
+# it as a signed Xcode component, under the same trust root as Xcode itself, and publishes no
+# digest to pin. The job checks the compiler's printed version against this pin instead. Job
+# 124315799909 printed it, with the toolchain already on the image.
+[macos.metal]
+version = "32023.883 (metalfe-32023.883)"

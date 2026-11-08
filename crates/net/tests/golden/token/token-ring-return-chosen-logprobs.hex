@@ -1,0 +1,23 @@
+# token-ring-return-chosen-logprobs: step 25's ring-return copy: the chosen tokens' logprobs alone (logprob_k = 0x80, capability bit 16) on a 2-token entry, one alternative on another, and an entry without logprobs
+# Generated from the RFC-0031 §6 tables by crates/net/tests/frame/spec.rs.
+# A change to this file needs a wire-minor bump (ADR-0307 item 1).
+53 59 4e 46 01 02 00 00 88 77 66 55 44 33 22 11  # 0000 header
+03 00 00 00 00 00 00 00 29 00 00 00 00 00 00 00  # 0010 header
+19 00 00 00 00 00 00 00 05 00 00 00 00 00 00 00  # 0020 header
+40 00 00 00 b8 00 00 00 3e ec 5d 5f 1d 21 f1 00  # 0030 header
+03 00 01 00 00 00 00 00 00 00 01 00 00 00 00 00  # 0040 extension
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  # 0050 extension
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  # 0060 extension
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  # 0070 extension
+08 07 06 05 04 03 02 01 02 00 00 00 50 00 00 00  # 0080 payload
+2c 01 00 00 02 00 00 80 00 00 00 00 00 00 00 00  # 0090 payload
+00 00 00 00 00 00 00 00 09 00 00 00 00 00 00 00  # 00a0 payload
+0e 00 00 00 0f 00 00 00 00 00 40 bf 00 00 80 bd  # 00b0 payload
+44 44 33 33 22 22 11 11 02 00 00 00 06 00 00 00  # 00c0 payload
+0c 00 00 00 01 00 00 01 00 00 00 00 00 00 00 00  # 00d0 payload
+00 00 00 00 00 00 00 00 03 00 00 00 00 00 00 00  # 00e0 payload
+10 00 00 00 00 00 80 bf 11 00 00 00 00 00 c0 bf  # 00f0 payload
+08 07 06 05 04 03 02 01 02 00 00 00 51 00 00 00  # 0100 payload
+08 00 00 00 01 00 00 00 00 00 00 00 00 00 00 00  # 0110 payload
+00 00 00 00 00 00 00 00 01 00 00 00 00 00 00 00  # 0120 payload
+12 00 00 00 00 00 00 00                          # 0130 payload

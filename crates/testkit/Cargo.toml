@@ -16,6 +16,10 @@ smallvec.workspace = true
 syntropy-config = { path = "../config" }
 syntropy-core = { path = "../core" }
 syntropy-graph = { path = "../graph" }
+# The fixture generator (QUAL-E7-T01) reads its files back through the GGUF and safetensors
+# readers and builds their census, and takes `RopeKind` from the family's spec.
+syntropy-kernels = { path = "../kernels" }
+syntropy-manifest = { path = "../manifest" }
 # The fake runner (QUAL-E3-T18) serves a real region's `local_sequences` and `local_tokens` rings,
 # in `ipc`'s record encoding, and holds their `spsc` ends. Not optional: its tests must run in the
 # workspace's test job, and `ipc` brings no external crate `testkit` lacks but `postcard` and the

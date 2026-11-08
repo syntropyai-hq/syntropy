@@ -559,12 +559,12 @@ fn workspace_check_fails_an_op_asking_for_more() {
     let err = PreparedOp::new(Bytes(4097))
         .check_workspace(&declared)
         .expect_err("one byte over fails");
-    assert_eq!(err.code, ErrorCode::WORKSPACE_EXCEEDED);
-    assert_eq!(err.code, ErrorCode(14));
+    assert_eq!(err.code, crate::error::codes::WORKSPACE_EXCEEDED);
+    assert_eq!(err.code, ErrorCode::new(syntropy_core::Domain::Kernels, 14));
     assert_eq!(err.class, ErrorClass::Internal);
     assert_eq!(
         err.to_string(),
-        "prepared op asks for 4097 bytes of workspace; query declared 4096 (Internal, Kernels 14)"
+        "prepared op asks for 4097 bytes of workspace; query declared 4096 (Internal, Kernels 0x000E)"
     );
 }
 

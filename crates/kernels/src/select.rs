@@ -48,7 +48,7 @@ use syntropy_core::resource::{Backend, DeviceClass, GgmlBackend};
 use syntropy_core::{ErrorClass, Nanos};
 
 use crate::device::{MemoryDomain, ProviderId};
-use crate::error::{Error, ErrorCode};
+use crate::error::Error;
 use crate::numerics::act::{self, ActContext, ActViolation};
 use crate::numerics::{self, NumericsViolation};
 use crate::op::{LayoutVersion, OpCaps, OpKey, ShapeSig};
@@ -260,7 +260,7 @@ pub fn choose_domain(vendor: Vendor, opened: &[DomainOption]) -> Result<DomainCh
 
 /// One (provider, prepared variant) offered for an (op, shape) on a device, with what its
 /// `query` answered (RFC-0040 §6.2).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Candidate {
     /// The provider.
     pub provider: ProviderId,
@@ -282,7 +282,7 @@ impl Candidate {
     }
 
     fn id(&self) -> (ProviderId, u32) {
-        (self.provider, self.variant)
+        (self.provider.clone(), self.variant)
     }
 }
 
@@ -419,7 +419,7 @@ impl Measurement {
 }
 
 /// A candidate with its measurement, if it was benchmarked.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Offer {
     /// The candidate.
     pub candidate: Candidate,
@@ -462,7 +462,7 @@ pub enum Incumbent {
 
 /// Why [`decide_op`] chose a candidate.
 #[non_exhaustive]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Basis {
     /// The incumbent kept its place.
     Incumbent(Incumbent),
@@ -477,7 +477,7 @@ pub enum Basis {
 }
 
 /// The candidate chosen for one op.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OpChoice {
     /// The provider.
     pub provider: ProviderId,
@@ -524,11 +524,11 @@ impl std::error::Error for Unsupported {}
 impl From<Box<Unsupported>> for Error {
     /// `OpUnsupported` (RFC-0040 §13 code 1, class `Unsupported`).
     fn from(u: Box<Unsupported>) -> Self {
-        Self {
-            class: ErrorClass::Unsupported,
-            code: ErrorCode::OP_UNSUPPORTED,
-            message: u.to_string(),
-        }
+        Self::new(
+            ErrorClass::Unsupported,
+            crate::error::codes::OP_UNSUPPORTED,
+            u.to_string(),
+        )
     }
 }
 
@@ -572,11 +572,11 @@ pub fn decide_op(
         let c = &offer.candidate;
         match admit(&op.key, &req, &op.act, c) {
             Ok(caps) => admitted.push((c, caps, offer.measurement)),
-            Err(why) => rejections.push((c.provider, c.variant, why)),
+            Err(why) => rejections.push((c.provider.clone(), c.variant, why)),
         }
     }
     if admitted.is_empty() {
-        rejections.sort_by_key(|r| (r.0, r.1));
+        rejections.sort_by(|a, b| (&a.0, a.1).cmp(&(&b.0, b.1)));
         return Err(Box::new(Unsupported {
             slot,
             key: op.key.clone(),
@@ -586,7 +586,7 @@ pub fn decide_op(
     }
 
     let choice = |c: &Candidate, cost, basis| OpChoice {
-        provider: c.provider,
+        provider: c.provider.clone(),
         variant: c.variant,
         native: c.is_native(),
         cost,
@@ -619,7 +619,8 @@ pub fn decide_op(
             (native, Incumbent::Native)
         } else if let Some(cached) = op
             .cached
-            .and_then(|id| scored.iter().find(|(c, _)| c.id() == id).copied())
+            .as_ref()
+            .and_then(|id| scored.iter().find(|(c, _)| c.id() == *id).copied())
         {
             (cached, Incumbent::Cached)
         } else {

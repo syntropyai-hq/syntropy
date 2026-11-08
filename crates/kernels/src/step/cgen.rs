@@ -66,6 +66,16 @@ pub(crate) const TABLE_DELTA_RING: Target = Target {
     cgen: "crate::step::cgen",
 };
 
+/// The attention hand-off's header and mirror (RFC-0022 §5.3).
+pub(crate) const ATTN_HANDOFF: Target = Target {
+    header: "include/syntropy/attn_handoff.h",
+    include: "syntropy/attn_handoff.h",
+    mirror: "src/attn_handoff/mirror.rs",
+    cites: "RFC-0022 §5.3; RFC-0040 §4.2",
+    filter: "attn_handoff::",
+    cgen: "crate::step::cgen",
+};
+
 /// A member type the generator knows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum CType {

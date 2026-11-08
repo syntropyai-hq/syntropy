@@ -24,9 +24,9 @@ use std::process::Command;
 
 use crate::run::Context;
 use crate::{
-    cache_hit, changes, check_deps, ci_gate, codeowners, contrib, dep_diff, determinism,
+    cache_hit, changes, check_deps, ci_gate, codeowners, contrib, dep_diff, determinism, fixtures,
     hot_threads, instructions, loom, orphan_rule, plan_tools, properties, repo_settings,
-    runner_build_id, sim_presets, toolchain,
+    runner_build_id, sim_presets, toolchain, toolchains,
 };
 
 /// A named job or suite: the steps it runs, in order.
@@ -393,6 +393,25 @@ pub const JOBS: &[Entry] = &[
                     run: sim_presets::step,
                 },
             },
+            // The fixture manifest's licence rule and pinned sources (QUAL-E7-T06, RFC-0060
+            // §12.2).
+            Step {
+                name: "fixtures",
+                action: Action::Builtin {
+                    shown: "testdata/fixtures.toml: nightly fixtures are ungated and OSI-licensed, \
+                            Hub sources pin a commit, quantised fixtures name their original weights",
+                    run: fixtures::lint::step,
+                },
+            },
+            // The build toolchain pins and architecture sets (QUAL-E16-T24, RFC-0062 §4.2-§4.3).
+            Step {
+                name: "toolchains",
+                action: Action::Builtin {
+                    shown: "ci/toolchains.toml and ci/arch-sets.toml are well formed, and the Linux \
+                            pins are in the build image's Dockerfile",
+                    run: toolchains::step,
+                },
+            },
             // The affected-job rules and their golden suite (RFC-0062 §2.2; QUAL-E1-T07).
             Step {
                 name: "jobs",
@@ -697,6 +716,53 @@ pub const JOBS: &[Entry] = &[
             check: "on a merge group, the `hw/<job>` statuses of members labelled `hw:queue`",
             task: "QUAL-E1-T11",
         }],
+    },
+    Entry {
+        name: "toolchains-linux",
+        summary: "the Linux build image rebuilds byte for byte from its pins, and carries the \
+                  pinned nvcc, CMake and C++ compiler",
+        defined_in: "RFC-0062 §4.1 and §4.2",
+        params: &[],
+        steps: &[Step {
+            name: "toolchains-linux",
+            action: Action::Builtin {
+                shown: "two no-cache builds of the Linux build image are byte-identical; print \
+                        nvcc, CMake and the C++ compiler from inside it",
+                run: toolchains::linux_step,
+            },
+        }],
+        pending: &[],
+    },
+    Entry {
+        name: "toolchains-windows",
+        summary: "the hosted Windows runner carries the pinned nvcc, CMake and MSVC toolchain",
+        defined_in: "RFC-0062 §4.1 and §4.2",
+        params: &[],
+        steps: &[Step {
+            name: "toolchains-windows",
+            action: Action::Builtin {
+                shown: "fetch the pinned nvcc and CMake archives and check their SHA-256; print \
+                        nvcc, CMake, Visual Studio, the MSVC toolset and cl, each against its pin",
+                run: toolchains::windows_step,
+            },
+        }],
+        pending: &[],
+    },
+    Entry {
+        name: "toolchains-macos",
+        summary: "the hosted macOS runner carries the pinned CMake, Xcode, Apple clang and Metal \
+                  compiler",
+        defined_in: "RFC-0062 §4.1 and §4.2",
+        params: &[],
+        steps: &[Step {
+            name: "toolchains-macos",
+            action: Action::Builtin {
+                shown: "fetch the pinned CMake archive and check its SHA-256; print CMake, Xcode, \
+                        Apple clang and the Metal compiler, each against its pin",
+                run: toolchains::macos_step,
+            },
+        }],
+        pending: &[],
     },
     Entry {
         name: "repo-settings",
@@ -1035,6 +1101,10 @@ mod tests {
                  scenarios check",
                 "xtask: every simulator preset cites its sources, and labels and sources each \
                  figure",
+                "xtask: testdata/fixtures.toml: nightly fixtures are ungated and OSI-licensed, Hub \
+                 sources pin a commit, quantised fixtures name their original weights",
+                "xtask: ci/toolchains.toml and ci/arch-sets.toml are well formed, and the Linux \
+                 pins are in the build image's Dockerfile",
                 "xtask: ci/jobs.toml gives every golden diff in ci/jobs-goldens.toml its expected \
                  jobs, and covers pr.yml's jobs",
                 "xtask: the plan tools: every task row parses, the task graph checks, and the \

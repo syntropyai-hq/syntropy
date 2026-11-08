@@ -18,12 +18,8 @@ pub struct Manifest {
     pub references: Vec<toml::Value>,
 }
 
-/// One `[[fixture]]`. `source`, `licence`, `gated` and `used_by` are checked by the schema and
-/// read by the fixture lints (QUAL-E7-T06), not by the store client.
-#[expect(
-    dead_code,
-    reason = "schema fields read by the fixture lints of QUAL-E7-T06"
-)]
+/// One `[[fixture]]`. `source`, `licence`, `gated`, `tier`, `quant` and `quantised_from` are read
+/// by the `fixtures` lint step ([`super::lint`], QUAL-E7-T06), not by the store client.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Fixture {
@@ -35,10 +31,30 @@ pub struct Fixture {
     #[serde(default)]
     pub bytes: u64,
     pub source: toml::Value,
+    /// The licence's Hub identifier, lowercase, such as `apache-2.0` or `llama3.2`.
     pub licence: String,
     pub gated: bool,
+    /// Where the fixture may run (RFC-0060 §12.2's licence rule).
+    pub tier: Tier,
+    /// For a fixture quantised from original weights with RFC-0042's quantizers: the scheme.
+    #[serde(default)]
+    pub quant: Option<String>,
+    /// For a quantised fixture: the original weights it came from, as `<hub repo>@<revision>`.
+    #[serde(default)]
+    pub quantised_from: Option<String>,
+    #[expect(dead_code, reason = "read by the tests that name their fixtures")]
     #[serde(default)]
     pub used_by: Vec<String>,
+}
+
+/// Where a fixture may run (RFC-0060 §12.2; ADR-0603 decision 4).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Tier {
+    /// Hosted CI's nightly runs: an ungated fixture under an OSI-approved licence only.
+    Nightly,
+    /// The lab rigs only: gated, lab-only or large fixtures.
+    Lab,
 }
 
 impl Fixture {

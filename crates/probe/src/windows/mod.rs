@@ -32,6 +32,7 @@ mod srat;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 
+use syntropy_core::budget::NodeMem;
 use syntropy_core::ids::NodeId;
 use syntropy_core::resource::caps::PowerSource;
 use syntropy_core::resource::ordinal::Enumerated;
@@ -219,6 +220,11 @@ pub fn enumerate(api: &dyn WinApi, node: NodeId) -> Result<WindowsHost, EnumErro
                 // Measured by step H5 (RFC-0010 §3.2), not E1.
                 lock: None,
             },
+            // Windows' available memory per node already counts standby pages.
+            node_mem: Some(NodeMem {
+                mem_free: Bytes(free),
+                ..NodeMem::default()
+            }),
         });
     }
 
