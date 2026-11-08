@@ -5,15 +5,16 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use syntropy_config::EffectiveRequestPolicy;
 use syntropy_core::{
-    CancelReason, FinishReason, MonoTime, NodeId, PrefixScope, SamplingParams, SequenceControl,
-    SequenceId, SequenceLimits, SequenceOpen, TokenEntry,
+    CancelReason, ExactnessPolicy, FinishReason, MonoTime, NodeId, PrefixScope, SamplingParams,
+    SequenceControl, SequenceId, SequenceLimits, SequenceOpen, TokenEntry,
 };
 
 use syntropy_obs::trace::IngressTrace;
 
 use super::ingress::{Ingress, SendError};
-use super::stages::{ClientGone, Detokenize, EventSink, NoStops, Route, StopMatch};
+use super::stages::{ClientGone, Detokenize, EventSink, NoStops, Route, StopMatch, Tokenized};
 use super::token_ids::check_request;
 use super::types::{ApiError, GenEvent, GenerateRequest, StopReason, Timings, Usage};
 
@@ -91,8 +92,9 @@ impl std::fmt::Debug for Generation<'_, '_> {
 
 impl<'r> Ingress<'r> {
     /// Stages 3 to 9 for `request`: resolves the model, tokenizes the prompt, checks the context,
-    /// routes, admits, and sends `SequenceOpen` on `local_sequences`. `watch` is the flag the
-    /// HTTP layer sets when the client goes away.
+    /// routes, resolves the request's policy on the routed instance, admits, and sends
+    /// `SequenceOpen` on `local_sequences`. `watch` is the flag the HTTP layer sets when the
+    /// client goes away.
     ///
     /// # Errors
     ///
@@ -107,6 +109,8 @@ impl<'r> Ingress<'r> {
     /// - [`ApiError::Capacity`] when `local_sequences` is full;
     /// - [`ApiError::RunnerUnavailable`] when the runner is gone;
     /// - [`ApiError::SequenceIdsExhausted`] when the node has minted every ID of this boot;
+    /// - [`ApiError::Request`] when the request's policy cannot be served on the routed
+    ///   instance (RFC-0054 §7);
     /// - any error a stage returns.
     pub fn start(
         &self,
@@ -127,7 +131,11 @@ impl<'r> Ingress<'r> {
         // Stage 3.
         let model = stages.resolve_model(&request.model)?;
         // Stage 5.
-        let prompt = stages.tokenize(&model, &request.input, request.raw_special_tokens)?;
+        let Tokenized {
+            tokens: prompt,
+            shared_until,
+        } = stages.tokenize(&model, &request.input, request.raw_special_tokens)?;
+        let reasoning_budget = stages.reasoning_budget(&model, request.reasoning)?;
         // RFC-0050 §2.3: every token ID the request carries, before routing.
         check_request(request, &prompt, model.vocab_limit)?;
         let prompt_len = u32::try_from(prompt.len()).unwrap_or(u32::MAX);
@@ -145,8 +153,9 @@ impl<'r> Ingress<'r> {
         if need > u64::from(limit) {
             return Err(ApiError::ContextLengthExceeded { need, limit });
         }
-        // Stages 7 and 8.
+        // Stage 7, then stage 4's overrides resolved on the routed instance, then stage 8.
         let route = stages.route(&model, &prompt, need)?;
+        let policy = stages.resolve_policy(&model, &route, &request.overrides)?;
         stages.admit(&route, prompt_len, max_tokens)?;
         // Stage 9.
         let seed = request.sampling.seed.unwrap_or_else(|| self.entropy.u64());
@@ -155,18 +164,23 @@ impl<'r> Ingress<'r> {
         // full trace only by Syntropy's policy.
         let trace = IngressTrace::start(
             request.client.traceparent.as_deref(),
-            request.trace,
+            request.trace || policy.trace,
             self.honor_remote_sampled.load(Ordering::Relaxed),
             self.entropy,
         );
         let mut open = open(
             request,
-            seq,
-            self.minter.node(),
-            prompt.clone(),
-            seed,
-            max_tokens,
+            Opening {
+                seq,
+                node: self.minter.node(),
+                prompt: prompt.clone(),
+                seed,
+                max_tokens,
+                reasoning_budget,
+                shared_until,
+            },
             &route,
+            &policy,
         );
         // The head opens the sequence's spans under the root span.
         open.trace = Some(trace.sequence_context(trace.root_span));
@@ -210,17 +224,44 @@ impl<'r> Ingress<'r> {
     }
 }
 
-/// Stage 9's `SequenceOpen`.
-fn open(
-    request: &GenerateRequest,
+/// What stage 9's `SequenceOpen` takes beyond the request, the route and the policy.
+struct Opening {
     seq: SequenceId,
     node: NodeId,
     prompt: Vec<u32>,
     seed: u64,
     max_tokens: u32,
+    reasoning_budget: Option<u32>,
+    shared_until: Option<u32>,
+}
+
+/// Stage 9's `SequenceOpen`.
+fn open(
+    request: &GenerateRequest,
+    opening: Opening,
     route: &Route,
+    policy: &EffectiveRequestPolicy,
 ) -> SequenceOpen {
+    let Opening {
+        seq,
+        node,
+        prompt,
+        seed,
+        max_tokens,
+        reasoning_budget,
+        shared_until,
+    } = opening;
     let asked = &request.sampling;
+    // Only the per-sequence knobs travel in the open; the instance-wide ones are the plan's.
+    let exactness = match policy.exactness {
+        ExactnessPolicy::Approximate { params, .. } if !policy.sequence_knobs().is_empty() => {
+            ExactnessPolicy::Approximate {
+                knobs: policy.sequence_knobs(),
+                params,
+            }
+        }
+        _ => ExactnessPolicy::Exact,
+    };
     let fallback = SamplingParams::default();
     SequenceOpen {
         seq,
@@ -243,15 +284,17 @@ fn open(
                 .unwrap_or(fallback.repetition_penalty),
             logit_bias: asked.logit_bias.iter().copied().collect(),
             logprobs: route.tail.ask(request.logprobs),
+            reasoning_budget,
             ..fallback
         },
         limits: SequenceLimits {
             max_tokens,
+            stop_tokens: asked.stop_token_ids.iter().copied().collect(),
             deadline: request.deadline,
             ..SequenceLimits::default()
         },
-        exactness: Default::default(),
-        priority: Default::default(),
+        exactness,
+        priority: policy.priority,
         // A client seed keys the sampler by (seed, choice), so a repeated request reproduces
         // (RFC-0032 §3.7).
         choice_index: asked.seed.map(|_| 0),
@@ -260,7 +303,7 @@ fn open(
         resume: None,
         prefix_scope: PrefixScope {
             principal: request.client.principal,
-            shared_until: None,
+            shared_until,
         },
         session_pk: None,
         trace: None,

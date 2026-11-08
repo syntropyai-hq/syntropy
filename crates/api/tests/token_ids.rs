@@ -17,7 +17,8 @@ use proptest::prelude::*;
 use syntropy_api::pipeline::{
     ApiError, ApiShape, ClientMeta, ClientWatch, Detokenize, GenerateRequest, Ingress, Input,
     ModelInfo, ModelRef, Route, SamplingRequest, SequenceIdMinter, Stages, StopMatch, StopStep,
-    StreamMode, TailChannels, TokenField, TokenIdOutOfRange, check_token_ids, vocab_limit,
+    StreamMode, TailChannels, TokenField, TokenIdOutOfRange, Tokenized, check_token_ids,
+    vocab_limit,
 };
 use syntropy_core::{ErrorClass, InstanceId, NodeId, PlanEpoch, SequenceControl};
 use syntropy_testkit::sim::fake_runner::{FakeRegion, FakeRunner, Script};
@@ -56,7 +57,7 @@ impl Stages for Gate {
         })
     }
 
-    fn tokenize(&self, _: &ModelInfo, input: &Input, _: bool) -> Result<Vec<u32>, ApiError> {
+    fn tokenize(&self, _: &ModelInfo, input: &Input, _: bool) -> Result<Tokenized, ApiError> {
         let mut out: Vec<u32> = self.bos.into_iter().collect();
         match input {
             Input::Tokens(tokens) => out.extend(tokens),
@@ -67,7 +68,7 @@ impl Stages for Gate {
                 return Err(ApiError::InvalidRequest("no messages here".to_owned()));
             }
         }
-        Ok(out)
+        Ok(out.into())
     }
 
     fn route(&self, _: &ModelInfo, _: &[u32], _: u64) -> Result<Route, ApiError> {
@@ -125,6 +126,7 @@ fn request(input: Input, logit_bias: Vec<(u32, f32)>) -> GenerateRequest {
         shape: ApiShape::Native,
         model: ModelRef("m".to_owned()),
         input,
+        reasoning: Default::default(),
         sampling: SamplingRequest {
             seed: Some(1),
             logit_bias,
@@ -136,6 +138,7 @@ fn request(input: Input, logit_bias: Vec<(u32, f32)>) -> GenerateRequest {
         stream: StreamMode::Off,
         deadline: None,
         raw_special_tokens: false,
+        overrides: Default::default(),
         client: ClientMeta::default(),
         trace: false,
     }

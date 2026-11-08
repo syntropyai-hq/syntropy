@@ -63,3 +63,5 @@ tokio = { workspace = true, features = ["net", "rt-multi-thread", "time", "sync"
 # The supervisor's laptop-sleep rig test (DIST-E1-T06), and the runner-process tests
 # (DIST-E1-T04), which spawn runners through `daemon`'s process host.
 syntropy-daemon = { path = "../daemon" }
+# The native-generate contract test's fake runner (PROD-E4-T02).
+syntropy-testkit = { path = "../testkit" }

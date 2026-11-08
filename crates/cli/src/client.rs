@@ -15,14 +15,17 @@
 //!
 //! The client speaks HTTP/1.1 over each target through hyper, on a single-threaded tokio
 //! runtime the client owns, and reads and writes the `syntropy-api` types the server uses, so the
-//! CLI and the server cannot disagree about a field.
+//! CLI and the server cannot disagree about a field. Those types are also what the native API's
+//! OpenAPI document is generated from (ADR-0503 decision 2): [`Client::generate`] writes
+//! `syntropy_api::native::wire::GenerateBody` and reads `EventLine`s, the document's request and
+//! event schemas.
 
 use std::fmt;
 use std::time::Duration;
 
-use http_body_util::{BodyExt as _, Empty};
-use hyper::body::Bytes;
-use hyper::{Request, StatusCode};
+use http_body_util::{BodyExt as _, Full};
+use hyper::body::{Bytes, Incoming};
+use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use serde::de::DeserializeOwned;
 use syntropy_api::routes::ErrorBody;
@@ -289,24 +292,9 @@ impl Client {
                 })
         })?;
         if status.is_success() {
-            return serde_json::from_slice(&body).map_err(|error| {
-                CliError::cli(
-                    Exit::Failure,
-                    "bad_response",
-                    format!(
-                        "the daemon's answer to `GET {path}` is not the expected type: {error}"
-                    ),
-                )
-            });
+            return serde_json::from_slice(&body).map_err(|error| bad_type("GET", path, &error));
         }
-        match serde_json::from_slice::<ErrorBody>(&body) {
-            Ok(body) => Err(CliError::api(status.as_u16(), &body.error)),
-            Err(_) => Err(CliError::cli(
-                Exit::Failure,
-                "bad_response",
-                format!("the daemon answered `GET {path}` with {status} and no error body"),
-            )),
-        }
+        Err(api_error(status, &body, "GET", path))
     }
 
     /// `GET /v1/syntropy/version`.
@@ -317,17 +305,161 @@ impl Client {
     pub fn version(&self) -> Result<VersionInfo, CliError> {
         self.get("/v1/syntropy/version")
     }
+
+    /// `POST /v1/syntropy/generate?format=ndjson` with `body` as a stream, whatever its
+    /// `stream` says: calls `on_event` with each event as it arrives (RFC-0050 §13.1, §5.1). A
+    /// generation that fails after its stream began ends with an `error` event, which
+    /// `on_event` sees; the call still returns `Ok`.
+    ///
+    /// A stream has no overall time limit, since a generation takes as long as its tokens
+    /// do; the connection's open is bounded by [`CONNECT_TIMEOUT`], and each line by
+    /// [`MAX_RESPONSE`].
+    ///
+    /// # Errors
+    ///
+    /// The daemon's error before the stream, mapped to its exit code; or a failed or
+    /// malformed exchange.
+    #[cfg(any(target_os = "linux", target_vendor = "apple", windows))]
+    pub fn generate(
+        &self,
+        body: &syntropy_api::native::wire::GenerateBody,
+        on_event: &mut dyn FnMut(syntropy_api::native::wire::EventLine),
+    ) -> Result<(), CliError> {
+        let path = "/v1/syntropy/generate?format=ndjson";
+        let body = syntropy_api::native::wire::GenerateBody {
+            stream: Some(true),
+            ..body.clone()
+        };
+        self.runtime.block_on(async {
+            let response = send(&self.target, Method::POST, path, Some(to_json(&body)?)).await?;
+            let status = response.status();
+            if !status.is_success() {
+                let bytes = read_all(response, &self.target, "POST", path).await?;
+                return Err(api_error(status, &bytes, "POST", path));
+            }
+            let mut body = response.into_body();
+            let mut pending: Vec<u8> = Vec::new();
+            while let Some(frame) = body.frame().await {
+                let frame = frame.map_err(|e| exchange_failed(&self.target, "POST", path, &e))?;
+                let Some(data) = frame.data_ref() else {
+                    continue;
+                };
+                pending.extend_from_slice(data);
+                while let Some(end) = pending.iter().position(|&b| b == b'\n') {
+                    let line: Vec<u8> = pending.drain(..=end).collect();
+                    on_event(parse_event(&line[..end], path)?);
+                }
+                if pending.len() > MAX_RESPONSE {
+                    return Err(too_large("POST", path));
+                }
+            }
+            if !pending.is_empty() {
+                on_event(parse_event(&pending, path)?);
+            }
+            Ok(())
+        })
+    }
+
+    /// `POST /v1/syntropy/generate` with `body` and `stream: false`: one response.
+    ///
+    /// # Errors
+    ///
+    /// As [`Client::get`], with no time limit, as for [`Client::generate`].
+    #[cfg(any(target_os = "linux", target_vendor = "apple", windows))]
+    pub fn generate_once(
+        &self,
+        body: &syntropy_api::native::wire::GenerateBody,
+    ) -> Result<syntropy_api::native::wire::GenerateResponse, CliError> {
+        let path = "/v1/syntropy/generate";
+        let body = syntropy_api::native::wire::GenerateBody {
+            stream: Some(false),
+            ..body.clone()
+        };
+        self.runtime.block_on(async {
+            let response = send(&self.target, Method::POST, path, Some(to_json(&body)?)).await?;
+            let status = response.status();
+            let bytes = read_all(response, &self.target, "POST", path).await?;
+            if !status.is_success() {
+                return Err(api_error(status, &bytes, "POST", path));
+            }
+            serde_json::from_slice(&bytes).map_err(|e| bad_type("POST", path, &e))
+        })
+    }
 }
 
-/// One HTTP/1.1 `GET` to `target`: its status and body.
-async fn exchange(target: &Target, path: &str) -> Result<(StatusCode, Bytes), CliError> {
-    let failed = |error: &dyn fmt::Display| {
+/// `value` as a JSON body.
+#[cfg(any(target_os = "linux", target_vendor = "apple", windows))]
+fn to_json<T: serde::Serialize>(value: &T) -> Result<Vec<u8>, CliError> {
+    serde_json::to_vec(value).map_err(|e| {
         CliError::cli(
             Exit::Failure,
-            "exchange",
-            format!("`GET {path}` to the daemon at {target} failed: {error}"),
+            "bad_request",
+            format!("the request did not encode: {e}"),
         )
-    };
+    })
+}
+
+/// One NDJSON line of a generation stream.
+#[cfg(any(target_os = "linux", target_vendor = "apple", windows))]
+fn parse_event(line: &[u8], path: &str) -> Result<syntropy_api::native::wire::EventLine, CliError> {
+    serde_json::from_slice(line).map_err(|e| bad_type("POST", path, &e))
+}
+
+/// The error for an answer that is not the type the route returns.
+fn bad_type(method: &str, path: &str, error: &dyn fmt::Display) -> CliError {
+    CliError::cli(
+        Exit::Failure,
+        "bad_response",
+        format!("the daemon's answer to `{method} {path}` is not the expected type: {error}"),
+    )
+}
+
+/// The daemon's error body, or the error for an answer without one.
+fn api_error(status: StatusCode, body: &[u8], method: &str, path: &str) -> CliError {
+    match serde_json::from_slice::<ErrorBody>(body) {
+        Ok(body) => CliError::api(status.as_u16(), &body.error),
+        Err(_) => CliError::cli(
+            Exit::Failure,
+            "bad_response",
+            format!("the daemon answered `{method} {path}` with {status} and no error body"),
+        ),
+    }
+}
+
+fn exchange_failed(
+    target: &Target,
+    method: &str,
+    path: &str,
+    error: &dyn fmt::Display,
+) -> CliError {
+    CliError::cli(
+        Exit::Failure,
+        "exchange",
+        format!("`{method} {path}` to the daemon at {target} failed: {error}"),
+    )
+}
+
+fn too_large(method: &str, path: &str) -> CliError {
+    CliError::cli(
+        Exit::Failure,
+        "bad_response",
+        format!(
+            "the daemon's answer to `{method} {path}` is over the client's {} limit",
+            crate::output::iec_bytes(MAX_RESPONSE as u64)
+        ),
+    )
+}
+
+/// Sends one HTTP/1.1 request to `target`, with `body` as JSON when there is one, and returns
+/// the response with its body unread.
+async fn send(
+    target: &Target,
+    method: Method,
+    path: &str,
+    body: Option<Vec<u8>>,
+) -> Result<Response<Incoming>, CliError> {
+    let verb = method.as_str().to_owned();
+    let failed = |error: &dyn fmt::Display| exchange_failed(target, &verb, path, error);
     let stream = open(target).await.map_err(|error| failed(&error))?;
     let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
         .await
@@ -337,7 +469,13 @@ async fn exchange(target: &Target, path: &str) -> Result<(StatusCode, Bytes), Cl
         Target::LocalSocket(_) => "localhost",
         Target::Http { addr, .. } => addr.as_str(),
     };
-    let mut request = Request::get(path).header(hyper::header::HOST, host);
+    let mut request = Request::builder()
+        .method(method)
+        .uri(path)
+        .header(hyper::header::HOST, host);
+    if body.is_some() {
+        request = request.header(hyper::header::CONTENT_TYPE, "application/json");
+    }
     if let Target::Http {
         remote: true,
         api_key: Some(key),
@@ -350,31 +488,40 @@ async fn exchange(target: &Target, path: &str) -> Result<(StatusCode, Bytes), Cl
         );
     }
     let request = request
-        .body(Empty::<Bytes>::new())
+        .body(Full::new(Bytes::from(body.unwrap_or_default())))
         .map_err(|error| failed(&error))?;
-    let response = sender
+    sender
         .send_request(request)
         .await
-        .map_err(|error| failed(&error))?;
-    let status = response.status();
+        .map_err(|error| failed(&error))
+}
+
+/// A response's whole body, up to [`MAX_RESPONSE`].
+async fn read_all(
+    response: Response<Incoming>,
+    target: &Target,
+    method: &str,
+    path: &str,
+) -> Result<Bytes, CliError> {
     let body = http_body_util::Limited::new(response.into_body(), MAX_RESPONSE)
         .collect()
         .await
         .map_err(|error| {
             if error.is::<http_body_util::LengthLimitError>() {
-                CliError::cli(
-                    Exit::Failure,
-                    "bad_response",
-                    format!(
-                        "the daemon's answer to `GET {path}` is over the client's {} limit",
-                        crate::output::iec_bytes(MAX_RESPONSE as u64)
-                    ),
-                )
+                too_large(method, path)
             } else {
-                failed(&error)
+                exchange_failed(target, method, path, &error)
             }
         })?
         .to_bytes();
+    Ok(body)
+}
+
+/// One HTTP/1.1 `GET` to `target`: its status and body.
+async fn exchange(target: &Target, path: &str) -> Result<(StatusCode, Bytes), CliError> {
+    let response = send(target, Method::GET, path, None).await?;
+    let status = response.status();
+    let body = read_all(response, target, "GET", path).await?;
     Ok((status, body))
 }
 

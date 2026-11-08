@@ -10,7 +10,7 @@
 //!
 //! - [`types`]: [`GenerateRequest`], [`Input`], [`GenEvent`], [`StopReason`] and the types they
 //!   hold (RFC-0050 §2.1).
-//! - [`Stages`]: the seams for stages 3, 5, 7 and 8 and for the detokenizer and stop matcher of
+//! - [`Stages`]: the seams for stages 3, 4, 5, 7 and 8 and for the detokenizer and stop matcher of
 //!   stage 10, which other tasks fill in.
 //! - [`SequenceIdMinter`]: the node's one source of `SequenceId`s for this boot, which every
 //!   [`Ingress`] on the node shares, so no two mint the same ID.
@@ -60,10 +60,11 @@ pub use generation::{ClientWatch, Generation, Outcome, Progress};
 pub use ingress::{Ingress, SequenceIdMinter, Transcript};
 pub use logprobs::{TailChannels, answer_logprobs};
 pub use stages::{
-    ClientGone, Detokenize, EventSink, ModelInfo, Route, Stages, StopMatch, StopStep,
+    ClientGone, Detokenize, EventSink, ModelInfo, Route, Stages, StopMatch, StopStep, Tokenized,
 };
 pub use token_ids::{TokenField, TokenIdOutOfRange, check_request, check_token_ids, vocab_limit};
 pub use types::{
     ApiError, ApiShape, ChatMessage, ClientMeta, ContentPart, GenEvent, GenerateRequest, Input,
-    ModelRef, SamplingRequest, StopReason, StreamMode, Timings, ToolCall, Usage,
+    ModelRef, ReasoningEffort, ReasoningRequest, SamplingRequest, StopReason, StreamMode, Timings,
+    ToolCall, Usage,
 };
