@@ -165,6 +165,12 @@ reqwest = { version = "0.13.5", default-features = false, features = ["blocking"
 rustls = { version = "0.23.46", default-features = false, features = ["ring", "std"] }
 # The OS's certificate roots for the Hub client (`syntropy-store`); already in the lockfile.
 rustls-platform-verifier = "0.7.1"
+# JSON Schemas generated from the native API's serde types, which `syntropy-api` wraps into the
+# OpenAPI 3.1 document at `/v1/syntropy/openapi.json` (ADR-0503 decision 2, RFC-0050 §13;
+# PROD-E4-T02). `syntropy-api` only. MIT. Its schemas are JSON Schema 2020-12, the dialect
+# OpenAPI 3.1 uses. `derive` and `std` only, which are its defaults; no third-party type
+# support.
+schemars = { version = "1.2.3", default-features = false, features = ["derive", "std"] }
 serde = { version = "1.0.228", features = ["derive"] }
 # `preserve_order`: a JSON object keeps its document order. `llguidance` (the constraint engine in
 # `text`) turns it on, and cargo unifies features, so it is set here for every build: one `Map`

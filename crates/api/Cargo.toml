@@ -6,6 +6,12 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+# The native API's JSON Schemas, from which `openapi` builds the OpenAPI 3.1 document (ADR-0503
+# decision 2; PROD-E4-T02).
+schemars.workspace = true
+# `openapi::check_response`'s `pattern` keyword. Already in this crate's build through its
+# dependencies.
+regex.workspace = true
 serde.workspace = true
 # `ErrorClass`, which the native error body carries (RFC-0001 §5.12).
 syntropy-core = { path = "../core" }
@@ -38,6 +44,9 @@ zeroize.workspace = true
 proptest.workspace = true
 # The fake runner the pipeline's tests run against (QUAL-E3-T18), and its `SimClock`.
 syntropy-testkit = { path = "../testkit" }
+# The span-aware encoder native generate's `raw_special_tokens` test tokenizes with (RFC-0050
+# §6.4, PROD-E4-T02).
+syntropy-text = { path = "../text" }
 # Parses `api.tls` values in the unit tests.
 toml.workspace = true
 # The server tests' HTTP/1.1 and HTTP/2 clients.

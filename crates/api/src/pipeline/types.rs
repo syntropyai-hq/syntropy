@@ -3,16 +3,17 @@
 //! The shape-neutral request and event stream (RFC-0050 §2.1).
 //!
 //! Each API shape's front end parses its body into one [`GenerateRequest`], and its encoder turns
-//! the one stream of [`GenEvent`]s back into its wire format. These are the M0 fields. The fields
-//! RFC-0050 §2.1 lists that need types other tasks build come with those tasks: `tools`,
-//! `tool_choice` and `parallel_tool_calls` (§6, PROD-E3), `constraint` (§7, PROD-E3-T05),
-//! `reasoning` (§8), `overrides` (RFC-0054 §7, PROD-E1-T10), `ContentPart::Media` (PROD-E4-T17),
-//! `TextDelta::logprobs` (PROD-E2-T06), the `fidelity` reports on `Started` and `Finished`
-//! (PROD-E4-T03), `Loading` (PROD-E2-T09) and `Recovered` (PROD-E2-T18).
+//! the one stream of [`GenEvent`]s back into its wire format. The fields RFC-0050 §2.1 lists
+//! that need types other tasks build come with those tasks: `tools`, `tool_choice` and
+//! `parallel_tool_calls` (§6, PROD-E3), `constraint` (§7, PROD-E3-T05), `ContentPart::Media`
+//! (PROD-E4-T17), `TextDelta::logprobs` (PROD-E2-T06), the `fidelity` reports on `Started` and
+//! `Finished` (PROD-E4-T03), `Loading` (PROD-E2-T09) and `Recovered` (PROD-E2-T18). `reasoning`,
+//! `overrides`, stop token IDs and cache breakpoints came with native generate (PROD-E4-T02).
 
 use std::fmt;
 use std::net::SocketAddr;
 
+use syntropy_config::{RequestError, RequestOverrides};
 use syntropy_core::{InstanceId, Nanos, PlanEpoch, SequenceId};
 
 use super::token_ids::TokenIdOutOfRange;
@@ -48,7 +49,9 @@ pub struct GenerateRequest {
     pub model: ModelRef,
     /// The prompt.
     pub input: Input,
-    /// Sampling parameters, stop strings and the token limit.
+    /// Reasoning controls (RFC-0050 §8.3).
+    pub reasoning: ReasoningRequest,
+    /// Sampling parameters, stop strings, stop token IDs and the token limit.
     pub sampling: SamplingRequest,
     /// Independent choices. M0 serves one; `n > 1` forks from the shared prefix (PROD-E2-T06).
     pub n: u8,
@@ -62,6 +65,10 @@ pub struct GenerateRequest {
     pub deadline: Option<Nanos>,
     /// Native only: content may become control tokens (RFC-0050 §6.4). Default false.
     pub raw_special_tokens: bool,
+    /// The request's policy (RFC-0054 §7): fidelity and knobs, priority, speculation,
+    /// determinism, session and trace. Validated by the front end, resolved against the routed
+    /// instance by [`Stages::resolve_policy`](super::Stages::resolve_policy).
+    pub overrides: RequestOverrides,
     /// Who sent it.
     pub client: ClientMeta,
     /// Whether the request asked for a full trace: `syntropy.trace = true` in the body or
@@ -123,6 +130,42 @@ pub enum ChatMessage {
 pub enum ContentPart {
     /// Text, tokenized literally (RFC-0050 §6.4).
     Text(String),
+    /// Not content: a `cache_control` breakpoint after the parts before it (RFC-0050 §9.1,
+    /// §9.5). The prompt up to here is a prefix the client asks to share with other principals
+    /// and to keep resident for `ttl`. Stage 5 renders nothing for it and reports the token
+    /// position after the last one as [`Tokenized::shared_until`](super::Tokenized).
+    CacheBreakpoint {
+        /// How long the client asks the prefix to stay resident: 5 minutes unless it gave a
+        /// TTL. Keeping it resident is PROD-E4-T07's.
+        ttl: Nanos,
+    },
+}
+
+/// Reasoning controls (RFC-0050 §8.3).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum ReasoningRequest {
+    /// None given: the model's `reasoning.default` (RFC-0054 §5.3).
+    #[default]
+    Default,
+    /// An effort level.
+    Effort(ReasoningEffort),
+    /// At most this many reasoning tokens before the end-of-reasoning marker is forced.
+    Budget(u32),
+    /// Reasoning switched off.
+    Off,
+}
+
+/// A reasoning effort (RFC-0050 §8.3).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ReasoningEffort {
+    /// `minimal`.
+    Minimal,
+    /// `low`.
+    Low,
+    /// `medium`.
+    Medium,
+    /// `high`.
+    High,
 }
 
 /// A tool call an assistant turn made.
@@ -160,6 +203,10 @@ pub struct SamplingRequest {
     pub seed: Option<u64>,
     /// Stop strings, matched at ingress on detokenized text (RFC-0050 §5.2).
     pub stop: Vec<String>,
+    /// Stop token IDs, which the tail checks beside the model's end-of-sequence and end-of-turn
+    /// tokens (`SequenceLimits::stop_tokens`, RFC-0012 §8.4). Range-checked at ingress
+    /// (RFC-0050 §2.3).
+    pub stop_token_ids: Vec<u32>,
     /// Tokens to emit at most; `None` allows up to the model's context.
     pub max_tokens: Option<u32>,
 }
@@ -344,6 +391,9 @@ pub enum ApiError {
     Capacity(String),
     /// The runner's rings are gone or broke their protocol.
     RunnerUnavailable(String),
+    /// The request's policy cannot be served (RFC-0054 §7): `fidelity_conflict`,
+    /// `knobs_need_approximate` or `debug_api_disabled`, with the code `config` gives it.
+    Request(RequestError),
     /// The node has minted every `SequenceId` of this boot (2^32 of them); only a restart, with a
     /// new boot counter, mints more.
     SequenceIdsExhausted,
@@ -369,6 +419,7 @@ impl fmt::Display for ApiError {
             ),
             ApiError::TokenIdOutOfRange(e) => write!(f, "token ID out of range: {e}"),
             ApiError::Capacity(why) => write!(f, "no capacity: {why}"),
+            ApiError::Request(e) => write!(f, "{e}"),
             ApiError::RunnerUnavailable(why) => write!(f, "the runner is unavailable: {why}"),
             ApiError::SequenceIdsExhausted => {
                 f.write_str("this node has used every sequence ID of this boot")
@@ -381,6 +432,12 @@ impl fmt::Display for ApiError {
 }
 
 impl std::error::Error for ApiError {}
+
+impl From<RequestError> for ApiError {
+    fn from(e: RequestError) -> ApiError {
+        ApiError::Request(e)
+    }
+}
 
 impl From<TokenIdOutOfRange> for ApiError {
     fn from(e: TokenIdOutOfRange) -> ApiError {

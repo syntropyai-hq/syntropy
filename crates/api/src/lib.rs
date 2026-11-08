@@ -5,14 +5,17 @@
 //! Layer 4 in RFC-0001 §4.1, designed in RFC-0050. So far it holds the HTTP server and its route
 //! table (RFC-0050 §1.1–§1.2, PROD-E2-T01), the bind policy of RFC-0050 §11.1 (PROD-E5-T02), the
 //! node's local TLS CA (PROD-E5-T03), the `Figure` type that `doctor`'s evidence uses
-//! (PROD-E9-T01), the ingress pipeline (PROD-E2-T02) and native generate for M0 benchmarking
-//! (PROD-E4-T13):
+//! (PROD-E9-T01), the ingress pipeline (PROD-E2-T02), and native generate and the OpenAPI
+//! document (PROD-E4-T13, PROD-E4-T02):
 //!
 //! - [`server`]: the `api.bind` listeners and the local socket, served with HTTP/1.1 and
 //!   cleartext HTTP/2 on the daemon's `ctl` runtime;
 //! - [`routes`]: the route table, with `/healthz`, `/readyz` and `/v1/syntropy/version`;
-//! - [`native`]: `POST /v1/syntropy/generate` for M0 benchmarking, token input streamed as NDJSON
-//!   and served only while `debug.bench_api` is on (PROD-E4-T13);
+//! - [`native`]: `POST /v1/syntropy/generate`, with every control RFC-0050 §13.1 lists, streamed
+//!   as SSE or NDJSON or answered as one response; [`native::wire`] holds its JSON types;
+//! - [`openapi`]: the OpenAPI 3.1 document generated from those types, served at
+//!   `/v1/syntropy/openapi.json`, and [`openapi::check_response`], which checks a response
+//!   against it;
 //! - [`version`]: what `/v1/syntropy/version` reports;
 //! - [`printable`]: text made safe to show on a terminal, which the CLI and `doctor` share;
 //! - [`config`]: the `[api]` section's listener keys, `api.bind`, `api.tls`,
@@ -38,6 +41,8 @@ pub mod config;
 pub mod figure;
 #[cfg(any(target_os = "linux", target_vendor = "apple", windows))]
 pub mod native;
+#[cfg(any(target_os = "linux", target_vendor = "apple", windows))]
+pub mod openapi;
 #[cfg(any(target_os = "linux", target_vendor = "apple", windows))]
 pub mod pipeline;
 pub mod printable;

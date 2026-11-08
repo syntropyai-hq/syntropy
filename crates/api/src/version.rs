@@ -9,13 +9,14 @@
 
 use std::fmt::Write as _;
 
+use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Serialize};
 use syntropy_core::build::{BuildId, BuildProfile, SemVer, TargetTriple};
 use syntropy_core::ids::Blake3;
 
 /// The body of `GET /v1/syntropy/version`, which `syntropy version --json` prints unchanged
 /// (RFC-0051 §2.2).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct VersionInfo {
     /// The build serving the request.
     pub build: Build,
@@ -78,6 +79,47 @@ fn unhex<const N: usize, E: serde::de::Error>(text: &str, what: &str) -> Result<
     Ok(out)
 }
 
+impl JsonSchema for Build {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "Build".into()
+    }
+
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        json_schema!({
+            "description": "A build: its version, commit, profile, target and toolchain \
+                            (RFC-0062 §8.1), its features and its 32-byte build ID.",
+            "type": "object",
+            "properties": {
+                "version": { "type": "string", "description": "The SemVer version." },
+                "commit": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{40}$",
+                    "description": "The commit, 40 lower-case hex digits; all zero when the \
+                                    build had none to read."
+                },
+                "profile": { "type": "string", "description": "The cargo profile." },
+                "target": { "type": "string", "description": "The target triple." },
+                "toolchain": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{64}$",
+                    "description": "The BLAKE3 digest of the toolchain's version line."
+                },
+                "features": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "The features it was built with, as `crate/feature`."
+                },
+                "id": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{64}$",
+                    "description": "The 32-byte build ID the daemon and its runners compare."
+                }
+            },
+            "required": ["version", "commit", "profile", "target", "toolchain", "features", "id"]
+        })
+    }
+}
+
 impl Serialize for Build {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeStruct as _;
@@ -125,7 +167,7 @@ impl<'de> Deserialize<'de> for Build {
 
 /// The protocol majors this build speaks (RFC-0062 §10.1). Two builds interoperate on a plane
 /// only with equal majors.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ProtocolMajors {
     /// `proto_major` of the data and control planes, which every ALPN, beacon and `Hello`
     /// carries (RFC-0031 §10).
@@ -147,7 +189,7 @@ impl ProtocolMajors {
 }
 
 /// A platform's support level (ADR-0020): what the project promises for it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum SupportTier {
     /// Tier 1: supported; parity and performance gates enforced.

@@ -11,8 +11,8 @@
 //! or dropped.
 //!
 //! [`check_token_ids`] is the validator, one call per field. [`check_request`] runs it over the
-//! fields a [`GenerateRequest`] carries at M0, the native `tokens` and `logit_bias`, and over the
-//! rendered prompt; the pipeline calls it after stage 5. The other fields in [`TokenField`] come
+//! fields a [`GenerateRequest`] carries, the native `tokens`, `logit_bias` and the stop token
+//! IDs, and over the rendered prompt; the pipeline calls it after stage 5. The other fields in [`TokenField`] come
 //! with the endpoints that parse them, and each of those tasks calls [`check_token_ids`] for its
 //! field.
 
@@ -140,7 +140,7 @@ pub fn check_token_ids(
 }
 
 /// Checks the token IDs of `request` and its rendered `prompt` against `vocab_limit`: the native
-/// `tokens`, then the `logit_bias` keys, then the rendered prompt.
+/// `tokens`, then the `logit_bias` keys, then the stop token IDs, then the rendered prompt.
 ///
 /// # Errors
 ///
@@ -156,6 +156,11 @@ pub fn check_request(
     check_token_ids(
         TokenField::LogitBias,
         request.sampling.logit_bias.iter().map(|&(id, _)| id),
+        vocab_limit,
+    )?;
+    check_token_ids(
+        TokenField::StopTokenIds,
+        request.sampling.stop_token_ids.iter().copied(),
         vocab_limit,
     )?;
     check_token_ids(

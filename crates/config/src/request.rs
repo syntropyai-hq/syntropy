@@ -157,7 +157,7 @@ impl fmt::Display for RequestWarning {
 /// Why a request cannot be served by a candidate instance. Each is `InvalidRequest`, with its
 /// code in RFC-0050 §12.3's `Api` domain, which the API reports.
 #[non_exhaustive]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum RequestError {
     /// The candidate's plan applies instance-wide knobs this request cannot be served with: the
     /// request is exact, or it named knobs and left out one the plan applies to every sequence

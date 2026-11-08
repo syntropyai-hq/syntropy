@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! The route table of RFC-0050 §1.2, and the routes served so far: `GET /healthz`,
-//! `GET /readyz`, `GET /v1/syntropy/version`, and `POST /v1/syntropy/generate` behind
-//! `debug.bench_api` ([`crate::native`]).
+//! `GET /readyz`, `GET /v1/syntropy/version`, `POST /v1/syntropy/generate` ([`crate::native`])
+//! and `GET /v1/syntropy/openapi.json` ([`crate::openapi`]).
 //!
 //! [`ROUTES`] maps a method and an exact path to a handler. A path with no route gets 404
 //! `unsupported_endpoint`; a path whose route takes another method gets 405 with an `Allow`
@@ -20,6 +20,7 @@ use http_body_util::{BodyExt as _, Full};
 use hyper::body::{Bytes, Incoming};
 use hyper::header::{self, HeaderValue};
 use hyper::{Method, Request, Response, StatusCode};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use syntropy_config::DebugSection;
 use syntropy_core::error::ErrorClass;
@@ -69,6 +70,12 @@ pub const ROUTES: &[Route] = &[
         method: Method::POST,
         path: crate::native::PATH,
         handler: crate::native::generate,
+    },
+    #[cfg(any(target_os = "linux", target_vendor = "apple", windows))]
+    Route {
+        method: Method::GET,
+        path: crate::openapi::PATH,
+        handler: openapi,
     },
 ];
 
@@ -150,16 +157,20 @@ pub fn json<T: Serialize>(status: StatusCode, body: &T) -> Response<Body> {
 /// An error response in the native shape: `{"error": {"class", "code", "message"}}`. The CLI
 /// reads it back with the same type. The full native error of RFC-0050 §12.1, with `domain`,
 /// `retry`, `scope` and `context`, and each vendor shape's body, are PROD-E2-T05's.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ErrorBody {
     /// The error.
     pub error: NativeError,
 }
 
 /// The error inside an [`ErrorBody`].
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct NativeError {
     /// What kind of failure it is (RFC-0001 §5.12).
+    #[cfg_attr(
+        any(target_os = "linux", target_vendor = "apple", windows),
+        schemars(schema_with = "crate::native::wire::error_class_schema")
+    )]
     pub class: ErrorClass,
     /// The code for programs, such as `unsupported_endpoint`.
     pub code: String,
@@ -194,6 +205,12 @@ pub(crate) fn error(
             },
         },
     )
+}
+
+/// `GET /v1/syntropy/openapi.json`: the native API's OpenAPI 3.1 document (RFC-0050 §13).
+#[cfg(any(target_os = "linux", target_vendor = "apple", windows))]
+fn openapi(_: &ApiState, _: Request<Incoming>) -> Reply<'_> {
+    Box::pin(async { json(StatusCode::OK, crate::openapi::document()) })
 }
 
 fn version(state: &ApiState, _: Request<Incoming>) -> Reply<'_> {
@@ -247,7 +264,12 @@ mod tests {
     fn the_m0_routes_are_in_the_table() {
         let table: Vec<(Method, &str)> =
             ROUTES.iter().map(|r| (r.method.clone(), r.path)).collect();
-        for path in ["/healthz", "/readyz", "/v1/syntropy/version"] {
+        for path in [
+            "/healthz",
+            "/readyz",
+            "/v1/syntropy/version",
+            "/v1/syntropy/openapi.json",
+        ] {
             assert!(table.contains(&(Method::GET, path)), "{path}");
         }
     }

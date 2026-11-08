@@ -12,7 +12,7 @@ use syntropy_api::pipeline::{
     ApiError, ApiShape, ClientGone, ClientMeta, ClientWatch, Detokenize, EventSink, GenEvent,
     GenerateRequest, Ingress, Input, ModelInfo, ModelRef, Outcome, Progress, Route,
     SamplingRequest, SequenceIdMinter, Stages, StopMatch, StopReason, StopStep, StreamMode,
-    TailChannels, Usage,
+    TailChannels, Tokenized, Usage,
 };
 use syntropy_core::{
     CancelReason, FinishReason, InstanceId, Nanos, NodeId, PlanEpoch, SequenceControl,
@@ -44,9 +44,9 @@ impl Stages for FakeStages {
         }
     }
 
-    fn tokenize(&self, _: &ModelInfo, input: &Input, _: bool) -> Result<Vec<u32>, ApiError> {
+    fn tokenize(&self, _: &ModelInfo, input: &Input, _: bool) -> Result<Tokenized, ApiError> {
         match input {
-            Input::Tokens(tokens) => Ok(tokens.clone()),
+            Input::Tokens(tokens) => Ok(tokens.clone().into()),
             _ => Err(ApiError::InvalidRequest("tokens only".to_owned())),
         }
     }
@@ -176,6 +176,7 @@ fn request(prompt: Vec<u32>, stop: &[&str]) -> GenerateRequest {
         shape: ApiShape::Native,
         model: ModelRef("m".to_owned()),
         input: Input::Tokens(prompt),
+        reasoning: Default::default(),
         sampling: SamplingRequest {
             seed: Some(42),
             stop: stop.iter().map(|s| (*s).to_owned()).collect(),
@@ -189,6 +190,7 @@ fn request(prompt: Vec<u32>, stop: &[&str]) -> GenerateRequest {
         },
         deadline: None,
         raw_special_tokens: false,
+        overrides: Default::default(),
         client: ClientMeta::default(),
         trace: false,
     }
@@ -746,7 +748,7 @@ impl Stages for RemoteTail {
         FakeStages.resolve_model(model)
     }
 
-    fn tokenize(&self, model: &ModelInfo, input: &Input, raw: bool) -> Result<Vec<u32>, ApiError> {
+    fn tokenize(&self, model: &ModelInfo, input: &Input, raw: bool) -> Result<Tokenized, ApiError> {
         FakeStages.tokenize(model, input, raw)
     }
 
