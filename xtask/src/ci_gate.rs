@@ -37,6 +37,12 @@
 //!
 //! The planned hosted jobs, whose suites later tasks add, are `ci/jobs.toml`'s too: the summary
 //! names each one's task beside its skip.
+//!
+//! **Paused jobs** (ADR-0626; QUAL-E1-T37). A hosted job `ci/jobs.toml` marks `paused` never
+//! runs: `changes` does not list it, so `pr.yml` skips it, and `ci-gate` does not wait for it.
+//! During M0a these are the macOS and Windows jobs. The base branch's rules decide which jobs are
+//! paused, so a PR cannot pause its own failing job, and a listed job that `ci-gate` does not wait
+//! for still fails it.
 
 use std::collections::BTreeSet;
 
@@ -224,10 +230,17 @@ pub fn evaluate(
         let line = match (outcome, is_listed) {
             (Outcome::Success, true) => format!("{job}: success"),
             (Outcome::Success, false) => format!("{job}: success (not listed by `{CHANGES}`)"),
-            (Outcome::Skipped, false) => match config.job(job).and_then(|j| j.planned.as_ref()) {
-                Some(tasks) => format!("{job}: skipped, planned: {tasks}"),
-                None => format!("{job}: skipped, not listed by `{CHANGES}`"),
-            },
+            (Outcome::Skipped, false) => {
+                let rule = config.job(job);
+                match (
+                    rule.and_then(|j| j.planned.as_ref()),
+                    rule.and_then(|j| j.paused.as_ref()),
+                ) {
+                    (Some(tasks), _) => format!("{job}: skipped, planned: {tasks}"),
+                    (None, Some(adr)) => format!("{job}: skipped, paused: {adr}"),
+                    (None, None) => format!("{job}: skipped, not listed by `{CHANGES}`"),
+                }
+            }
             (Outcome::Skipped, true) => {
                 evaluation.problems.push(format!(
                     "`{job}` was skipped, but `{CHANGES}` listed it, so it had to run"
@@ -481,8 +494,9 @@ pub fn step(context: &Context) -> Result<(), String> {
 mod tests {
     use super::*;
 
-    /// The rules the tests judge by: the jobs `pr.yml` waits for, one of them planned, and two
-    /// hardware jobs, one planned, whose statuses `lab-bot[bot]` posts.
+    /// The rules the tests judge by: the jobs `pr.yml` waits for, one of them planned, two paused
+    /// jobs it does not wait for, and two hardware jobs, one planned, whose statuses
+    /// `lab-bot[bot]` posts.
     const CONFIG: &str = r#"
 [paths]
 workspace = ["Cargo.lock"]
@@ -502,6 +516,17 @@ when = "closure"
 [job.hosted-test]
 runner = "hosted"
 when = "closure"
+
+[job.hosted-test-macos-windows]
+runner = "hosted"
+when = "closure"
+paused = "ADR-0626"
+
+[job.toolchains-macos]
+runner = "hosted"
+when = "direct"
+paths = ["ci/toolchains.toml"]
+paused = "ADR-0626"
 
 [job.hosted-l3]
 runner = "hosted"
@@ -709,6 +734,94 @@ planned = "QUAL-E2-T99"
         assert_eq!(
             evaluation.problems,
             ["`changes` lists itself as a job to run"]
+        );
+    }
+
+    #[test]
+    fn the_paused_macos_and_windows_jobs_do_not_hold_the_gate_but_a_linux_failure_fails_it() {
+        let listed = r#"["lint","hosted-test"]"#;
+        // Not waited for at all, as `pr.yml` has it.
+        let evaluation = hosted(&needs(
+            "success",
+            listed,
+            &[("lint", "success"), ("hosted-test", "success")],
+        ));
+        assert_eq!(evaluation.problems, Vec::<String>::new());
+        // Waited for and skipped, as they would be if `ci-gate` named them.
+        let evaluation = hosted(&needs(
+            "success",
+            listed,
+            &[
+                ("lint", "success"),
+                ("hosted-test", "success"),
+                ("hosted-test-macos-windows", "skipped"),
+                ("toolchains-macos", "skipped"),
+            ],
+        ));
+        assert_eq!(evaluation.problems, Vec::<String>::new());
+        assert!(
+            evaluation
+                .lines
+                .contains(&"hosted-test-macos-windows: skipped, paused: ADR-0626".to_owned()),
+            "{evaluation:?}"
+        );
+        // `hosted-test` is the Linux leg, which still gates, on a PR and on a merge group.
+        let failing = needs(
+            "success",
+            listed,
+            &[("lint", "success"), ("hosted-test", "failure")],
+        );
+        assert_eq!(hosted(&failing).problems, ["`hosted-test` failed"]);
+        assert_eq!(
+            evaluate(&failing, &config(), &Event::MergeGroup, None).problems,
+            ["`hosted-test` failed"]
+        );
+    }
+
+    #[test]
+    fn a_paused_job_that_ran_and_failed_still_fails_the_gate() {
+        // `changes` never lists a paused job, so it can run only if a PR's workflow runs it
+        // anyway; a failure it reports is not hidden.
+        let evaluation = hosted(&needs(
+            "success",
+            r#"["lint"]"#,
+            &[("lint", "success"), ("toolchains-macos", "failure")],
+        ));
+        assert_eq!(evaluation.problems, ["`toolchains-macos` failed"]);
+        // Nor can `changes` list one that `ci-gate` does not wait for.
+        let evaluation = hosted(&needs(
+            "success",
+            r#"["lint","hosted-test-macos-windows"]"#,
+            &[("lint", "success")],
+        ));
+        assert_eq!(
+            evaluation.problems,
+            [
+                "`changes` lists `hosted-test-macos-windows`, which `ci-gate` does not wait for; \
+              add it to the `needs` of `ci-gate`"
+            ]
+        );
+    }
+
+    #[test]
+    fn on_the_real_rules_only_the_macos_and_windows_jobs_are_paused() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap();
+        let rules = Config::load(root).expect("ci/jobs.toml parses");
+        let paused: Vec<(&str, &str)> = rules
+            .jobs
+            .iter()
+            .filter_map(|job| Some((job.name.as_str(), job.paused.as_deref()?)))
+            .collect();
+        assert_eq!(
+            paused,
+            [
+                ("build-macos-windows", "ADR-0626"),
+                ("hosted-test-macos-windows", "ADR-0626"),
+                ("toolchains-macos", "ADR-0626"),
+                ("toolchains-windows", "ADR-0626"),
+            ]
         );
     }
 

@@ -37,12 +37,11 @@ pub struct RopeParams {
 
 /// A RoPE frequency rule with every input its table needs.
 ///
-/// Only the rules whose inputs the plan defines are here: unscaled frequencies (the base and
-/// the rotated dims) and linear position scaling (one factor). RFC-0043 §3.1 and §5 name
-/// YaRN and Llama-3-style scaling, and RFC-0022 §7.1 hashes "scaling type and factors,
-/// original context length", but no RFC lists their parameters. They come with the family
-/// that needs them (COMP-E16-T03) once the plan names them, so this block never emits a rule
-/// whose inputs are missing.
+/// RFC-0043 §3.1 names the rules, and RFC-0022 §7.1 hashes "scaling type and factors, original
+/// context length", but no RFC lists their parameters. `Plain` and `Linear` came with the block
+/// (COMP-E15-T02). `Llama3` and `Yarn` came with the `llama` family (COMP-E16-T03), with the
+/// parameters `config.json`'s `rope_scaling` gives them, recorded in RFC-0043 §5.5's note of
+/// 2026-10-31.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum RopeScaling {
     /// Unscaled frequencies.
@@ -51,6 +50,33 @@ pub enum RopeScaling {
     Linear {
         /// The position scaling factor.
         factor: f32,
+    },
+    /// Llama-3-style frequency scaling: wavelengths longer than
+    /// `original_ctx / low_freq_factor` are divided by `factor`, wavelengths shorter than
+    /// `original_ctx / high_freq_factor` are kept, and the band between is interpolated.
+    Llama3 {
+        /// The frequency scaling factor.
+        factor: f32,
+        /// The low-frequency factor.
+        low_freq_factor: f32,
+        /// The high-frequency factor.
+        high_freq_factor: f32,
+        /// The context length the model was trained at before scaling.
+        original_ctx: u32,
+    },
+    /// YaRN scaling.
+    Yarn {
+        /// The context extension factor.
+        factor: f32,
+        /// The context length the model was trained at before scaling.
+        original_ctx: u32,
+        /// The fast boundary of the interpolation ramp, in rotations.
+        beta_fast: f32,
+        /// The slow boundary of the interpolation ramp, in rotations.
+        beta_slow: f32,
+        /// The scale applied to the rotated values, when the checkpoint states one; `None`
+        /// leaves the rule's own default.
+        attn_factor: Option<f32>,
     },
 }
 
@@ -61,6 +87,8 @@ impl RopeScaling {
         match self {
             Self::Plain => RopeKind::Plain,
             Self::Linear { .. } => RopeKind::Linear,
+            Self::Llama3 { .. } => RopeKind::Llama3,
+            Self::Yarn { .. } => RopeKind::Yarn,
         }
     }
 }
@@ -119,6 +147,8 @@ pub fn rope_kind_code(scaling: &RopeScaling) -> u32 {
     match scaling {
         RopeScaling::Plain => 0,
         RopeScaling::Linear { .. } => 1,
+        RopeScaling::Llama3 { .. } => 2,
+        RopeScaling::Yarn { .. } => 3,
     }
 }
 
@@ -207,6 +237,34 @@ pub fn gqa(
     match params.rope.scaling {
         RopeScaling::Plain => {}
         RopeScaling::Linear { factor } => rope_attrs.push(("rope_factor", AttrValue::F32(factor))),
+        RopeScaling::Llama3 {
+            factor,
+            low_freq_factor,
+            high_freq_factor,
+            original_ctx,
+        } => rope_attrs.extend([
+            ("rope_factor", AttrValue::F32(factor)),
+            ("rope_low_freq_factor", AttrValue::F32(low_freq_factor)),
+            ("rope_high_freq_factor", AttrValue::F32(high_freq_factor)),
+            ("rope_original_ctx", AttrValue::U32(original_ctx)),
+        ]),
+        RopeScaling::Yarn {
+            factor,
+            original_ctx,
+            beta_fast,
+            beta_slow,
+            attn_factor,
+        } => {
+            rope_attrs.extend([
+                ("rope_factor", AttrValue::F32(factor)),
+                ("rope_original_ctx", AttrValue::U32(original_ctx)),
+                ("rope_beta_fast", AttrValue::F32(beta_fast)),
+                ("rope_beta_slow", AttrValue::F32(beta_slow)),
+            ]);
+            if let Some(a) = attn_factor {
+                rope_attrs.push(("rope_attn_factor", AttrValue::F32(a)));
+            }
+        }
     }
     let kv_attrs: Vec<_> = heads[1..].iter().chain(&rope_attrs).copied().collect();
     push(

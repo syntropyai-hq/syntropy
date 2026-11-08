@@ -1,0 +1,69 @@
+# hyperparameters
+n_layers=48 hidden=2048 vocab=151936 residual_streams=1
+d_expert=U64(768)
+d_head=U64(128)
+max_ctx=U64(40960)
+n_experts=U64(128)
+n_heads=U64(32)
+n_kv_heads=U64(4)
+qk_norm=Bool(true)
+qkv_bias=Bool(false)
+renormalize=Bool(true)
+rms_eps=F64(9.999999974752427e-7)
+rope_scaling=Str("none")
+rope_theta=F64(1000000.0)
+tied_embeddings=Bool(false)
+top_k=U64(8)
+# kv
+layers=48 first=PerToken { elems_per_token: 1024, window: None, latent: false }
+all_equal=true
+dtype=KvDTypeSpec { default: BF16, layers: [] }
+# fetch (18867 lines, 15 distinct)
+1 × lm_head.weight class=Head layer=- role=Head block=Epilogue stacked=None
+1 × model.embed_tokens.weight class=RowLookup layer=- role=Embed block=Prologue stacked=None
+48 × model.layers.{L}.input_layernorm.weight class=DenseEveryToken layer={L} role=Norm block=Layer(Gqa) stacked=None
+6144 × model.layers.{L}.mlp.experts.{E}.down_proj.weight class=Expert layer={L} role=Down block=Layer(Moe) stacked=None
+6144 × model.layers.{L}.mlp.experts.{E}.gate_proj.weight class=Expert layer={L} role=Gate block=Layer(Moe) stacked=None
+6144 × model.layers.{L}.mlp.experts.{E}.up_proj.weight class=Expert layer={L} role=Up block=Layer(Moe) stacked=None
+48 × model.layers.{L}.mlp.gate.weight class=Router layer={L} role=Router block=Layer(Moe) stacked=None
+48 × model.layers.{L}.post_attention_layernorm.weight class=DenseEveryToken layer={L} role=Norm block=Layer(Moe) stacked=None
+48 × model.layers.{L}.self_attn.k_norm.weight class=DenseEveryToken layer={L} role=Norm block=Layer(Gqa) stacked=None
+48 × model.layers.{L}.self_attn.k_proj.weight class=DenseEveryToken layer={L} role=K block=Layer(Gqa) stacked=None
+48 × model.layers.{L}.self_attn.o_proj.weight class=DenseEveryToken layer={L} role=O block=Layer(Gqa) stacked=None
+48 × model.layers.{L}.self_attn.q_norm.weight class=DenseEveryToken layer={L} role=Norm block=Layer(Gqa) stacked=None
+48 × model.layers.{L}.self_attn.q_proj.weight class=DenseEveryToken layer={L} role=Q block=Layer(Gqa) stacked=None
+48 × model.layers.{L}.self_attn.v_proj.weight class=DenseEveryToken layer={L} role=V block=Layer(Gqa) stacked=None
+1 × model.norm.weight class=DenseEveryToken layer=- role=Norm block=Epilogue stacked=None
+# ignored (0)
+# unknown (0)
+# manifest
+family=qwen_moe format=Safetensors
+# records (18867 lines, 15 distinct)
+1 × lm_head.weight class=Head layer=- shape=[151936, 2048] quant=Plain(BF16) bytes=Bytes(622329856) aux=0
+1 × model.embed_tokens.weight class=RowLookup layer=- shape=[151936, 2048] quant=Plain(BF16) bytes=Bytes(622329856) aux=0
+48 × model.layers.{L}.input_layernorm.weight class=DenseEveryToken layer={L} shape=[2048] quant=Plain(BF16) bytes=Bytes(4096) aux=0
+6144 × model.layers.{L}.mlp.experts.{E}.down_proj.weight class=Expert layer={L} shape=[2048, 768] quant=Plain(BF16) bytes=Bytes(3145728) aux=0
+6144 × model.layers.{L}.mlp.experts.{E}.gate_proj.weight class=Expert layer={L} shape=[768, 2048] quant=Plain(BF16) bytes=Bytes(3145728) aux=0
+6144 × model.layers.{L}.mlp.experts.{E}.up_proj.weight class=Expert layer={L} shape=[768, 2048] quant=Plain(BF16) bytes=Bytes(3145728) aux=0
+48 × model.layers.{L}.mlp.gate.weight class=Router layer={L} shape=[128, 2048] quant=Plain(BF16) bytes=Bytes(524288) aux=0
+48 × model.layers.{L}.post_attention_layernorm.weight class=DenseEveryToken layer={L} shape=[2048] quant=Plain(BF16) bytes=Bytes(4096) aux=0
+48 × model.layers.{L}.self_attn.k_norm.weight class=DenseEveryToken layer={L} shape=[128] quant=Plain(BF16) bytes=Bytes(256) aux=0
+48 × model.layers.{L}.self_attn.k_proj.weight class=DenseEveryToken layer={L} shape=[512, 2048] quant=Plain(BF16) bytes=Bytes(2097152) aux=0
+48 × model.layers.{L}.self_attn.o_proj.weight class=DenseEveryToken layer={L} shape=[2048, 4096] quant=Plain(BF16) bytes=Bytes(16777216) aux=0
+48 × model.layers.{L}.self_attn.q_norm.weight class=DenseEveryToken layer={L} shape=[128] quant=Plain(BF16) bytes=Bytes(256) aux=0
+48 × model.layers.{L}.self_attn.q_proj.weight class=DenseEveryToken layer={L} shape=[4096, 2048] quant=Plain(BF16) bytes=Bytes(16777216) aux=0
+48 × model.layers.{L}.self_attn.v_proj.weight class=DenseEveryToken layer={L} shape=[512, 2048] quant=Plain(BF16) bytes=Bytes(2097152) aux=0
+1 × model.norm.weight class=DenseEveryToken layer=- shape=[2048] quant=Plain(BF16) bytes=Bytes(4096) aux=0
+# groups (6242 lines, 5 distinct)
+48 × DenseEveryToken@{L} bytes=Bytes(37753344) read_per_token=Bytes(37753344) shared_with=None tensors=["model.layers.{L}.input_layernorm.weight", "model.layers.{L}.self_attn.k_norm.weight", "model.layers.{L}.self_attn.k_proj.weight", "model.layers.{L}.self_attn.o_proj.weight", "model.layers.{L}.self_attn.q_norm.weight", "model.layers.{L}.self_attn.q_proj.weight", "model.layers.{L}.self_attn.v_proj.weight"]
+6144 × Expert@{L} bytes=Bytes(9437184) read_per_token=Bytes(589824) shared_with=None tensors=["model.layers.{L}.mlp.experts.{E}.down_proj.weight", "model.layers.{L}.mlp.experts.{E}.gate_proj.weight", "model.layers.{L}.mlp.experts.{E}.up_proj.weight"]
+1 × Head@- bytes=Bytes(622333952) read_per_token=Bytes(622333952) shared_with=None tensors=["lm_head.weight", "model.norm.weight"]
+48 × Router@{L} bytes=Bytes(528384) read_per_token=Bytes(528384) shared_with=None tensors=["model.layers.{L}.mlp.gate.weight", "model.layers.{L}.post_attention_layernorm.weight"]
+1 × RowLookup@- bytes=Bytes(622329856) read_per_token=Bytes(4096) shared_with=None tensors=["model.embed_tokens.weight"]
+# manifest ignored (0)
+# totals
+DenseEveryToken: ClassTotal { bytes: Bytes(1812160512), read_per_token: Bytes(1812160512) }
+Expert: ClassTotal { bytes: Bytes(57982058496), read_per_token: Bytes(3623878656) }
+RowLookup: ClassTotal { bytes: Bytes(622329856), read_per_token: Bytes(4096) }
+Head: ClassTotal { bytes: Bytes(622333952), read_per_token: Bytes(622333952) }
+Router: ClassTotal { bytes: Bytes(25362432), read_per_token: Bytes(25362432) }

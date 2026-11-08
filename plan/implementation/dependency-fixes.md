@@ -19,6 +19,8 @@ Rules, as cited in the "Rule applied" column:
 
 Read "A → B" as "A depends on B".
 
+Adding a section: start its heading with the ID of the task it is about, for example `## COMP-E16-T04: …` (with the date at the end), and insert it among the dated sections in task-ID order, before the first section whose leading ID sorts after it. Compare IDs by area, then epic number, then task number, as numbers: COMP-E4-T02 comes before COMP-E16-T03. Don't append at the end of the file. Pull requests that each add a section then touch different places, and git merges them without a conflict. Sections already in the file stay where they are.
+
 ## Changes
 
 | Change | Tasks | Rule applied | Reason |
@@ -337,6 +339,63 @@ The kernel and op items of #1487's comments, applied with R9. RFC-0040's M0 row 
 | COMP-E5-T04 → COMP-E4-T02, COMP-E4-T05 | COMP-E5-T04 | R9 | its router writes host-mapped doorbell pages (COMP-E4-T02, which also reaches the CUDA binding and the rigs), and its stage is captured (COMP-E4-T05) |
 | COMP-E16-T05 → COMP-E10-T05 | COMP-E16-T05 | R9 | its MXFP4 experts load through the `quantization_config` mapping |
 | COMP-E3-T03 drops its "from M1" criterion and its edge to QUAL-E15-T18; COMP-E5-T01 drops its "from M1" criterion; COMP-E2-T09 → COMP-E3-T03, COMP-E5-T01; QUAL-E8-T12 → QUAL-E15-T18 | COMP-E3-T03, COMP-E5-T01, COMP-E2-T09, QUAL-E8-T12 | R9, Definition of done | both criteria were `AC-LATER` throughput targets that COMP-E2-T09 (M1a) already carries on the Tier 1 rigs. COMP-E3-T03 depended on R-LABCPU only for its target, and that host is never timed (ADR-0610). QUAL-E8-T12, whose criteria name R-LABCPU, had reached it only through that edge |
+
+## COMP-E1-T03: split into three slices (2026-10-31)
+
+COMP-E1-T03 asked for the reference semantics of 23 M0 ops in one change, and 15 tasks waited on all of it, though most use only a few of the ops. The row is split by the ops' kind. COMP-E1-T03 keeps the reduction helper, the matrix products and the data movement, and two new M0a rows take the rest, each depending on COMP-E1-T03 for its reduction helper. Each dependent now points at the slice that holds the ops its criteria use. `RmsNorm` stays in COMP-E1-T03 because `Logits` is the final norm plus the LM head (RFC-0040 §3.1). `Act` goes with `Rope` and attention, and `TapGather` goes with sampling, since it reads the logits the sampler reads. "Masked positions" moves to the slices that have masks. These are plan corrections under R9, approved by the lead running the task under the maintainer's standing instruction, and listed for the maintainers' sign-off on the PR.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| Split: `Rope`, `Act` and `AttnDecode`/`AttnPrefill`/`KvWrite` for `Gqa` → new COMP-E1-T17 (M0a), which depends on COMP-E1-T03 | COMP-E1-T03, COMP-E1-T17 | R9 | the attention ops need masks, KV pages and the software `sin` and `cos`, which no op in COMP-E1-T03's slice uses. The masked-positions property test moves with them |
+| Split: `LogitsProcess`, `TopKTopP`, `SampleSeeded`, `Argmax`, `VerifyAccept`, `TapGather`, `MoeRoute`, `MoeGrouped` and `MoeCombine` → new COMP-E1-T18 (M0a), which depends on COMP-E1-T03 | COMP-E1-T03, COMP-E1-T18 | R9 | the sampling and MoE ops share the tie rule of RFC-0042 §4.2 and the grammar mask, and none of COMP-E1-T03's matrix-product dependents uses them |
+| COMP-E1-T04 → COMP-E1-T17, COMP-E1-T18 (was COMP-E1-T03) | COMP-E1-T04 | R9 | its M1 ops extend `MoeRoute`, `Gqa` attention and `Act`, which are now in the two new slices |
+| COMP-E1-T15 → COMP-E1-T17; COMP-E1-T16 → COMP-E1-T17; COMP-E5-T05 → COMP-E1-T17 (each was COMP-E1-T03) | COMP-E1-T15, COMP-E1-T16, COMP-E5-T05 | R9 | their criteria check against the reference `AttnPrefill`, `KvWrite` and `AttnDecode` for `Gqa` |
+| COMP-E3-T21 → COMP-E1-T18; COMP-E4-T06 → COMP-E1-T18; COMP-E5-T04 → COMP-E1-T18 (each was COMP-E1-T03) | COMP-E3-T21, COMP-E4-T06, COMP-E5-T04 | R9 | their criteria check against the reference `MoeRoute`, `MoeCombine`, `MoeGrouped` and `TapGather` |
+| COMP-E3-T08, COMP-E7-T19, COMP-E15-T03 → COMP-E1-T17, COMP-E1-T18, added beside COMP-E1-T03 | COMP-E3-T08, COMP-E7-T19, COMP-E15-T03 | R9 | each uses ops from all three slices: the CPU norms, attention and sampling; the ggml mappings of RoPE, attention and `MoeRoute`; the interpreter of every M0 op |
+| COMP-E5-T26 → COMP-E1-T17, added beside COMP-E1-T03 | COMP-E5-T26 | R9 | its CUDA `Act` is checked against the reference `Act`; its `RmsNorm`, `Add`, `Mul`, `RowGather` and `Convert` stay with COMP-E1-T03 |
+| COMP-E3-T03, COMP-E3-T07, COMP-E3-T22, COMP-E5-T01 and COMP-E13-T13 keep COMP-E1-T03 alone | — | R9 | their criteria use `Gemv`, `Gemm`, `GateUpAct`, `Logits`, `RowGather`, `Add`, `Mul` and `Convert`, or the bit-exact-class ops, all in COMP-E1-T03 |
+
+## COMP-E3-T03: the `X86V4` leg moves to the AVX-512 host (2026-11-07)
+
+COMP-E3-T03 (M0a) asks for op conformance "for every scheme and level", and `X86V4` is one of its levels. No machine the project runs M0a CI on has AVX-512: the hosted runners promise none, and the build host is an i7-12700F (AVX2). The `X86V4` kernels are built and gated at run time to hosts that report AVX-512, so they never run elsewhere. Running them needs the lab AVX-512 host, and QUAL-E4-T07 (M1a) already runs CPU conformance there. QUAL-E4-T07 reaches COMP-E3-T03 through QUAL-E4-T06, so no edge is added. This is a plan correction under R9. The lead approved it under the maintainer's standing instruction, and it is listed here for the maintainers' sign-off on the PR.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| COMP-E3-T03's criterion keeps op conformance at `X86V3`, `Arm82Dot` and `Arm86I8mm` (QUAL-E4-T06); the `X86V4` leg is QUAL-E4-T07's, on the lab AVX-512 host | COMP-E3-T03, QUAL-E4-T07 | R9 | a criterion must run on hardware the task can reach when it closes. No M0a host has AVX-512, and QUAL-E4-T07 already runs the CPU provider's conformance on the AVX-512 host and depends on COMP-E3-T03 through QUAL-E4-T06 |
+
+## COMP-E3-T09: the later M0 CPU ops' thread-count check moves to QUAL-E4-T06 (2026-11-07)
+
+COMP-E3-T09 (M0a) asks for outputs "bit-identical for 1, 2, 4 and all cores on every op used by the M0 families", and it depends only on COMP-E3-T03. When it lands, the CPU provider has one op, `Gemv`. The other M0 CPU ops come with COMP-E3-T05, COMP-E3-T08, COMP-E3-T21 and COMP-E3-T22, which COMP-E3-T09 does not reach. Edges from COMP-E3-T09 to them would hold the fake provider (QUAL-E3-T12) behind every CPU kernel. COMP-E3-T09 keeps the check for `Gemv`, builds the thread-count harness, and makes a device opened `deterministic` refuse a kernel that does not declare itself deterministic. QUAL-E4-T06 (M0a) already depends on every CPU M0 op task and runs their conformance, so it runs each of those ops under the harness. This is a plan correction under R9. The lead approved it under the maintainer's standing instruction, and it is listed here for the maintainers' sign-off on the PR.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| COMP-E3-T09's criterion covers the ops the CPU provider has when it lands (`Gemv`) and adds the `deterministic` refusal; QUAL-E4-T06 gains "every CPU op those families use gives bit-identical outputs on 1, 2, 4 and all cores under COMP-E3-T09's thread-count harness" and the edge QUAL-E4-T06 → COMP-E3-T09 | COMP-E3-T09, QUAL-E4-T06 | R9 | the criterion names ops from tasks COMP-E3-T09 does not reach. QUAL-E4-T06 depends on all of them, and COMP-E3-T09 depends only on COMP-E3-T03, so the new edge makes no cycle. Both are M0a |
+
+## COMP-E4-T05: the real-step count and the runner reports move to the executor (2026-11-07)
+
+COMP-E4-T05 builds CUDA graph capture before any kernel exists, so its decode step is synthetic: copies and memory operations. It also has no runner states to report in. Its change (#2064) gives the provider's half: the submission counter, `graph_stats` and `CaptureFailed` mapped to `DegradeFlags::CAPTURE_OFF`. The maintainers accepted these moves on that PR.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| The one-submission count on a real decode step moves to PLC-E7-T03, which already owns one replay submission per device per decode step | COMP-E4-T05, PLC-E7-T03 | R9 | a real step needs the kernels and the step loop. PLC-E7-T03 already depends on COMP-E4-T05, so the graph stays acyclic and within M0a |
+| The report at `Warming` and `Ready { degraded }` after `CaptureFailed` move to PLC-E7-T04, which owns the capture policy and the degraded report | COMP-E4-T05, PLC-E7-T04 | R9 | the runner states are the executor's. PLC-E7-T04 already depends on COMP-E4-T05 |
+
+## COMP-E17-T03: RFC-0060 corpus leg moves to the corpus import (2026-10-31)
+
+COMP-E17-T03 (M0a) asked for token-exact GGUF conversions "on the tokenizer corpus", which is RFC-0060's corpus. QUAL-E5-T22 publishes that corpus and its token streams, and it depends on COMP-E17-T03, so an edge from COMP-E17-T03 would make a cycle. COMP-E17-T03 keeps the check on a project-written corpus in its own crate, run on the publisher's GGUF files of both M0 nightly checkpoints. The rerun on the published corpus goes with the import. The `llama` family's M0 checkpoint is Qwen3-0.6B (RFC-0060 §12.2), and Llama-3.2-1B is lab-only, so the criterion's "M0 families" needs no gated file. Review of #2054.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| COMP-E17-T03's corpus becomes the project corpus `crates/graph/tests/data/tokenize/corpus.json`, and its checkpoints are named; the rerun on RFC-0060's corpus moves to QUAL-E5-T22 (M0a), which already depends on COMP-E17-T03 | COMP-E17-T03, QUAL-E5-T22 | R9 | the criterion uses the corpus QUAL-E5-T22 publishes, which no edge of COMP-E17-T03 reaches, and the reverse edge exists. Proposed, for the maintainers to confirm |
+
+## COMP-E17-T13: literal-content criterion covers every added token (2026-10-31)
+
+COMP-E17-T04 resolves a `ChatFormat` marker to `Marker::Special(id)` when its text is any added token of the tokenizer, whether or not `tokenizer.json` marks it `special` (RFC-0043 §8.4 note). The Qwen3 repositories ship `<tool_call>`, `</tool_call>`, `<think>` and `</think>` as added but not special. The engine's special-token switch skips only tokens marked `special`, so with T13's criterion as written, a content span holding `<tool_call>` would still encode to its ID and forge a call. RFC-0043 §8.7 step 3 now says the same (review of #2047).
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| COMP-E17-T13's criterion and fuzz target widen from "every special token" to every added token, special or not | COMP-E17-T13 | R9 | the markers its injection cases cover are COMP-E17-T04's, which T13 already depends on; both are M0a, so the graph does not change. Proposed, for the maintainers to confirm |
+
 ## PLC-E1-T02 split (2026-10-21)
 
 | Change | Tasks | Rule | Reason |
@@ -889,6 +948,24 @@ Building DIST-E1-T14 found three field types that no row defined, though its own
 | PROD-E3-T05 uses `core`'s `GrammarRef` and `SamplingParams`; PROD-E3-T05 → DIST-E1-T14 | PROD-E3-T05 | R9 | its criterion ships each grammar hash to a tail once, inside `SamplingParams`. M1a → M0a, no cycle |
 | DIST-E1-T14's view conversion covers every field but the tap block, and refuses a non-empty one either way with a classified error; DIST-E8-T06 gains "`net`'s `TokenEntryView` converts a tap block to and from `core`'s `LogitTap` in both tap modes, with the golden frames unchanged"; no edge | DIST-E1-T14, DIST-E8-T06 | R9 | `core`'s `TokenEntry::tap` is a typed `LogitTap`, while `net` carries the block as bytes until DIST-E8-T06 builds its codec, and the `Token` goldens' tap blocks are fill bytes. DIST-E8-T06 already depends on DIST-E8-T03, whose view it extends. M0's taps travel in-process (PLC-E9-T16) |
 
+## TIER-E1-T02: multi-site layout check moves to TIER-E1-T12 (2026-10-31)
+
+TIER-E1-T02 (M0a) asked `plan_arenas` to make RFC-0020 §7.3's multi-site layout check, from an accepted-layouts argument. Every input the check needs is M1a: the layout pass and its readers (COMP-E2-T13), the pack build's layout choice (COMP-E11-T05) and the `per_site_layout` marking (PLC-E6-T15). An edge from TIER-E1-T02 to them would point at a later milestone, and the one to COMP-E2-T13 would close a cycle, because COMP-E2-T13 already reaches TIER-E1-T02. TIER-E1-T12 (M1a) already depends on all three and reaches TIER-E1-T02 through TIER-E1-T08 and TIER-E1-T07, so the move adds no cycle. devdaviddr approved the move on issue #245. RFC-0020 §3's note of 2026-10-31 records the signature without the argument.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| Moved: the accepted-layouts argument, the multi-site layout check, and the criterion "a fixture census giving an MoE expert a CPU-only layout under a GPU+CPU miss split fails the multi-site layout check, and `plan_arenas` returns `Unsupported`" → TIER-E1-T12 (M1a) | TIER-E1-T02, TIER-E1-T12 | R9 | the check reads COMP-E2-T13's readers, COMP-E11-T05's layout choice and PLC-E6-T15's marking, all M1a; TIER-E1-T02 → COMP-E2-T13 would be a cycle |
+| Dropped TIER-E1-T02 → COMP-E1-T02 (`LayoutVersion`, `OpCaps::layout`); added TIER-E1-T12 → COMP-E1-T02 | TIER-E1-T02, TIER-E1-T12 | R9 | only the moved check uses the layout types; TIER-E1-T12's moved criterion now names them |
+
+## TIER-E1-T07: the load-and-decode run and the digest record move out (2026-11-07)
+
+TIER-E1-T07 (M0a) builds the `Vram` and `HostPageable` arenas and measures the context reserve. Two of its criteria use work it does not reach. Decoding needs the CUDA decode kernels (COMP-E5-T01, COMP-E5-T05, COMP-E5-T26) and the loader that fills arenas from the pack (RFC-0021 §8). `ResidencySummary`, the digest, is TIER-E1-T09's (M1a), which runs after it. Its change (#2068) records the reserve in its arena build's report and uses it in the RFC-0020 §8.1 check. The maintainers accepted these moves on 2026-11-07.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| "A dense M0 model loads entirely through arenas and decodes on a CUDA device" moves to COMP-E4-T21, which already runs that leg on R-ADA and now owns the dev-GPU run too | TIER-E1-T07, COMP-E4-T21 | R9 | COMP-E4-T21 depends on TIER-E1-T07, COMP-E5-T01, COMP-E5-T26 and PLC-E8-T01, whose end-to-end run needs the decode path and the loader |
+| "The measured context reserve is recorded in the digest" moves to TIER-E1-T09, with the edge TIER-E1-T09 → TIER-E1-T07 | TIER-E1-T07, TIER-E1-T09 | R9 | TIER-E1-T09 builds the digest. TIER-E1-T07 is M0a and depends on nothing in M1a, so the edge makes no cycle |
+
 ## TIER-E5-T08's conformance suite (2026-10-23)
 
 TIER-E5-T08 (M1b) builds `IoRingEngine` and `IocpEngine`, and its criterion is that the conformance suite passes. The suite is TIER-E5-T04, which TIER-E5-T08 does not reach, and TIER-E5-T04 waits on the nano fixture files and the fixture store. The engine-agnostic harness moves to a new task that needs only TIER-E5-T01's interface, and TIER-E5-T04 keeps the run over the fixture files on every engine the CI host has. These are plan corrections under R9, approved by the lead running TIER-E5-T08.
@@ -1410,6 +1487,22 @@ Op conformance compares a kernel with `kernels::reference` and with the referenc
 | COMP-E3-T07 → COMP-E1-T03 | COMP-E3-T07 | R9 | "on an SME2 rig, conformance passes" for the outer-product GEMM tiles, which are checked against the reference `Gemm`; the row depended only on COMP-E3-T01 |
 | COMP-E3-T11 → COMP-E13-T10 | COMP-E3-T11 | R9 | conformance for every M1 scheme includes MXFP4 run as doubled INT8 over the transcribed GGUF `MXFP4` type, whose reference dequantiser is COMP-E13-T10's; COMP-E13-T04's widening tables cover the other schemes |
 
+## `doctor` reports a stray `libcuda.so` (2026-10-31)
+
+Building COMP-E4-T01 on a WSL2 development host found that the unversioned `libcuda.so` resolved to a native-Linux driver copied into `/lib/x86_64-linux-gnu`, not to WSL's driver, which `libcuda.so.1` resolves to. The provider now opens only `libcuda.so.1` (RFC-0040 §7.1, note 2026-10-31). Other CUDA programs may still load the copy, so `doctor` reports it.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| New PROD-E9-T13 (M1a), `doctor` check DRV-008 → PROD-E9-T01, COMP-E4-T01 | PROD-E9-T13 | R9 | the check is a `DoctorCheck` in PROD-E9-T01's framework, and its warning names the provider's rule that COMP-E4-T01 sets. It is Linux only, so it is M1a under R7, beside PROD-E9-T01 |
+## The `qwen_moe` weights wait for the lab store (2026-10-31)
+
+QUAL-E7-T06 confirmed Qwen/Qwen3-30B-A3B as the `qwen_moe` checkpoint. It is the smallest Qwen3-MoE checkpoint its publisher releases, and its 16 BF16 shards come to 61.08 GB [measured: the Hub's sizes]. Import copies each file into the store, so the importing host needs about twice that free, and the host that ran QUAL-E7-T06 did not have it. Every file of the checkpoint is recorded in `fixtures.toml` with its Hub hash; the configuration, tokenizer and shard index are imported, and the shards wait for the lab store.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| QUAL-E7-T15 gains a criterion: the `qwen_moe` checkpoint's 16 weight shards are imported into the bucket and verified | QUAL-E7-T06, QUAL-E7-T15 | R9 | the shards' entries are QUAL-E7-T06's, and the store that can hold them is QUAL-E7-T15's |
+| COMP-E16-T13 → QUAL-E7-T15 | COMP-E16-T13 | R9 | its `qwen_moe` golden set comes from the checkpoint's weights, which are in the lab store. The other tasks that run those weights (QUAL-E5-T06, QUAL-E5-T10, COMP-E5-T24, TIER-E8-T18, QUAL-E7-T09) already reach QUAL-E7-T15 |
+| COMP-E16-T04's check 3 (single-device parity) on the real `qwen_moe` checkpoint moves to QUAL-E6-T06; COMP-E16-T04 keeps the census and checks 1–2 on the checkpoint's recorded safetensors headers, and everything on the Qwen-MoE fixtures | COMP-E16-T04, QUAL-E6-T06 | R9 | check 3 runs the checkpoint's weights, which wait for the lab store (QUAL-E7-T15). The family conformance runner QUAL-E6-T06 already reaches QUAL-E7-T15, and the headers give the census and checks 1–2 without the weights, so the `qwen_moe` family module does not wait for the store. Review of #2013 (2026-10-31) |
 ## COMP-E7-T01's bit-exact leg moves to the tasks that build the reference (2026-10-30)
 
 COMP-E7-T01 (M0a) vendors ggml and builds the core's static copy. Its criterion asked that "ggml CPU dequantisation and `get_rows` match `kernels::reference` bit for bit on x86-64 and arm64 builds". `kernels::reference` has neither yet. The reference dequantisers are COMP-E13-T02, whose own criterion is "bit-exact against ggml's `dequantize_row_*` at the pinned commit", and which depends on COMP-E7-T01, so an edge back would be a cycle. `RowGather`'s reference is COMP-E1-T03, which COMP-E7-T01 does not depend on. Each comparison moves to the task that builds its reference side, and COMP-E7-T01 keeps a check that its bindings run the two operations. This was taken under the maintainers' standing instruction of 2026-10-22, 2026-10-30.
@@ -1471,3 +1564,65 @@ The R9 pass over the remaining areas. Each criterion below uses a harness, a pro
 | PLC-E9-T23 → PLC-E9-T09 | PLC-E9-T23 | R9 | "sampled output passes PLC-E9-T09's harness" with a project-synthetic draft head (M3 → M1a) |
 | DIST-E6-T03 → PLC-E2-T11 | DIST-E6-T03 | R9 | "plugging a cable produces exactly one `InterfacesChanged` and new probes (PLC-E2-T11) within 3 s"; the L1 link probes are PLC-E2-T11's; both are M2 |
 | TIER-E9-T04 → COMP-E5-T02 | TIER-E9-T04 | R9 | "on the CUDA rig with a Q4_K pack and an i-quant pack, the fitted split's layer time is within 5% of the best fixed split"; CUDA i-quant GEMV is COMP-E5-T02's, and the row reached no CUDA kernel beyond `Timestamp`; both are M1a |
+
+## DXGI leaves PLC-E1-T04 for its own M0a task (2026-10-31)
+
+PLC-E1-T04's criteria use NVML and IOKit only, and none of its development evidence reaches a Windows host with a GPU, so the DXGI adapters it listed would have closed without a test that runs them. PLC-E1-T07's criterion "on Windows D2 never exceeds the DXGI budget" reads the DXGI local budget that E2 produces, so the DXGI part keeps an M0a producer of its own. Narrowing PLC-E1-T04's task text needs a maintainer's sign-off on the change that closes it (#91).
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| New PLC-E1-T20 (M0a), "DXGI adapters with local budget and LUID for E2 (split from PLC-E1-T04)" → PLC-E1-T04; PLC-E1-T04's task text drops the DXGI adapters | PLC-E1-T04, PLC-E1-T20 | R3b, R9 | the DXGI part moves with a fixture test through the trait and development evidence on a Windows host with a GPU. It stays M0a because PLC-E1-T07 (M0a) uses its budget |
+| PLC-E1-T07 → PLC-E1-T20 | PLC-E1-T07 | R9 | "on Windows D2 never exceeds the DXGI budget" uses the local budget PLC-E1-T20 produces; before the split it came through PLC-E1-T04 |
+
+## COMP-E10-T07's recorded-header golden moves to the families (2026-10-31)
+
+COMP-E10-T07 (M0a) builds the census. Its criterion asked for "golden census tests on recorded headers". Classifying the recorded M0 headers' real tensor names needs the `llama` and `qwen_moe` families' rules, COMP-E16-T03 and COMP-E16-T04. Both already carry a golden census on the recorded headers, but neither depended on the builder they run through. So COMP-E10-T07 keeps golden censuses on synthetic headers with a test-only family, and the two families gain the edge to it. All three are M0a, and the change came from #2034's review.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| COMP-E10-T07's "golden census tests on recorded headers" becomes golden censuses on synthetic GGUF and safetensors headers through a test-only family; the recorded-header golden is named as COMP-E16-T03's and COMP-E16-T04's | COMP-E10-T07 | R9 | the real-name classification it needs is the families' work, which COMP-E10-T07 does not depend on |
+| COMP-E16-T03 → COMP-E10-T07 | COMP-E16-T03 | R9 | "golden census on recorded headers" runs the `llama` family through COMP-E10-T07's builder |
+| COMP-E16-T04 → COMP-E10-T07 | COMP-E16-T04 | R9 | "on the `qwen_moe` checkpoint, the golden census … run[s] on its recorded safetensors headers" through the same builder; the edge was only transitive, through COMP-E16-T03 |
+
+## COMP-E16-T03's conformance checks re-homed (2026-10-31)
+
+COMP-E16-T03 (the `llama` family) required RFC-0060 §7.2 checks 1–3 on the `nano` and `micro` fixtures and on the nightly checkpoint, but its row reached none of the tasks those checks need. The fixture generators (QUAL-E7-T01, QUAL-E7-T04) and the conformance runner (QUAL-E6-T06) depend on COMP-E16-T03, so edges to them would make a cycle. The checks move to the runner, which already reaches the census builder, the KV byte counters and the parity driver. COMP-E16-T03 keeps the golden census and the KV dtype rule, which its own module shows. Review of #2037 (2026-10-31).
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| RFC-0060 §7.2 checks 1–2 on the real `llama` checkpoint's (Qwen3-0.6B) recorded headers, and check 3 on its weights, move to QUAL-E6-T06 | COMP-E16-T03, QUAL-E6-T06 | R9 | check 1's groups and byte total come from the census builder (COMP-E10-T07), check 2 needs the KV byte counters (TIER-E6-T02), and check 3 needs the parity driver (QUAL-E5-T06) and the providers' kernels. QUAL-E6-T06 already depends on all of them. QUAL-E6-T06 named the real-checkpoint checks for `qwen_moe` only, so the `llama` leg had no owner |
+| COMP-E16-T03's checks 1–3 on the `nano` and `micro` fixtures are left to QUAL-E6-T06 and QUAL-E6-T22, which already require them of both M0 families | COMP-E16-T03 | R9 | the fixtures come from QUAL-E7-T01 and QUAL-E7-T04, which depend on COMP-E16-T03's `FamilySpec` |
+
+## COMP-E7-T02's conformance leg (2026-10-31)
+
+COMP-E7-T02's criterion "ggml CPU ops pass conformance against `kernels::reference`" uses `kernels::reference`'s op functions, which COMP-E1-T03 builds. COMP-E7-T02 does not depend on COMP-E1-T03, and COMP-E1-T03 has not landed. The leg moves to COMP-E7-T19, which COMP-E7-T02 split off for the attention, RoPE and MoE mappings and which already depends on COMP-E1-T03. Until then, COMP-E7-T02's tests compare each mapped op with an F64 evaluation of its definition, bit for bit where it is one IEEE operation per element and within a derived F32 rounding bound otherwise. Those tests stay as interim evidence.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| Moved: conformance of COMP-E7-T02's mappings against `kernels::reference`'s op functions → COMP-E7-T19 (M0b), which depends on COMP-E7-T02 and COMP-E1-T03 | COMP-E7-T02, COMP-E7-T19 | R9 | the criterion uses COMP-E1-T03's op functions, which no edge of COMP-E7-T02 reaches; COMP-E7-T19 reaches them |
+
+## COMP-E4-T02's arena-test leg moves to the task that builds the arena tests (2026-10-31)
+
+COMP-E4-T02 (M0a) asked that "TIER's arena tests pass on a CUDA device". No arena-construction tests exist in `syntropy-tier` until TIER-E1-T07 builds `Vram` arenas through `KernelProvider::alloc`, and TIER-E1-T07 already depends on COMP-E4-T02, both M0a. `tier` cannot use `kernels-cuda` either, since both are layer 2 (RFC-0001 §4.2 rule 2).
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| COMP-E4-T02's criterion keeps the provider-level arena build on a CUDA device; "TIER's arena tests pass on a CUDA device" moves to TIER-E1-T07, and COMP-E4-T21's R-ADA re-run names each leg's task | COMP-E4-T02, TIER-E1-T07, COMP-E4-T21 | R9 | the tests a criterion runs must exist when the task closes; the existing edge TIER-E1-T07 → COMP-E4-T02 keeps the graph acyclic and within M0a. Proposed, for the maintainers to confirm |
+
+## PROD-E2-T20's benchmark leg and `vocab_limit` derivation move out (2026-10-31)
+
+PROD-E2-T20 (M0a) built the token-ID range check, and one of its criteria measured the check in the RFC-0061 pre-`SequenceOpen` microbenchmark. That benchmark runs in QUAL-E13-T08's harness (M0b), which PROD-E2-T20 does not reach. PROD-E2-T11 (M1a) already owns the pre-`SequenceOpen` budget and depends on the harness, so the leg moves there. Neither task reached the other before, so the edge adds no cycle, and it runs from M1a to M0a.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| PROD-E2-T20's "the check stays within the pre-`SequenceOpen` budget in the RFC-0061 microbenchmark" → PROD-E2-T11; PROD-E2-T11 → PROD-E2-T20 | PROD-E2-T20, PROD-E2-T11 | R9 | the microbenchmark needs QUAL-E13-T08's harness, which PROD-E2-T20's Depends cell does not reach; PROD-E2-T11 measures the pre-`SequenceOpen` budget in that harness against the fake runner, now with the range check in the measured path. M1a → M0a |
+| New COMP-E10-T16 (M0a), `ModelManifest` `vocab_limit` with the token embedding marked in the census, → COMP-E10-T07; PROD-E2-T20's task text takes `vocab_limit` through `ModelInfo`; PROD-E2-T08 → COMP-E10-T16 | PROD-E2-T20, COMP-E10-T16, PROD-E2-T08 | R9, R3b | "from the manifest" needs the token embedding's rows, and the census (COMP-E10-T07) does not record which `RowLookup` table is the token embedding, so the derivation needs a census change in the engine lane's crates. PROD-E2-T20 keeps the validator. PROD-E2-T08 fills `ModelInfo` from the new row. M1a → M0a and M0a → M0a; no cycle (#2043, devdaviddr's sign-off) |
+
+## COMP-E16-T04's conformance checks re-homed (2026-10-31)
+
+COMP-E16-T04 (the `qwen_moe` family) required "as T03 on the Qwen-MoE fixtures" and RFC-0060 §7.2 checks 1–2 on Qwen3-30B-A3B's recorded headers. Its row reaches neither: the `nano` and `micro` fixtures come from QUAL-E7-T01 and QUAL-E7-T04, which depend on COMP-E16-T04's `FamilySpec`, and check 2 needs the KV byte counters (TIER-E6-T02). The moves are the same as COMP-E16-T03's above. COMP-E16-T04 keeps the golden census on the recorded headers and the KV dtype per source, which its own module shows. Implementation of COMP-E16-T04 (2026-10-31).
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| RFC-0060 §7.2 checks 1–2 on the real `qwen_moe` checkpoint's (Qwen3-30B-A3B) recorded headers move to QUAL-E6-T06, which already owned check 3 on that checkpoint | COMP-E16-T04, QUAL-E6-T06 | R9 | check 2 needs the KV byte counters (TIER-E6-T02), which no edge of COMP-E16-T04 reaches; QUAL-E6-T06 depends on them, on the census builder (COMP-E10-T07) and on COMP-E16-T04 |
+| COMP-E16-T04's checks on the `nano` and `micro` fixtures ("as T03 on the Qwen-MoE fixtures") are left to QUAL-E6-T06 and QUAL-E6-T22, which already require them of both M0 families | COMP-E16-T04 | R9 | the fixtures come from QUAL-E7-T01 and QUAL-E7-T04, which depend on COMP-E16-T04's `FamilySpec`, so an edge to them would make a cycle |

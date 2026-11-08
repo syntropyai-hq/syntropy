@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! The `TierManager` façade and the commands the housekeeping thread posts to each shard
-//! (RFC-0020 §1, §3, §12). This task defines [`TierCommand`]; the façade, `TierShard` and the
-//! SPSC command ring come in TIER-E1-T02 and TIER-E1-T06.
+//! The [`TierManager`] façade and the commands the housekeeping thread posts to each shard
+//! (RFC-0020 §1, §3, §12). [`TierManager::plan_arenas`] is TIER-E1-T02's; the façade's state,
+//! `TierShard` and the SPSC command ring come in TIER-E1-T06.
 
 #![forbid(unsafe_code)]
 
@@ -10,10 +10,53 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-use syntropy_core::{Bytes, PlanDelta};
+use syntropy_core::ledger::LedgerGrant;
+use syntropy_core::resource::CapabilityProfile;
+use syntropy_core::{Bytes, Error, PlacementPlan, PlanDelta, StageIx};
+use syntropy_manifest::census::TensorCensus;
 
-use crate::arena::ArenaRef;
+use crate::arena::plan::{ArenaPlanError, TierConfig};
+use crate::arena::{ArenaPlan, ArenaRef};
 use crate::pressure::PressureLevel;
+
+/// The tier manager of one runner (RFC-0020 §1, §3). It holds no state yet: its shards and
+/// directory come in TIER-E1-T06.
+#[non_exhaustive]
+#[derive(Debug, Default)]
+pub struct TierManager {}
+
+impl TierManager {
+    /// The runner's arena layout, a pure function of its inputs (RFC-0020 §3;
+    /// [`crate::arena::plan`] gives the rules). The accepted-layouts argument of RFC-0020 §3's
+    /// signature arrives with the multi-site layout check in TIER-E1-T12 (RFC-0020 §3, note of
+    /// 2026-10-31).
+    ///
+    /// # Errors
+    ///
+    /// [`ArenaPlanError`] when the plan, census, profile and config disagree.
+    pub fn plan_arenas(
+        plan: &PlacementPlan,
+        stages: &[StageIx],
+        census: &TensorCensus,
+        caps: &CapabilityProfile,
+        cfg: &TierConfig,
+    ) -> Result<ArenaPlan, ArenaPlanError> {
+        crate::arena::plan::plan_arenas(plan, stages, census, caps, cfg)
+    }
+
+    /// The ledger check of `Fetching`, [`crate::budget::check_ledger`].
+    ///
+    /// # Errors
+    ///
+    /// `TIER_LEDGER_EXCEEDED` when a tier's reserved bytes exceed its grant.
+    #[expect(
+        clippy::result_large_err,
+        reason = "core::Error is RFC-0001 §5.12's struct with its fields inline; the ledger check fails once, in Fetching"
+    )]
+    pub fn check_ledger(ap: &ArenaPlan, grant: &LedgerGrant) -> Result<(), Error> {
+        crate::budget::check_ledger(ap, grant)
+    }
+}
 
 /// A command from the housekeeping thread to a shard's dispatcher, applied between steps
 /// (RFC-0020 §1, §3, §12).

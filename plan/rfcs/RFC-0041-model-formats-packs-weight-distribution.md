@@ -168,6 +168,25 @@ Modules on the config's `ignore` list stay in their stored dtype. Scale, zero-po
 11. summary = census::summarize(&manifest, &boundaries)            -- §3.3; boundaries from the family's graph
 ```
 
+*Note 2026-10-31 (COMP-E10-T07): where the builder lives, and the census as built.*
+- **The builder is `syntropy_graph::census::build`, not `manifest::census::build`.**
+  - It resolves the family through `graph::families()`. `graph` is layer 2 and `manifest` layer 1 (RFC-0001 §4.1), so `manifest` cannot call it.
+  - The types stay in `syntropy_manifest::census`: `TensorRecord`, `TensorGroup`, `ClassTotals`, `TensorCensus` and `ModelManifest`.
+  - `build_in` takes a `Registry`, so tests run the builder with families of their own.
+- **Family resolution fails closed twice.** Names that no family accepts are `UnknownFamily` (1). Names that resolve to more than one family, such as `architectures[0]` to one and `model_type` to another, are refused with the same code, rather than resolved by their order.
+- **Missing tensors.** Before the manifest is returned, the census checks:
+  - every decoder layer has a classified tensor;
+  - the model has a token embedding;
+  - a MoE layer has `n_experts` routed experts, each with the tensors expert 0 has.
+
+  A failure is `HeaderInvalid` (6), as is a stacked tensor that does not slice.
+- **Step 6 and the M0 schemes.** The M0 schemes have no auxiliary extents: GGUF scales are inline, and BF16 has none. So `aux` is empty. A safetensors tensor stored as FP8, FP6 or FP4 is `UnknownQuant` (4) until its `quantization_config` scheme and its scale binding land with their task. Steps 9 and 11 and the siblings also come with their tasks.
+- **`read_per_token` inputs.**
+  - A lookup table's row is its bytes over its outermost dimension.
+  - The expert prior reads the `top_k` and `n_experts` extra hyperparameters (`hparams::TOP_K`, `hparams::N_EXPERTS`).
+- **Totals.** `ClassTotals` sums groups, so a tied embedding counts once as `RowLookup` and once as `Head`, as the two stages that hold it do. `TensorCensus::record_bytes` counts each record once. It is what RFC-0060 §7.2 check 1 compares with the source's tensor bytes, less the ignored tensors.
+- **Storage.** A stored manifest is an 8-byte tag, `SYNMAN01`, then postcard compressed with zstd level 3 [target]. Decoding is bounded at 256 MiB [target]. A stored `TokenizerSpec` keeps its parts only, and its ID is computed again on reading.
+
 #### 3.1 Grouping rules
 
 RFC-0001 §5.3 fixes the grouping: one group per (layer, mixer), per (layer, dense FFN), per (layer, expert), per lookup table, one for the head, one per router. This RFC adds the details:

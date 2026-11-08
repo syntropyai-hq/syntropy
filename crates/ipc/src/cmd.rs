@@ -125,7 +125,10 @@ pub use fault::{
 /// the major moves.
 /// 6.0 appends `ProbeResult` to [`RunnerMsg`] (DIST-E1-T17; RFC-0001 §3.5). A probe-mode process
 /// sends it after `Hello`, and a 5.x daemon cannot decode it, so the major moves again.
-pub const PROTOCOL: IpcProtocol = IpcProtocol { major: 6, minor: 0 };
+/// 7.0 adds RFC-0011 §2's `PredictedCost::stages` and `PlacementPlan::ext` (PLC-E4-T01) to the
+/// plan `AssignPlan` carries, and to the cost a plan delta's `Predicted` item carries. postcard is
+/// not self-describing, so a 6.x peer cannot read either, and the major moves.
+pub const PROTOCOL: IpcProtocol = IpcProtocol { major: 7, minor: 0 };
 
 /// The byte stream a command channel runs over: an OS [`Stream`] between processes, or a
 /// [`memory::MemoryStream`] between threads of one process (RFC-0001 §3.1, `RunnerHost::InProcess`;

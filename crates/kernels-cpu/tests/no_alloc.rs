@@ -28,7 +28,7 @@ use syntropy_kernels::{
     BufferSlice, DeviceHealth, Error, KernelProvider, LayoutVersion, OpArgs, OpKey, OpKind,
     OpenOptions, PowerHint, ShapeClass, ShapeSig, StreamPlan, StreamPriority, WaitCmp,
 };
-use syntropy_kernels_cpu::{CpuProvider, CpuWaker, KillSwitches, Run};
+use syntropy_kernels_cpu::{CpuProvider, CpuWaker, KillSwitches, Launch, Run};
 use syntropy_testkit::guards::{CountingAlloc, alloc_count_this_thread};
 
 #[global_allocator]
@@ -36,7 +36,7 @@ static ALLOCATOR: CountingAlloc = CountingAlloc;
 
 static KERNEL_RUNS: AtomicU64 = AtomicU64::new(0);
 
-fn stand_in(_: &OpArgs<'_>) -> Result<(), Error> {
+fn stand_in(_: &Launch<'_>) -> Result<(), Error> {
     KERNEL_RUNS.fetch_add(1, Ordering::Relaxed);
     Ok(())
 }
@@ -63,7 +63,9 @@ fn ten_thousand_steady_state_steps_allocate_nothing() {
         },
         doorbell_slots: 4,
         capture: true,
-        deterministic: true,
+        // Stand-in kernels declare no capabilities, which a device opened deterministic
+        // refuses (RFC-0040 §3.3).
+        deterministic: false,
         power: PowerHint::Mains,
     };
     let dev = DeviceId {
@@ -170,7 +172,9 @@ fn a_runner_on_its_own_thread_allocates_nothing() {
         },
         doorbell_slots: 4,
         capture: true,
-        deterministic: true,
+        // Stand-in kernels declare no capabilities, which a device opened deterministic
+        // refuses (RFC-0040 §3.3).
+        deterministic: false,
         power: PowerHint::Mains,
     };
     let dev = DeviceId {

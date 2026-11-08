@@ -38,13 +38,14 @@ fn numbers_are_distinct_and_kernels_keeps_one() {
             (Domain::Recovery, 5),
             (Domain::Security, 6),
             (Domain::Exec, 7),
+            (Domain::Tier, 8),
         ]
     );
 }
 
 #[test]
 fn an_unknown_number_has_no_domain() {
-    for n in [0, 8, 99, u32::MAX] {
+    for n in [0, 9, 99, u32::MAX] {
         assert_eq!(domain_of_code(n), None, "{n}");
     }
 }

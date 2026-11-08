@@ -450,7 +450,7 @@ fn the_lifecycle_messages_are_appended_and_bump_the_minor() {
             .expect("a known variant");
         assert_eq!(runner(&msg), *want, "{name}");
     }
-    assert_eq!(PROTOCOL, IpcProtocol { major: 6, minor: 0 });
+    assert_eq!(PROTOCOL, IpcProtocol { major: 7, minor: 0 });
 }
 
 /// Why 6.0 is a major bump: a 5.x daemon's `RunnerMsg` ends at `PackCommitted`, so it refuses

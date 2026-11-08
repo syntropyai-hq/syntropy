@@ -16,3 +16,9 @@ tracing.workspace = true
 [dev-dependencies]
 proptest = { workspace = true }
 smallvec = { workspace = true }
+# The tier manager's arena build on a real CUDA device (`tests/tier_arenas_cuda.rs`, TIER-E1-T07).
+# `tier` and `kernels-cuda` are both layer 2, so neither can test against the other; the runner
+# drives `Loading`, and no crate of the `hosted-l3` job depends on it.
+syntropy-kernels = { path = "../kernels" }
+syntropy-kernels-cuda = { path = "../kernels-cuda" }
+syntropy-tier = { path = "../tier" }

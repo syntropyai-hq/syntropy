@@ -16,6 +16,7 @@ use syntropy_core::ActQuant;
 use syntropy_kernels::reference::act_quant::{
     Q8Path, bf16_to_f32, fake_quant, round_bf16, round_e4m3,
 };
+use syntropy_kernels::reference::reduce;
 
 const K: usize = 1024;
 const ROWS: usize = 64;
@@ -58,21 +59,9 @@ fn dot_f64(w: &[f32], x: &[f32]) -> f64 {
         .sum()
 }
 
-/// The F32Fixed order (RFC-0060 §4.1): each 32-element block summed in index order, then the
-/// block sums pairwise.
+/// The F32Fixed order (RFC-0060 §4.1), from the reference's one implementation of it.
 fn dot_fixed(w: &[f32], x: &[f32]) -> f32 {
-    let mut sums: Vec<f32> = w
-        .chunks(32)
-        .zip(x.chunks(32))
-        .map(|(a, b)| a.iter().zip(b).fold(0.0f32, |s, (&p, &q)| s + p * q))
-        .collect();
-    while sums.len() > 1 {
-        sums = sums
-            .chunks(2)
-            .map(|c| c.iter().copied().sum::<f32>())
-            .collect();
-    }
-    sums[0]
+    reduce::dot(w, x)
 }
 
 /// The stand-in for ggml's F32 product: one sequential accumulator.

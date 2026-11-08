@@ -11,14 +11,20 @@
 
 use std::collections::BTreeMap;
 
+use serde::{Deserialize, Serialize};
+
 /// The [`HyperParams::extra`] key a family stores its routed-expert count under, which the
 /// classification engine reads to bound expert indices and check stacked expert tensors
 /// (RFC-0043 §4.1).
 pub const N_EXPERTS: &str = "n_experts";
 
+/// The [`HyperParams::extra`] key a family stores its routed experts per token under, which the
+/// census reads for an expert group's `read_per_token` prior (RFC-0041 §3.1).
+pub const TOP_K: &str = "top_k";
+
 /// One family-specific hyperparameter value.
 #[non_exhaustive]
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum HParamValue {
     /// A count or size.
     U64(u64),
@@ -33,7 +39,7 @@ pub enum HParamValue {
 }
 
 /// A model's hyperparameters (RFC-0001 §5.3). Owner: RFC-0043.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct HyperParams {
     /// Decoder layers, MTP modules not included.
     pub n_layers: u16,

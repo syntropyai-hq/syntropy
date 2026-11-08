@@ -24,7 +24,7 @@ use std::process::Command;
 
 use crate::run::Context;
 use crate::{
-    cache_hit, changes, check_deps, ci_gate, codeowners, contrib, dep_diff, determinism,
+    cache_hit, changes, check_deps, ci_gate, codeowners, contrib, dep_diff, determinism, fixtures,
     hot_threads, instructions, loom, orphan_rule, plan_tools, properties, repo_settings,
     runner_build_id, sim_presets, toolchain, toolchains,
 };
@@ -391,6 +391,16 @@ pub const JOBS: &[Entry] = &[
                 action: Action::Builtin {
                     shown: "every simulator preset cites its sources, and labels and sources each figure",
                     run: sim_presets::step,
+                },
+            },
+            // The fixture manifest's licence rule and pinned sources (QUAL-E7-T06, RFC-0060
+            // §12.2).
+            Step {
+                name: "fixtures",
+                action: Action::Builtin {
+                    shown: "testdata/fixtures.toml: nightly fixtures are ungated and OSI-licensed, \
+                            Hub sources pin a commit, quantised fixtures name their original weights",
+                    run: fixtures::lint::step,
                 },
             },
             // The build toolchain pins and architecture sets (QUAL-E16-T24, RFC-0062 §4.2-§4.3).
@@ -1091,6 +1101,8 @@ mod tests {
                  scenarios check",
                 "xtask: every simulator preset cites its sources, and labels and sources each \
                  figure",
+                "xtask: testdata/fixtures.toml: nightly fixtures are ungated and OSI-licensed, Hub \
+                 sources pin a commit, quantised fixtures name their original weights",
                 "xtask: ci/toolchains.toml and ci/arch-sets.toml are well formed, and the Linux \
                  pins are in the build image's Dockerfile",
                 "xtask: ci/jobs.toml gives every golden diff in ci/jobs-goldens.toml its expected \
