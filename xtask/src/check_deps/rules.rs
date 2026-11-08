@@ -944,6 +944,29 @@ tools = ["xtask"]
     }
 
     #[test]
+    fn rule_6_checks_reqwest_on_direct_dependencies_only() {
+        // `store` names it; `net` reaches it through `iroh` (ADR-0432).
+        let allowed = run(
+            &["reqwest", "iroh"],
+            &[
+                ("store", "reqwest", "normal"),
+                ("net", "iroh", "normal"),
+                ("iroh", "reqwest", "normal"),
+            ],
+        );
+        assert_eq!(allowed, Vec::<String>::new());
+
+        let found = run(&["reqwest"], &[("cli", "reqwest", "normal")]);
+        assert_eq!(
+            found,
+            [
+                "rule 6: `cli` has a normal dependency on `reqwest`, a binding of the Hub's HTTPS \
+              client; only `store` depends on it directly"
+            ]
+        );
+    }
+
+    #[test]
     fn rule_9_allows_testkit_only_as_a_dev_dependency() {
         let found = run(
             &[],

@@ -393,7 +393,7 @@ Work streams are the epics with tasks in this milestone. "First step" and "last 
 | QUAL-E16-T28 | spike | Spike: hosted GPU runner driver check (ADR-0610 decision 8) | – | 1 |
 | QUAL-E17-T22 | spike | Spike: release-please on `release/vX.Y` with frozen crate versions and draft releases, in a scratch repository (OQ-PRC-16) | – | 1 |
 
-**Open questions needed by M0b:** 13 (benchmark 8, decision 1, spike 4). Each one names a task that records the answer.
+**Open questions needed by M0b:** 12 (benchmark 8, spike 4). Each one names a task that records the answer.
 <!-- END GENERATED -->
 
 ## M1a: Linux preview (CUDA and CPU tiering)

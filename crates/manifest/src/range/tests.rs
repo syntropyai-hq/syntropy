@@ -412,3 +412,42 @@ fn replay_serves_reads_spanning_several_responses_and_refuses_gaps() {
         Err(RangeError::OutOfRange { .. })
     ));
 }
+
+/// A remote origin's failures carry RFC-0041 §10's codes: a reply that does not match the read
+/// is `HeaderInvalid`, an unreachable or failing origin `OriginUnavailable`, and a refusal
+/// `GatedNoAccess`.
+#[test]
+fn remote_errors_carry_their_codes() {
+    let bad = RangeError::BadResponse {
+        offset: 1,
+        len: 2,
+        message: "416".into(),
+    };
+    let origin = RangeError::Origin {
+        status: Some(503),
+        retry_after_secs: Some(7),
+        message: "busy".into(),
+    };
+    let unreachable = RangeError::Origin {
+        status: None,
+        retry_after_secs: None,
+        message: "connection refused".into(),
+    };
+    let denied = RangeError::NoAccess {
+        status: 401,
+        message: "gated".into(),
+    };
+    assert_eq!((bad.code(), bad.class()), (Some(6), ErrorClass::Integrity));
+    assert_eq!(
+        (origin.code(), origin.class()),
+        (Some(11), ErrorClass::Link)
+    );
+    assert_eq!(unreachable.code(), Some(11));
+    assert_eq!(
+        (denied.code(), denied.class()),
+        (Some(13), ErrorClass::Auth)
+    );
+    assert!(bad.to_string().starts_with("HeaderInvalid (Formats 6)"));
+    assert!(origin.to_string().contains("HTTP 503"));
+    assert!(denied.to_string().starts_with("GatedNoAccess (Formats 13)"));
+}
