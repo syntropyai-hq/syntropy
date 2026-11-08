@@ -4025,6 +4025,7 @@ dependencies = [
  "syntropy-io",
  "syntropy-ipc",
  "syntropy-manifest",
+ "syntropy-net",
  "syntropy-obs",
  "syntropy-testkit",
  "tokio",

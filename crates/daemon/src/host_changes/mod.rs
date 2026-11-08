@@ -158,6 +158,24 @@ pub enum HostChangeKind {
         /// The setting's name.
         name: String,
     },
+    /// A node's CA certificate added to a trust store by `syntropy trust` (RFC-0050 §11.1.1,
+    /// PROD-E5-T04). A revert removes it only while the store holds exactly `certificate`.
+    TrustAnchor {
+        /// The trust store.
+        store: TrustStore,
+        /// Where in the store: the keychain file, the NSS database directory or the system
+        /// store's anchor file, each an absolute path; for the Windows store,
+        /// `Cert:\CurrentUser\Root`.
+        location: PathBuf,
+        /// The certificate's nickname in an NSS database; in the other stores, the name it is
+        /// shown under.
+        label: String,
+        /// The node the CA belongs to, as the user named it to `syntropy trust`, which
+        /// `trust --remove <node>` selects by.
+        node: String,
+        /// The certificate, DER in base64 on one line, with padding.
+        certificate: String,
+    },
 }
 
 /// Where a change is in its life (RFC-0052 §11.1).
@@ -223,6 +241,61 @@ pub enum FirewallKind {
     Firewalld,
     /// ufw; the rule is an application profile name.
     Ufw,
+}
+
+/// A trust store `syntropy trust` adds a node's CA to (RFC-0050 §11.1.1).
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TrustStore {
+    /// The user's login keychain on macOS, through `security`.
+    MacosLoginKeychain,
+    /// The current user's Root store on Windows.
+    WindowsCurrentUserRoot,
+    /// The user's NSS database on Linux (`~/.pki/nssdb`), through `certutil`.
+    LinuxUserNss,
+    /// The Linux system store of `update-ca-certificates` (Debian, Ubuntu and their kin): an
+    /// anchor file in `/usr/local/share/ca-certificates`. Only with `--system`.
+    LinuxSystemCaCertificates,
+    /// The Linux system store of `update-ca-trust` (Fedora, RHEL and their kin): an anchor file
+    /// in `/etc/pki/ca-trust/source/anchors`. Only with `--system`.
+    LinuxSystemCaTrust,
+}
+
+impl TrustStore {
+    /// The directory a system store's anchor files go in; `None` for a user store.
+    #[must_use]
+    pub fn anchor_dir(self) -> Option<&'static Path> {
+        match self {
+            TrustStore::LinuxSystemCaCertificates => {
+                Some(Path::new("/usr/local/share/ca-certificates"))
+            }
+            TrustStore::LinuxSystemCaTrust => Some(Path::new("/etc/pki/ca-trust/source/anchors")),
+            _ => None,
+        }
+    }
+
+    /// Whether `location` is an anchor file Syntropy may write or remove in this system store:
+    /// directly in [`TrustStore::anchor_dir`], named `syntropy-…`. A system-store change runs as
+    /// root, so the binary and the revert scripts touch no other path, whatever the ledger says.
+    #[must_use]
+    pub fn holds_anchor(self, location: &Path) -> bool {
+        let named = location
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.starts_with("syntropy-") && !n.contains(['/', '\\']));
+        self.anchor_dir()
+            .is_some_and(|dir| location.parent() == Some(dir) && named)
+    }
+
+    /// Whether this is a system store, which every user of the machine trusts and which only
+    /// `--system` changes.
+    #[must_use]
+    pub fn is_system(self) -> bool {
+        matches!(
+            self,
+            TrustStore::LinuxSystemCaCertificates | TrustStore::LinuxSystemCaTrust
+        )
+    }
 }
 
 /// The on-disk form of the ledger.
@@ -875,6 +948,25 @@ fn check_change(kind: &HostChangeKind, prior: Option<&PriorState>) -> Result<(),
         }
         HostChangeKind::SystemUser { name } => one_line("the system user's name", name)?,
         HostChangeKind::BootTimeSetting { name } => one_line("the setting's name", name)?,
+        HostChangeKind::TrustAnchor {
+            location,
+            label,
+            node,
+            certificate,
+            ..
+        } => {
+            no_nul("the trust store's location", location)?;
+            one_line("the certificate's label", label)?;
+            one_line("the node", node)?;
+            let base64 = |c: char| c.is_ascii_alphanumeric() || matches!(c, '+' | '/' | '=');
+            if certificate.is_empty() || !certificate.chars().all(base64) {
+                return Err(bad(
+                    "the certificate",
+                    certificate,
+                    "is not base64 on one line",
+                ));
+            }
+        }
     }
     match prior {
         Some(PriorState::Value { value }) => one_line("the prior value", value)?,
@@ -887,6 +979,10 @@ fn check_change(kind: &HostChangeKind, prior: Option<&PriorState>) -> Result<(),
             shell_rc: Some(path),
             ..
         } => path,
+        // The Windows store's location is the certificate provider's path, not a file.
+        HostChangeKind::TrustAnchor {
+            store, location, ..
+        } if *store != TrustStore::WindowsCurrentUserRoot => location,
         _ => return Ok(()),
     };
     if rooted.has_root() {
@@ -1495,6 +1591,26 @@ mod tests {
                     value: "0\nkern.y=1".into(),
                 }),
             ),
+            (
+                HostChangeKind::TrustAnchor {
+                    store: TrustStore::LinuxUserNss,
+                    location: state.join("nssdb"),
+                    label: "Syntropy CA\nother".into(),
+                    node: "box.local".into(),
+                    certificate: "QUJD".into(),
+                },
+                None,
+            ),
+            (
+                HostChangeKind::TrustAnchor {
+                    store: TrustStore::LinuxUserNss,
+                    location: state.join("nssdb"),
+                    label: "Syntropy CA".into(),
+                    node: "box.local".into(),
+                    certificate: "QUJD'; rm -rf ~; '".into(),
+                },
+                None,
+            ),
         ];
         for (kind, prior) in cases {
             let err = ledger.begin(kind.clone(), prior, None, 0, "v").unwrap_err();
@@ -1545,6 +1661,22 @@ mod tests {
             .write_file(Path::new("relative.conf"), b"x", 0, "v")
             .unwrap_err();
         assert!(matches!(err, LedgerError::NotRooted { .. }), "{err}");
+        // The Windows store's location is a provider path, not a file, so it is not checked.
+        ledger
+            .begin(
+                HostChangeKind::TrustAnchor {
+                    store: TrustStore::WindowsCurrentUserRoot,
+                    location: r"Cert:\CurrentUser\Root".into(),
+                    label: "Syntropy CA".into(),
+                    node: "box.local".into(),
+                    certificate: "QUJD".into(),
+                },
+                None,
+                None,
+                0,
+                "v",
+            )
+            .unwrap();
         for kind in [
             HostChangeKind::Symlink {
                 path: "bin/syntropy".into(),
@@ -1554,11 +1686,18 @@ mod tests {
                 shell_rc: Some("-profile".into()),
                 line: "x".into(),
             },
+            HostChangeKind::TrustAnchor {
+                store: TrustStore::LinuxSystemCaCertificates,
+                location: "syntropy-box.crt".into(),
+                label: "Syntropy CA".into(),
+                node: "box.local".into(),
+                certificate: "QUJD".into(),
+            },
         ] {
             let err = ledger.begin(kind, None, None, 0, "v").unwrap_err();
             assert!(matches!(err, LedgerError::NotRooted { .. }), "{err}");
         }
-        assert!(ledger.changes().is_empty());
+        assert_eq!(ledger.changes().len(), 1);
         // A link's target may be relative: it resolves from the link.
         ledger
             .begin(
