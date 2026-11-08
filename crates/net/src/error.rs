@@ -169,7 +169,10 @@ impl std::error::Error for Error {}
 ///   (0x020A); telling the two apart is the QUIC backend's (DIST-E7-T03);
 /// - a node ID or relay URL that does not parse, and a configuration with neither relays nor
 ///   direct paths, are the caller's input: `InvalidRequest`;
-/// - a failed bind or accept is `Link`;
+/// - a failed bind or accept is `Link`, and so is a connection lost under a datagram send or
+///   receive (`ConnectionLost`);
+/// - a datagram the connection cannot carry (`Datagram`: the peer does not support datagrams,
+///   they are disabled, or it is too large) is `Unsupported`;
 /// - `Closed` comes from `accept` on an endpoint this node closed, a shutdown with no peer
 ///   involved: `Cancelled`.
 impl From<EndpointError> for Error {
@@ -179,9 +182,11 @@ impl From<EndpointError> for Error {
             EndpointError::InvalidNodeId
             | EndpointError::InvalidRelayUrl(_)
             | EndpointError::NoTransport => Error::uncoded(ErrorClass::InvalidRequest, message),
-            EndpointError::Connect(_) | EndpointError::Bind(_) | EndpointError::Accept(_) => {
-                Error::uncoded(ErrorClass::Link, message)
-            }
+            EndpointError::Connect(_)
+            | EndpointError::Bind(_)
+            | EndpointError::Accept(_)
+            | EndpointError::ConnectionLost(_) => Error::uncoded(ErrorClass::Link, message),
+            EndpointError::Datagram(_) => Error::uncoded(ErrorClass::Unsupported, message),
             EndpointError::Closed => Error::uncoded(ErrorClass::Cancelled, message),
         }
     }
@@ -263,6 +268,16 @@ mod tests {
             (
                 EndpointError::Accept("reset".into()),
                 ErrorClass::Link,
+                None,
+            ),
+            (
+                EndpointError::ConnectionLost("timed out".into()),
+                ErrorClass::Link,
+                None,
+            ),
+            (
+                EndpointError::Datagram("too large".into()),
+                ErrorClass::Unsupported,
                 None,
             ),
             (EndpointError::Closed, ErrorClass::Cancelled, None),
