@@ -46,7 +46,8 @@ use reqwest::StatusCode;
 use reqwest::Url;
 use reqwest::blocking::{Client, Response};
 use reqwest::header::{
-    ACCEPT_ENCODING, AUTHORIZATION, CONTENT_RANGE, HeaderValue, LOCATION, RANGE, RETRY_AFTER,
+    ACCEPT_ENCODING, AUTHORIZATION, CONTENT_ENCODING, CONTENT_RANGE, HeaderValue, LOCATION, RANGE,
+    RETRY_AFTER,
 };
 use reqwest::redirect;
 use syntropy_manifest::range::{RangeError, RangeSource, check_bounds};
@@ -430,6 +431,19 @@ impl RangeSource for HubSource {
                 return Err(bad(offset, len, "the origin ignored Range"));
             }
             status => return Err(status_error(status, &response)),
+        }
+        // `Accept-Encoding: identity` was sent; an encoded body's length is not the range's.
+        if let Some(encoding) = response.headers().get(CONTENT_ENCODING)
+            && !encoding.as_bytes().eq_ignore_ascii_case(b"identity")
+        {
+            return Err(bad(
+                offset,
+                len,
+                format!(
+                    "the body is encoded ({}), not the file's bytes",
+                    String::from_utf8_lossy(encoding.as_bytes())
+                ),
+            ));
         }
         let expected = ContentRange::Bytes {
             first: offset,

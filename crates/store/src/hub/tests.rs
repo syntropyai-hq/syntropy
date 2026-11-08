@@ -36,7 +36,8 @@ impl Seen {
 ///   a read there takes two hops on the peer;
 /// - `/downgrade` redirects to plain HTTP on a non-loopback address;
 /// - `/loop` redirects to itself;
-/// - `/short` and `/long` send one byte fewer or more than the range;
+/// - `/short` and `/long` send one byte fewer or more than the range, and `/encoded` labels its
+///   body `Content-Encoding: gzip`;
 /// - `/cut` promises the range's length and closes the connection halfway, and `/stall`
 ///   promises it and goes silent halfway, for a range that does not start at 0;
 /// - `/whole` ignores `Range` and sends the whole file with a 200;
@@ -189,11 +190,11 @@ fn respond(seen: &Seen, body: &[u8], peer: u16) -> Vec<u8> {
         "/long" => part.push(0),
         _ => {}
     }
-    let mut reply = response(
-        "206 Partial Content",
-        &[("Content-Range", format!("bytes {first}-{last}/{total}"))],
-        &part,
-    );
+    let mut headers = vec![("Content-Range", format!("bytes {first}-{last}/{total}"))];
+    if seen.path == "/encoded" && first > 0 {
+        headers.push(("Content-Encoding", "gzip".into()));
+    }
+    let mut reply = response("206 Partial Content", &headers, &part);
     if (seen.path == "/cut" || seen.path == "/stall") && first > 0 {
         reply.truncate(reply.len() - part.len() / 2);
     }
@@ -331,7 +332,7 @@ fn a_redirect_to_plain_http_is_refused() {
 fn a_mismatched_reply_is_integrity() {
     let server = Server::start(sample());
     let hub = client();
-    for path in ["/short", "/long", "/shifted"] {
+    for path in ["/short", "/long", "/shifted", "/encoded"] {
         // Each opens, since the one-byte probe is answered correctly, and fails on the read.
         let source = hub.open(&server.url(path)).unwrap();
         let err = read(&source, 10, 100).unwrap_err();
@@ -438,6 +439,54 @@ fn an_unreachable_origin_is_link() {
         "{err}"
     );
     assert!(err.to_string().contains("could not connect"), "{err}");
+}
+
+/// The client offers TLS 1.3 alone (ADR-0432's note of 2026-10-31), though `rustls`'s defaults
+/// in this build would offer 1.2 as well. A plain listener reads the ClientHello's
+/// `supported_versions` extension, then drops the connection.
+#[test]
+fn the_client_offers_only_tls_1_3() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let hello = thread::spawn(move || {
+        use std::io::Read;
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut header = [0u8; 5];
+        stream.read_exact(&mut header).unwrap();
+        assert_eq!(header[0], 0x16, "not a TLS handshake record");
+        let mut record = vec![0u8; usize::from(u16::from_be_bytes([header[3], header[4]]))];
+        stream.read_exact(&mut record).unwrap();
+        record
+    });
+    let err = HubClient::new(&HubConfig::default())
+        .unwrap()
+        .open(&format!("https://127.0.0.1:{port}/file"))
+        .unwrap_err();
+    assert_eq!(err.class(), ErrorClass::Link, "{err}");
+    let record = hello.join().unwrap();
+    assert_eq!(supported_versions(&record), [[3, 4]]);
+}
+
+/// The versions in a ClientHello's `supported_versions` extension (type 43).
+fn supported_versions(record: &[u8]) -> Vec<[u8; 2]> {
+    let u16_at = |i: usize| usize::from(u16::from_be_bytes([record[i], record[i + 1]]));
+    assert_eq!(record[0], 1, "not a ClientHello");
+    // Handshake header (4), legacy version (2), random (32), then the session ID.
+    let mut i = 4 + 2 + 32;
+    i += 1 + usize::from(record[i]);
+    i += 2 + u16_at(i); // cipher suites
+    i += 1 + usize::from(record[i]); // compression methods
+    let end = i + 2 + u16_at(i);
+    i += 2;
+    while i < end {
+        let (kind, len) = (u16_at(i), u16_at(i + 2));
+        let data = &record[i + 4..i + 4 + len];
+        if kind == 43 {
+            return data[1..].chunks(2).map(|v| [v[0], v[1]]).collect();
+        }
+        i += 4 + len;
+    }
+    panic!("no supported_versions extension");
 }
 
 #[test]
