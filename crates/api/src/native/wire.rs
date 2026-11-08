@@ -12,6 +12,7 @@
 //! `invalid_request` instead of being ignored. The response types are read with unknown fields
 //! ignored, so an older client still reads a newer daemon's events (ADR-0503 decision 4).
 
+use std::collections::BTreeSet;
 use std::fmt;
 
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
@@ -362,6 +363,9 @@ impl<'de> Deserialize<'de> for LogitBias {
 
             fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<LogitBias, A::Error> {
                 let mut entries: Vec<(u32, f32)> = Vec::new();
+                // The IDs seen so far, so a duplicate costs O(log n) to find: a body of
+                // `MAX_BODY` bytes holds millions of entries.
+                let mut seen = BTreeSet::new();
                 while let Some((key, bias)) = map.next_entry::<String, f32>()? {
                     let id = parse_token_key(&key).ok_or_else(|| {
                         serde::de::Error::custom(format_args!(
@@ -369,7 +373,7 @@ impl<'de> Deserialize<'de> for LogitBias {
                              to 4294967295"
                         ))
                     })?;
-                    if entries.iter().any(|&(seen, _)| seen == id) {
+                    if !seen.insert(id) {
                         return Err(serde::de::Error::custom(format_args!(
                             "logit_bias names token ID {id} twice"
                         )));
@@ -710,6 +714,26 @@ mod tests {
         ] {
             assert!(serde_json::from_str::<LogitBias>(bad).is_err(), "{bad}");
         }
+    }
+
+    /// A map with an entry for every ID below 2^20 reads in one pass: with a linear duplicate
+    /// search it would take about 5 × 10^11 comparisons, and the duplicate at its end is still
+    /// found.
+    #[test]
+    fn a_large_logit_bias_reads_in_near_linear_time() {
+        let n: u32 = 1 << 20;
+        let mut text = String::from("{");
+        for id in 0..n {
+            let _ = std::fmt::Write::write_fmt(&mut text, format_args!("\"{id}\":1,"));
+        }
+        let mut duplicated = text.clone();
+        text.pop();
+        text.push('}');
+        duplicated.push_str("\"0\":2}");
+        let bias: LogitBias = serde_json::from_str(&text).unwrap();
+        assert_eq!(bias.0.len(), n as usize);
+        let error = serde_json::from_str::<LogitBias>(&duplicated).unwrap_err();
+        assert!(error.to_string().contains("token ID 0 twice"), "{error}");
     }
 
     #[test]
