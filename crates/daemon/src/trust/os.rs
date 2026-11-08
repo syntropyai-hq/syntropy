@@ -176,6 +176,50 @@ fn outside_store(anchor: &Anchor) -> io::Result<()> {
     }
 }
 
+/// What a Linux system anchor file holds: [`Observed::AsRecorded`] only for a regular file whose
+/// one certificate is `anchor.certificate`.
+fn observe_anchor_file(anchor: &Anchor) -> io::Result<Observed> {
+    if let Some(observed) = read_anchor_file(&anchor.location)? {
+        return Ok(observed);
+    }
+    let text = fs::read_to_string(&anchor.location).unwrap_or_default();
+    Ok(match pem_bodies(&text).as_slice() {
+        [only] if *only == anchor.certificate => Observed::AsRecorded,
+        _ => Observed::Changed,
+    })
+}
+
+/// Installs a system anchor file with `install`, then reads it back before anything trusts it.
+///
+/// `install` copies the PEM file from a directory the user owns, and runs only after the user has
+/// typed a `sudo` password, so a process of the same user could replace that file in between.
+/// The anchor's own directory is root's, so the copy cannot change once it is there: if it holds
+/// anything but the certificate the user confirmed, `remove` deletes it and the store is not
+/// rebuilt.
+fn install_checked(
+    anchor: &Anchor,
+    install: impl FnOnce() -> io::Result<()>,
+    remove: impl FnOnce() -> io::Result<()>,
+) -> io::Result<()> {
+    install()?;
+    match observe_anchor_file(anchor) {
+        Ok(Observed::AsRecorded) => Ok(()),
+        held => {
+            let removed = remove();
+            Err(io::Error::other(format!(
+                "{} did not hold the confirmed certificate after it was installed{}; {}, and the \
+                 system store was not rebuilt",
+                anchor.location.display(),
+                held.err().map_or_else(String::new, |e| format!(" ({e})")),
+                match removed {
+                    Ok(()) => "it was removed".to_owned(),
+                    Err(e) => format!("removing it failed too ({e})"),
+                }
+            )))
+        }
+    }
+}
+
 fn is_base64(text: &str) -> bool {
     !text.is_empty()
         && text
@@ -211,14 +255,7 @@ impl StoreTool for OsStoreTool {
                 })
             }
             TrustStore::LinuxSystemCaCertificates | TrustStore::LinuxSystemCaTrust => {
-                if let Some(observed) = read_anchor_file(&anchor.location)? {
-                    return Ok(observed);
-                }
-                let text = fs::read_to_string(&anchor.location).unwrap_or_default();
-                Ok(match pem_bodies(&text).as_slice() {
-                    [only] if *only == anchor.certificate => Observed::AsRecorded,
-                    _ => Observed::Changed,
-                })
+                observe_anchor_file(anchor)
             }
             TrustStore::WindowsCurrentUserRoot => {
                 let output = run(
@@ -265,12 +302,23 @@ impl StoreTool for OsStoreTool {
             .map(drop),
             TrustStore::LinuxSystemCaCertificates | TrustStore::LinuxSystemCaTrust => {
                 outside_store(anchor)?;
-                run_on_terminal(
-                    "installing the anchor file",
-                    privileged("install")
-                        .args(["-m", "0644", "--"])
-                        .arg(pem_file)
-                        .arg(&anchor.location),
+                install_checked(
+                    anchor,
+                    || {
+                        run_on_terminal(
+                            "installing the anchor file",
+                            privileged("install")
+                                .args(["-m", "0644", "--"])
+                                .arg(pem_file)
+                                .arg(&anchor.location),
+                        )
+                    },
+                    || {
+                        run_on_terminal(
+                            "removing the anchor file",
+                            privileged("rm").args(["-f", "--"]).arg(&anchor.location),
+                        )
+                    },
                 )?;
                 run_on_terminal("rebuilding the system store", &mut rebuild(anchor.store))
             }
@@ -337,6 +385,87 @@ pub fn find_program(name: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn system_anchor(dir: &Path) -> Anchor {
+        Anchor {
+            store: TrustStore::LinuxSystemCaCertificates,
+            location: dir.join("syntropy-box.local-1.crt"),
+            label: "box.local".into(),
+            certificate: "T1VSUw==".into(),
+        }
+    }
+
+    fn pem(body: &str) -> String {
+        format!("-----BEGIN CERTIFICATE-----\n{body}\n-----END CERTIFICATE-----\n")
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("syntropy-os-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// The PEM file was swapped between the user's confirmation and `install`: the installed
+    /// anchor holds another certificate, so it is removed and the store is never rebuilt.
+    #[test]
+    fn a_swapped_anchor_is_removed_before_the_store_trusts_it() {
+        let dir = scratch("swapped");
+        let anchor = system_anchor(&dir);
+        let mut removed = false;
+        let result = install_checked(
+            &anchor,
+            || fs::write(&anchor.location, pem("QVRUQUNLRVI=")),
+            || {
+                removed = true;
+                fs::remove_file(&anchor.location)
+            },
+        );
+        let error = result.unwrap_err().to_string();
+        assert!(
+            error.contains("did not hold the confirmed certificate"),
+            "{error}"
+        );
+        assert!(removed);
+        assert!(!anchor.location.exists());
+
+        // A second certificate appended to the confirmed one is refused the same way.
+        let result = install_checked(
+            &anchor,
+            || fs::write(&anchor.location, pem("T1VSUw==") + &pem("QVRUQUNLRVI=")),
+            || fs::remove_file(&anchor.location),
+        );
+        assert!(result.is_err());
+        assert!(!anchor.location.exists());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_confirmed_anchor_is_kept() {
+        let dir = scratch("kept");
+        let anchor = system_anchor(&dir);
+        install_checked(
+            &anchor,
+            || fs::write(&anchor.location, pem("T1VS\nUw==")),
+            || panic!("nothing to remove"),
+        )
+        .unwrap();
+        assert_eq!(observe_anchor_file(&anchor).unwrap(), Observed::AsRecorded);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// An anchor that is a link, not a regular file, is never taken as the certificate.
+    #[cfg(unix)]
+    #[test]
+    fn a_linked_anchor_is_changed_not_as_recorded() {
+        let dir = scratch("linked");
+        let anchor = system_anchor(&dir);
+        let target = dir.join("elsewhere.crt");
+        fs::write(&target, pem("T1VSUw==")).unwrap();
+        std::os::unix::fs::symlink(&target, &anchor.location).unwrap();
+        assert_eq!(observe_anchor_file(&anchor).unwrap(), Observed::Changed);
+        fs::remove_dir_all(&dir).unwrap();
+    }
 
     /// The shape `security find-certificate -a -Z -p` prints: hashes, attributes, then the PEM.
     #[test]

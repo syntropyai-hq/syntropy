@@ -314,6 +314,38 @@ fn the_system_store_changes_only_with_system() {
     assert!(f.stores.held.is_empty());
 }
 
+/// Re-trusting a node whose earlier certificate is in the system store has to remove it, which
+/// needs sudo even without `--system`: declining changes nothing.
+#[test]
+fn superseding_a_system_entry_asks_for_sudo_first() {
+    let mut f = Fixture::new();
+    f.install("box.local", true, &ca_pem(3)).unwrap();
+    let held = f.stores.held.clone();
+    let changes = f.ledger.changes().to_vec();
+    let pem_file = f.plan.pem_dir.join("box.local.pem");
+    let pem_before = fs::read(&pem_file).unwrap();
+
+    f.answers.refuse_sudo = true;
+    f.answers.asked.clear();
+    assert!(matches!(
+        f.install("box.local", false, &ca_pem(4)),
+        Err(TrustError::SudoDeclined)
+    ));
+    assert!(
+        f.answers.asked.iter().any(|a| a.starts_with("sudo")),
+        "{:?}",
+        f.answers.asked
+    );
+    assert_eq!(f.stores.held, held);
+    assert_eq!(f.ledger.changes(), changes.as_slice());
+    assert_eq!(fs::read(&pem_file).unwrap(), pem_before);
+
+    // Agreeing replaces the system entry with the new certificate.
+    f.answers.refuse_sudo = false;
+    f.install("box.local", false, &ca_pem(4)).unwrap();
+    assert_ne!(f.stores.held, held);
+}
+
 /// Nothing changes on the host until the fingerprint is confirmed, or when what the node served
 /// is refused, or when `--system` cannot be done.
 #[test]

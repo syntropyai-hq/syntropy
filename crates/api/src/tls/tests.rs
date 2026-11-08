@@ -1080,6 +1080,70 @@ fn a_client_refuses_anything_but_one_constrained_ca() {
         ["box.local"]
     );
 
+    // Each check beyond the constraints, on a certificate that passes every other check.
+    let node_like = || {
+        let mut params = CertificateParams::default();
+        params.distinguished_name = super::ca::common_name("Syntropy local CA 0123456789abcdef");
+        params.is_ca = IsCa::Ca(BasicConstraints::Constrained(0));
+        params.name_constraints = Some(rcgen::NameConstraints {
+            permitted_subtrees: vec![dns("box.local")],
+            excluded_subtrees: vec![v4_all(), v6_all()],
+        });
+        params
+    };
+    let pem_of = |params: CertificateParams| {
+        super::ca::certificate_pem(params.self_signed(&key).unwrap().der())
+    };
+    assert!(CaCertificate::from_pem(&pem_of(node_like())).is_ok());
+    // Not a CA.
+    let mut params = node_like();
+    params.is_ca = IsCa::ExplicitNoCa;
+    assert_eq!(
+        refused(&pem_of(params)),
+        "the certificate is not a CA certificate"
+    );
+    // A node's name constraints, not marked critical.
+    let constraints = {
+        let der = CaCertificate::from_pem(&names_only).unwrap().der().to_vec();
+        let (_, parsed) = x509_parser::parse_x509_certificate(&der).unwrap();
+        parsed
+            .extensions()
+            .iter()
+            .find(|e| e.oid.to_id_string() == "2.5.29.30")
+            .unwrap()
+            .value
+            .to_vec()
+    };
+    let mut params = node_like();
+    params.name_constraints = None;
+    let mut extension = rcgen::CustomExtension::from_oid_content(&[2, 5, 29, 30], constraints);
+    extension.set_criticality(false);
+    params.custom_extensions = vec![extension];
+    assert_eq!(
+        refused(&pem_of(params)),
+        "the certificate's name constraints are not critical"
+    );
+    // The node's common name with another attribute beside it.
+    for extra in [
+        rcgen::DnType::OrganizationName,
+        rcgen::DnType::OrganizationalUnitName,
+    ] {
+        let mut params = node_like();
+        params.distinguished_name.push(extra, "Syntropy");
+        assert_eq!(
+            refused(&pem_of(params)),
+            "the certificate is not named as a node's CA (`Syntropy local CA <16 hex digits>`)"
+        );
+    }
+    // A node's own CA with one byte of its self-signature changed.
+    let mut forged = ca.certificate_der().to_vec();
+    let last = forged.len() - 1;
+    forged[last] ^= 0x01;
+    assert_eq!(
+        CaCertificate::from_der(&forged).unwrap_err().0,
+        "the certificate's self-signature does not verify"
+    );
+
     // A leaf the CA issued.
     let names = LeafNames::new(["box.local"], [ip("192.168.1.37")]);
     let leaf = ca.issue_leaf(&names, now()).unwrap();
