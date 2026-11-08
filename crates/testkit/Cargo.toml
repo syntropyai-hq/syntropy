@@ -34,3 +34,10 @@ toml.workspace = true
 
 [features]
 transport = ["dep:syntropy-net"]
+
+[dev-dependencies]
+# The engine conformance suite (TIER-E5-T04) runs `io`'s conformance harness over the nano fixture
+# files this crate generates, against every engine the host has. It is this crate's test because
+# `testkit` may depend on any workspace crate (RFC-0001 §4.2 rule 9) and `io` may not depend on
+# `graph`, whose family specs the generator reads.
+syntropy-io = { path = "../io" }
