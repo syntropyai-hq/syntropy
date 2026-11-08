@@ -172,6 +172,13 @@ pub enum GgmlError {
     NoConversion(GgmlType),
     /// The type has no reference quantizer from F32 in ggml.
     NoQuantizer(GgmlType),
+    /// An input element [`quantize`] refuses: not finite, or out of the type's range.
+    OutOfRange {
+        /// The element's index.
+        index: usize,
+        /// Its F32 bit pattern.
+        bits: u32,
+    },
 }
 
 impl fmt::Display for GgmlError {
@@ -194,6 +201,11 @@ impl fmt::Display for GgmlError {
             Self::Compute(status) => write!(f, "the ggml graph failed with status {status}"),
             Self::NoConversion(ty) => write!(f, "ggml has no conversion to F32 for {ty:?}"),
             Self::NoQuantizer(ty) => write!(f, "ggml has no reference quantizer for {ty:?}"),
+            Self::OutOfRange { index, bits } => write!(
+                f,
+                "element {index}, {}, is not finite or is out of the type's range",
+                f32::from_bits(*bits)
+            ),
         }
     }
 }
@@ -224,17 +236,35 @@ pub fn dequantize(ty: GgmlType, src: &[u8]) -> Result<Vec<f32>, GgmlError> {
     Ok(out)
 }
 
+/// The largest magnitude [`quantize`] accepts for every type but BF16: F16's largest finite
+/// value. The quantised types store an F16 scale, and F16 output is F16, so a larger value would
+/// overflow to infinity. BF16 has F32's range and takes any finite value.
+pub const QUANTIZE_MAX_ABS: f32 = 65504.0;
+
+/// The most elements [`quantize`] hands ggml in one call: its F16 row conversion counts in a C
+/// `int`.
+const QUANTIZE_CHUNK: usize = 1 << 30;
+
 /// `src` quantised to `ty` by ggml's reference quantizer (its `from_float_ref` type trait):
 /// `quantize_row_*_ref` for the quantised types, and its F16 and BF16 row conversions
-/// (COMP-E13-T07; RFC-0042 §2). These are the scalar reference routines, not the CPU backend's
-/// vectorised `from_float`, so with this build's flags (the baseline ISA, contraction off;
-/// [`BUILD_FLAGS`]) the same input gives the same bytes on every Tier 1 OS. Fixtures are
-/// quantised through this function (QUAL-E7-T03). `src` must be a whole number of blocks.
+/// (COMP-E13-T07; RFC-0042 §2). Fixtures are quantised through this function (QUAL-E7-T03).
+///
+/// These are the scalar reference routines, not the CPU backend's vectorised `from_float`. They
+/// use only exactly specified operations (`fabsf`, `roundf`, `sqrtf`, integer and bit
+/// arithmetic), and this build compiles them at the baseline ISA with contraction off
+/// ([`BUILD_FLAGS`]). So one input should give the same bytes on every Tier 1 OS. They assume the
+/// default floating-point environment: round to nearest even, no flush-to-zero. The test of this
+/// function records its bytes, and the PR that added it says where they have been checked.
+///
+/// The input is checked first, because ggml's own checks are compiled out and a NaN, an infinity
+/// or an out-of-range value reaches a float-to-integer conversion that C leaves undefined.
 ///
 /// # Errors
 ///
 /// [`GgmlError::RowLength`] when `src` is not whole blocks of `ty`;
-/// [`GgmlError::NoQuantizer`] for `F32`, which has no reference quantizer.
+/// [`GgmlError::NoQuantizer`] for `F32`, which has no reference quantizer;
+/// [`GgmlError::OutOfRange`] for the first element that is not finite, or, for every type but
+/// BF16, larger in magnitude than [`QUANTIZE_MAX_ABS`].
 pub fn quantize(ty: GgmlType, src: &[f32]) -> Result<Vec<u8>, GgmlError> {
     let block = ty.block_elems();
     if !src.len().is_multiple_of(block) {
@@ -247,12 +277,40 @@ pub fn quantize(ty: GgmlType, src: &[f32]) -> Result<Vec<u8>, GgmlError> {
     // the program, for any type ggml defines.
     let traits = unsafe { &*sys::ggml_get_type_traits(ty.raw()) };
     let from_float = traits.from_float_ref.ok_or(GgmlError::NoQuantizer(ty))?;
-    let mut out = vec![0u8; src.len() / block * ty.block_bytes()];
-    let k = i64::try_from(src.len()).expect("a slice's length fits in i64");
-    // SAFETY: `src` holds `k` floats, a whole number of `ty`'s blocks, and `out` has room for
-    // exactly those blocks, which is what `from_float_ref(x, y, k)` reads and writes.
-    unsafe { from_float(src.as_ptr(), out.as_mut_ptr().cast(), k) };
-    Ok(out)
+    let limit = if ty == GgmlType::Bf16 {
+        f32::MAX
+    } else {
+        QUANTIZE_MAX_ABS
+    };
+    if let Some((index, value)) = src
+        .iter()
+        .enumerate()
+        .find(|(_, v)| !v.is_finite() || v.abs() > limit)
+    {
+        return Err(GgmlError::OutOfRange {
+            index,
+            bits: value.to_bits(),
+        });
+    }
+    let bytes = src.len() / block * ty.block_bytes();
+    // ggml's blocks hold an F16 scale or F16 elements, so they need 2-byte alignment. A `Vec<u64>`
+    // backs the output, so it starts 8-aligned; every block starts at a multiple of the block's
+    // byte size, which is even for every type with a quantizer.
+    debug_assert!(ty.block_bytes().is_multiple_of(2));
+    let mut words = vec![0u64; bytes.div_ceil(8)];
+    let base: *mut u8 = words.as_mut_ptr().cast();
+    let chunk = QUANTIZE_CHUNK / block * block;
+    for (i, part) in src.chunks(chunk).enumerate() {
+        let k = i64::try_from(part.len()).expect("a chunk's length fits in i64");
+        let offset = i * (chunk / block) * ty.block_bytes();
+        // SAFETY: `part` holds `k` floats, a whole number of `ty`'s blocks, every one finite and
+        // within `limit`. `base + offset` is inside `words`, 2-aligned, and has room for exactly
+        // those blocks, which is what `from_float_ref(x, y, k)` reads and writes.
+        unsafe { from_float(part.as_ptr(), base.add(offset).cast(), k) };
+    }
+    // SAFETY: `words` is alive, holds at least `bytes` initialised bytes, and `u8` needs no
+    // alignment.
+    Ok(unsafe { std::slice::from_raw_parts(base, bytes) }.to_vec())
 }
 
 /// ggml's `get_rows` on its CPU backend: the rows of `matrix`, a row-major matrix of `ty` with
