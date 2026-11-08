@@ -17,7 +17,7 @@
 //! matched by its exact DER (base64), so nothing but the recorded certificate is ever removed.
 
 use std::fs;
-use std::io;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
@@ -56,6 +56,22 @@ fn run_on_terminal(what: &str, command: &mut Command) -> io::Result<()> {
     } else {
         Err(io::Error::other(format!("{what} failed ({status})")))
     }
+}
+
+/// [`run_on_terminal`], with `input` on the command's stdin. `sudo` asks for its password on the
+/// terminal itself, not on stdin.
+fn run_on_terminal_with_input(what: &str, command: &mut Command, input: &[u8]) -> io::Result<()> {
+    let mut child = command.stdin(Stdio::piped()).spawn()?;
+    let written = child
+        .stdin
+        .take()
+        .ok_or_else(|| io::Error::other("no stdin to write to"))?
+        .write_all(input);
+    let status = child.wait()?;
+    if !status.success() {
+        return Err(io::Error::other(format!("{what} failed ({status})")));
+    }
+    written
 }
 
 /// A command for the system store: through `sudo` unless this process is root.
@@ -189,35 +205,61 @@ fn observe_anchor_file(anchor: &Anchor) -> io::Result<Observed> {
     })
 }
 
-/// Installs a system anchor file with `install`, then reads it back before anything trusts it.
+/// The anchor file's text: `anchor.certificate` as PEM, wrapped at 64 columns, the same bytes
+/// as the PEM file `syntropy trust` writes for the node.
+fn anchor_pem(anchor: &Anchor) -> String {
+    let mut text = String::from("-----BEGIN CERTIFICATE-----\n");
+    for line in anchor.certificate.as_bytes().chunks(64) {
+        text.push_str(&String::from_utf8_lossy(line));
+        text.push('\n');
+    }
+    text.push_str("-----END CERTIFICATE-----\n");
+    text
+}
+
+/// `install -m 0644 -- /dev/stdin <anchor>`, through `sudo` unless this process is root.
+fn install_command(anchor: &Anchor) -> Command {
+    let mut command = privileged("install");
+    command
+        .args(["-m", "0644", "--", "/dev/stdin"])
+        .arg(&anchor.location);
+    command
+}
+
+/// Installs a system anchor file with `install`, which writes `expected`, then reads it back
+/// before anything trusts it.
 ///
-/// `install` copies the PEM file from a directory the user owns, and runs only after the user has
-/// typed a `sudo` password, so a process of the same user could replace that file in between.
-/// The anchor's own directory is root's, so the copy cannot change once it is there: if it holds
-/// anything but the certificate the user confirmed, `remove` deletes it and the store is not
-/// rebuilt.
+/// The anchor's directory is root's, so once the file holds exactly `expected` it cannot change.
+/// Anything else, whether another certificate, a second block under any PEM label, or not a
+/// regular file, is removed with `remove`, and the store is not rebuilt.
 fn install_checked(
     anchor: &Anchor,
+    expected: &str,
     install: impl FnOnce() -> io::Result<()>,
     remove: impl FnOnce() -> io::Result<()>,
 ) -> io::Result<()> {
     install()?;
-    match observe_anchor_file(anchor) {
-        Ok(Observed::AsRecorded) => Ok(()),
-        held => {
-            let removed = remove();
-            Err(io::Error::other(format!(
-                "{} did not hold the confirmed certificate after it was installed{}; {}, and the \
-                 system store was not rebuilt",
-                anchor.location.display(),
-                held.err().map_or_else(String::new, |e| format!(" ({e})")),
-                match removed {
-                    Ok(()) => "it was removed".to_owned(),
-                    Err(e) => format!("removing it failed too ({e})"),
-                }
-            )))
-        }
+    let held = match read_anchor_file(&anchor.location) {
+        Ok(None) => fs::read(&anchor.location).map(|bytes| bytes == expected.as_bytes()),
+        Ok(Some(_)) => Ok(false),
+        Err(e) => Err(e),
+    };
+    if matches!(held, Ok(true)) {
+        return Ok(());
     }
+    let removed = remove();
+    Err(io::Error::other(format!(
+        "{} did not hold exactly the confirmed certificate after it was installed{}; {}, and the \
+         system store was not rebuilt",
+        anchor.location.display(),
+        held.err().map_or_else(String::new, |e| format!(" ({e})")),
+        match removed {
+            Ok(()) => "it was removed".to_owned(),
+            Err(e) => format!(
+                "removing it failed too ({e}): delete it by hand before the store is next rebuilt"
+            ),
+        }
+    )))
 }
 
 fn is_base64(text: &str) -> bool {
@@ -302,15 +344,17 @@ impl StoreTool for OsStoreTool {
             .map(drop),
             TrustStore::LinuxSystemCaCertificates | TrustStore::LinuxSystemCaTrust => {
                 outside_store(anchor)?;
+                // Root never reads `pem_file`, which sits in a directory the user owns: the bytes
+                // are rendered from the confirmed certificate and handed over on stdin.
+                let pem = anchor_pem(anchor);
                 install_checked(
                     anchor,
+                    &pem,
                     || {
-                        run_on_terminal(
+                        run_on_terminal_with_input(
                             "installing the anchor file",
-                            privileged("install")
-                                .args(["-m", "0644", "--"])
-                                .arg(pem_file)
-                                .arg(&anchor.location),
+                            &mut install_command(anchor),
+                            pem.as_bytes(),
                         )
                     },
                     || {
@@ -406,37 +450,50 @@ mod tests {
         dir
     }
 
-    /// The PEM file was swapped between the user's confirmation and `install`: the installed
-    /// anchor holds another certificate, so it is removed and the store is never rebuilt.
+    /// Whatever `install` left that is not exactly the confirmed certificate is removed, and
+    /// the store is never rebuilt: another certificate, or the confirmed one followed by a second
+    /// CA under a label other than `CERTIFICATE`, which OpenSSL's bundle would trust too.
     #[test]
-    fn a_swapped_anchor_is_removed_before_the_store_trusts_it() {
+    fn anything_but_the_confirmed_anchor_is_removed_before_the_store_trusts_it() {
         let dir = scratch("swapped");
         let anchor = system_anchor(&dir);
-        let mut removed = false;
+        let expected = anchor_pem(&anchor);
+        let extra = |label: &str| {
+            format!("{expected}-----BEGIN {label}-----\nQVRUQUNLRVI=\n-----END {label}-----\n")
+        };
+        for held in [
+            pem("QVRUQUNLRVI="),
+            expected.clone() + &pem("QVRUQUNLRVI="),
+            extra("TRUSTED CERTIFICATE"),
+            extra("X509 CERTIFICATE"),
+            expected.replace('\n', "\r\n"),
+        ] {
+            let mut removed = false;
+            let result = install_checked(
+                &anchor,
+                &expected,
+                || fs::write(&anchor.location, &held),
+                || {
+                    removed = true;
+                    fs::remove_file(&anchor.location)
+                },
+            );
+            let error = result.unwrap_err().to_string();
+            assert!(
+                error.contains("did not hold exactly the confirmed certificate"),
+                "{error}"
+            );
+            assert!(removed, "{held:?}");
+            assert!(!anchor.location.exists());
+        }
+        // A failed install is reported as itself, and nothing is removed.
         let result = install_checked(
             &anchor,
-            || fs::write(&anchor.location, pem("QVRUQUNLRVI=")),
-            || {
-                removed = true;
-                fs::remove_file(&anchor.location)
-            },
+            &expected,
+            || Err(io::Error::other("sudo: a password is required")),
+            || panic!("nothing to remove"),
         );
-        let error = result.unwrap_err().to_string();
-        assert!(
-            error.contains("did not hold the confirmed certificate"),
-            "{error}"
-        );
-        assert!(removed);
-        assert!(!anchor.location.exists());
-
-        // A second certificate appended to the confirmed one is refused the same way.
-        let result = install_checked(
-            &anchor,
-            || fs::write(&anchor.location, pem("T1VSUw==") + &pem("QVRUQUNLRVI=")),
-            || fs::remove_file(&anchor.location),
-        );
-        assert!(result.is_err());
-        assert!(!anchor.location.exists());
+        assert!(result.unwrap_err().to_string().contains("password"));
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -444,13 +501,37 @@ mod tests {
     fn the_confirmed_anchor_is_kept() {
         let dir = scratch("kept");
         let anchor = system_anchor(&dir);
+        let expected = anchor_pem(&anchor);
         install_checked(
             &anchor,
-            || fs::write(&anchor.location, pem("T1VS\nUw==")),
+            &expected,
+            || fs::write(&anchor.location, &expected),
             || panic!("nothing to remove"),
         )
         .unwrap();
         assert_eq!(observe_anchor_file(&anchor).unwrap(), Observed::AsRecorded);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The anchor's bytes are the PEM file `syntropy trust` writes, and root reads them from
+    /// stdin, never from a path the user can write or link.
+    #[test]
+    fn the_system_install_reads_the_confirmed_bytes_on_stdin() {
+        let dir = scratch("stdin");
+        let mut anchor = system_anchor(&dir);
+        anchor.certificate = "A".repeat(100);
+        let text = anchor_pem(&anchor);
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 4);
+        assert_eq!((lines[1].len(), lines[2].len()), (64, 36));
+        let command = install_command(&anchor);
+        let args: Vec<&std::ffi::OsStr> = command.get_args().collect();
+        let tail: Vec<&std::ffi::OsStr> = ["-m", "0644", "--", "/dev/stdin"]
+            .into_iter()
+            .map(std::ffi::OsStr::new)
+            .chain([anchor.location.as_os_str()])
+            .collect();
+        assert_eq!(args[args.len() - 5..], tail[..]);
         fs::remove_dir_all(&dir).unwrap();
     }
 
