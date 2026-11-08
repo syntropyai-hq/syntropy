@@ -104,7 +104,7 @@ Rules:
   - `Q8 { block }` is one byte per element plus an F16 scale per `block` elements.
   - `K8V4 { block }` stores the entry's first half as `Q8` and its second half at 4 bits, each with F16 scales.
   - Recurrent state keeps the reference dtype, and an auxiliary cache keeps its own dtype.
-  - §9 defines `K8V4` by K and V planes only. An entry that is not a K/V pair is sized as `Q8`, the conservative upper bound, until OQ-IO-30 is settled. Such an entry is a latent: MLA's, a DSA-class indexer's main cache over MLA, or a V4-class compressed entry. `LayerKv::PerToken`, `Sparse` and `Compressed` each gain `latent: bool` with a serde default of `false`. That is an owner addition, like `Compressed`, recorded in RFC-0001 §18.46. The family sets it, and `LayerKv::mla` does. A layer that stores K/V pairs, as block-sparse and QSA-class layers do "as `Gqa`" (RFC-0043 §3.1), splits as GQA does.
+  - §9 defines `K8V4` by K and V planes only. An entry that is not a K/V pair is stored and sized as `Q8`, the conservative upper bound (§9, OQ-IO-30, settled 2026-10-30). Such an entry is a latent: MLA's, a DSA-class indexer's main cache over MLA, or a V4-class compressed entry. `LayerKv::PerToken`, `Sparse` and `Compressed` each gain `latent: bool` with a serde default of `false`. That is an owner addition, like `Compressed`, recorded in RFC-0001 §18.46. The family sets it, and `LayerKv::mla` does. A layer that stores K/V pairs, as block-sparse and QSA-class layers do "as `Gqa`" (RFC-0043 §3.1), splits as GQA does.
 
 ### 3. Pages, page classes and pools
 
@@ -550,6 +550,9 @@ Rules:
 - **Keys and blobs record it.** `kv_settings_hash` includes it, and saved blobs set the lossy flag, so a lossy session never resumes on an exact instance.
 - **Labels.** Every `TokenEntry` from such an instance carries `ApproxFlags::KV_LOSSY` (RFC-0001 §5.8), and the harness publishes the knob's measured KL and top-1 cost before it is offered (ADR-0019 §6).
 - **Recurrent state is never quantized** by this knob.
+- **A latent under `K8V4` is stored as `Q8`.** `K8V4` is defined by K and V planes. An entry that is one latent shared by K and V (`latent: true`, §2: an MLA latent, a DSA-class indexer's main cache over MLA, a V4-class compressed entry) has no V plane to put at 4 bits, so under `K8V4` it is quantized, stored and sized as `Q8 { block }` with the same block. The solver does not refuse `K8V4` on such layers. A latent-specific split, such as the RoPE key at 4 bits, waits for a measurement of its cost.
+
+*Settled 2026-10-30 (OQ-IO-30, option (a), taken under the maintainers' standing instruction of 2026-10-22, 2026-10-30):* the rule above. It sizes nothing a kernel cannot store, and `manifest::kv` already sizes a latent this way (§2, note of 2026-10-28). TIER-E7-T14 builds the storage.
 
 ### 10. KV migration and export
 

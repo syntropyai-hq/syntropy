@@ -302,8 +302,11 @@ fn runner_msgs() -> Vec<RunnerMsg> {
             ),
             sidecar: Blake3([0x5c; 32]),
         },
+        RunnerMsg::ProbeResult {
+            profile: probe_profile(),
+        },
     ]);
-    let mut seen = [false; 6];
+    let mut seen = [false; 7];
     for msg in &all {
         seen[match msg {
             RunnerMsg::Hello(_) => 0,
@@ -312,6 +315,7 @@ fn runner_msgs() -> Vec<RunnerMsg> {
             RunnerMsg::SequenceEnded { .. } => 3,
             RunnerMsg::FetchShard { .. } => 4,
             RunnerMsg::PackCommitted { .. } => 5,
+            RunnerMsg::ProbeResult { .. } => 6,
         }] = true;
     }
     assert!(
@@ -319,6 +323,19 @@ fn runner_msgs() -> Vec<RunnerMsg> {
         "a RunnerMsg variant has no fixture"
     );
     all
+}
+
+/// A probe's profile as a probe-mode process sends it: `node` and `version` unset, for the
+/// daemon to stamp, and no devices measured yet (PLC-E1-T07 adds them).
+fn probe_profile() -> syntropy_core::resource::CapabilityProfile {
+    syntropy_core::resource::CapabilityProfile {
+        node: NodeId([0; 32]),
+        version: 0,
+        devices: vec![],
+        storage: vec![],
+        links: vec![],
+        ext: Default::default(),
+    }
 }
 
 /// A shard of three groups and two chunks, its digest a stand-in: `ipc` links no BLAKE3, and
@@ -423,6 +440,7 @@ fn the_lifecycle_messages_are_appended_and_bump_the_minor() {
         ("SequenceEnded", 3),
         ("FetchShard", 4),
         ("PackCommitted", 5),
+        ("ProbeResult", 6),
     ];
     for msg in runner_msgs() {
         let name = format!("{msg:?}");
@@ -432,7 +450,43 @@ fn the_lifecycle_messages_are_appended_and_bump_the_minor() {
             .expect("a known variant");
         assert_eq!(runner(&msg), *want, "{name}");
     }
-    assert_eq!(PROTOCOL, IpcProtocol { major: 5, minor: 0 });
+    assert_eq!(PROTOCOL, IpcProtocol { major: 7, minor: 0 });
+}
+
+/// Why 6.0 is a major bump: a 5.x daemon's `RunnerMsg` ends at `PackCommitted`, so it refuses
+/// `ProbeResult`, which a 6.0 probe-mode process sends. The messages it knows still read as
+/// themselves.
+#[test]
+fn a_5_x_daemon_cannot_read_the_message_6_0_appends() {
+    #[derive(Debug, Deserialize)]
+    #[allow(dead_code, reason = "only whether it decodes matters")]
+    enum RunnerMsgV5 {
+        Hello(Hello),
+        StateChanged {
+            state: RunnerState,
+            epoch: PlanEpoch,
+        },
+        Pong,
+        SequenceEnded {
+            seq: SequenceId,
+            outcome: SequenceOutcome,
+        },
+        FetchShard {
+            spec: ShardSpec,
+            priority: FetchPriority,
+        },
+        PackCommitted {
+            key: PackKey,
+            sidecar: Blake3,
+        },
+    }
+    for msg in runner_msgs() {
+        let bytes = postcard::to_allocvec(&msg).unwrap();
+        let old = postcard::from_bytes::<RunnerMsgV5>(&bytes);
+        let appended = matches!(msg, RunnerMsg::ProbeResult { .. });
+        assert_eq!(old.is_err(), appended, "{msg:?}");
+    }
+    assert_ne!(PROTOCOL.major, 5);
 }
 
 /// Why 5.0 is a major bump: a 4.x daemon's `RunnerMsg` ends at `SequenceEnded`, so it refuses
@@ -459,7 +513,9 @@ fn a_4_x_daemon_cannot_read_the_messages_5_0_appends() {
         let old = postcard::from_bytes::<RunnerMsgV4>(&bytes);
         let appended = matches!(
             msg,
-            RunnerMsg::FetchShard { .. } | RunnerMsg::PackCommitted { .. }
+            RunnerMsg::FetchShard { .. }
+                | RunnerMsg::PackCommitted { .. }
+                | RunnerMsg::ProbeResult { .. }
         );
         assert_eq!(old.is_err(), appended, "{msg:?}");
     }
@@ -1419,6 +1475,20 @@ mod unix {
     /// A listener of either kind, as the stale-socket cases bind it.
     pub(super) type Bind<'a> = &'a dyn Fn(&Endpoint) -> std::io::Result<Box<dyn Any>>;
 
+    /// Held while a test creates sockets whose liveness it asserts, and while a test spawns a
+    /// process. On Apple platforms std sets close-on-exec on a new socket only after `socket()`
+    /// returns, so a process another test thread spawns in that instant inherits the socket and
+    /// keeps it open past its `exec`. A "stale" socket a child holds is a live listener, and the
+    /// takeover rightly refuses it: the macOS failure of #1972's hosted run, job 123735904097.
+    pub(super) static FORK_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Takes [`FORK_GUARD`], whether or not a test that held it panicked.
+    pub(super) fn fork_guard() -> std::sync::MutexGuard<'static, ()> {
+        FORK_GUARD
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     /// The error of a bind that must fail; `what` names what a success would mean.
     fn refused(result: std::io::Result<Box<dyn Any>>, what: &str) -> std::io::Error {
         match result {
@@ -1433,6 +1503,8 @@ mod unix {
     /// - a live listener's socket keeps the bind failing with `AddrInUse`, and stays;
     /// - a regular file, and a link to a stale socket, are left in place and the bind fails.
     pub(super) fn stale_socket_cases(bind: Bind<'_>) {
+        // No process is spawned while these sockets exist (`FORK_GUARD`).
+        let _guard = fork_guard();
         // 1. A stale socket: a std listener dropped without removing its file.
         let endpoint = endpoint();
         let path = socket_path(&endpoint).to_owned();

@@ -3,26 +3,32 @@
 //! Serde round trips of the provider data types (COMP-E1-T01, RFC-0040 §2.2).
 //!
 //! Every data type goes through JSON and back unchanged. JSON stands in for any
-//! self-describing format; the property is serde's, not the format's. `ProviderId` and
-//! `ProviderBuild` hold `&'static str`, so they decode only from input that lives for the
-//! whole program and holds the name unescaped; the helper leaks each encoding to give it that
-//! lifetime.
+//! self-describing format; the property is serde's, not the format's. Each decode reads a
+//! buffer that is dropped afterwards, through `DeserializeOwned`, so no type needs input that
+//! lives for the whole program: `ProviderId` and `ProviderBuild`'s names are owned when decoded
+//! (COMP-E13-T15).
 
+use std::borrow::Cow;
 use std::fmt::Debug;
 
 use proptest::prelude::*;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
+use serde::de::DeserializeOwned;
 use smallvec::SmallVec;
 use syntropy_core::resource::{AppleGpuFamily, DeviceKind, GgmlBackend, PciAddress};
-use syntropy_core::{Blake3, Bytes, ErrorClass};
+use syntropy_core::{Blake3, Bytes, Domain, ErrorClass};
 use syntropy_kernels::*;
 
+/// Encodes `value`, decodes it from a buffer that is dropped before the comparison, and checks
+/// the two are equal. `DeserializeOwned` admits no type that borrows from its input, so every
+/// type here decodes with no `'static` input (COMP-E13-T15).
 fn round_trip<T>(value: &T) -> Result<(), TestCaseError>
 where
-    T: Serialize + Deserialize<'static> + PartialEq + Debug,
+    T: Serialize + DeserializeOwned + PartialEq + Debug,
 {
-    let json: &'static str = String::leak(serde_json::to_string(value).expect("encodes"));
-    let back: T = serde_json::from_str(json).expect("decodes");
+    let json = serde_json::to_string(value).expect("encodes");
+    let back: T = serde_json::from_str(&json).expect("decodes");
+    drop(json);
     prop_assert_eq!(&back, value);
     Ok(())
 }
@@ -37,30 +43,20 @@ fn text() -> impl Strategy<Value = String> {
     .prop_map(|c| c.into_iter().collect())
 }
 
-/// Names as providers and toolchains spell them. A borrowed `&str` cannot hold a JSON escape
-/// sequence, so these draw from characters JSON writes as themselves; a name with a quote or
-/// a backslash does not decode (`static_names_with_escapes_do_not_decode`).
-fn static_text() -> impl Strategy<Value = &'static str> {
-    prop::collection::vec(
-        prop::sample::select(vec!['a', 'Z', '0', '-', '.', '_', ' ', 'é']),
-        0..12,
-    )
-    .prop_map(|c| &*String::leak(c.into_iter().collect()))
-}
-
 fn bytes() -> impl Strategy<Value = Bytes> {
     any::<u64>().prop_map(Bytes)
 }
 
+/// A name of any text, quotes and backslashes included: names decode owned (COMP-E13-T15).
 fn provider_id() -> impl Strategy<Value = ProviderId> {
-    static_text().prop_map(ProviderId)
+    text().prop_map(|name| ProviderId(name.into()))
 }
 
 fn provider_build() -> impl Strategy<Value = ProviderBuild> {
     (
         any::<u32>(),
         proptest::option::of(any::<[u8; 32]>().prop_map(Blake3)),
-        prop::collection::vec((static_text(), text()), 0..5),
+        prop::collection::vec((text().prop_map(Cow::Owned), text()), 0..5),
         proptest::option::of(text()),
     )
         .prop_map(|(version, module, toolchain, driver)| ProviderBuild {
@@ -278,8 +274,11 @@ fn throttle_reason() -> impl Strategy<Value = ThrottleReason> {
     ]
 }
 
+/// A code of any domain, not only `Kernels`: a `Sticky` health and an `Error` carry another
+/// domain's code unchanged (COMP-E13-T15).
 fn error_code() -> impl Strategy<Value = ErrorCode> {
-    any::<u16>().prop_map(ErrorCode)
+    (prop::sample::select(Domain::ALL.to_vec()), any::<u16>())
+        .prop_map(|(domain, code)| ErrorCode::new(domain, code))
 }
 
 fn device_health() -> impl Strategy<Value = DeviceHealth> {
@@ -347,11 +346,8 @@ fn error_class() -> impl Strategy<Value = ErrorClass> {
 }
 
 fn error() -> impl Strategy<Value = Error> {
-    (error_class(), error_code(), text()).prop_map(|(class, code, message)| Error {
-        class,
-        code,
-        message,
-    })
+    (error_class(), error_code(), text())
+        .prop_map(|(class, code, message)| Error::new(class, code, message))
 }
 
 // ---- Properties -------------------------------------------------------------------------
@@ -440,13 +436,29 @@ fn host_reg_flag_bits() {
     assert_eq!(HostRegFlags::MAPPED.bits(), 2);
 }
 
-/// The limit of a `&'static str` name: an encoding that must escape it cannot be borrowed,
-/// so decoding fails rather than producing a different name.
+/// A provider name and a toolchain key decode from a buffer that is dropped afterwards, an
+/// escaped one included, with no `'static` input (COMP-E13-T15; RFC-0040 §2.2, note of
+/// 2026-10-23). `from_owned` takes only `DeserializeOwned`, so a type that borrowed from its
+/// input would not compile here.
 #[test]
-fn static_names_with_escapes_do_not_decode() {
-    let json = serde_json::to_string(&ProviderId("a\"b")).expect("encodes");
-    let json: &'static str = String::leak(json);
-    assert!(serde_json::from_str::<ProviderId>(json).is_err());
+fn names_decode_owned_from_a_dropped_buffer() {
+    fn from_owned<T: serde::de::DeserializeOwned>(json: String) -> T {
+        let value = serde_json::from_str(&json).expect("decodes");
+        drop(json);
+        value
+    }
+    let id = ProviderId::new("a\"b");
+    let decoded: ProviderId = from_owned(serde_json::to_string(&id).expect("encodes"));
+    assert_eq!(decoded, id);
+    assert!(matches!(decoded.0, std::borrow::Cow::Owned(_)));
+    let build = ProviderBuild {
+        version: 3,
+        module: None,
+        toolchain: SmallVec::from_iter([("nv\"cc".into(), String::from("13.4"))]),
+        driver: None,
+    };
+    let decoded: ProviderBuild = from_owned(serde_json::to_string(&build).expect("encodes"));
+    assert_eq!(decoded, build);
 }
 
 // ---- One type each (ADR-0405 decision 1) ----------------------------------------------

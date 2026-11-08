@@ -11,7 +11,8 @@
 use syntropy_api::pipeline::{
     ApiError, ApiShape, ClientGone, ClientMeta, ClientWatch, Detokenize, EventSink, GenEvent,
     GenerateRequest, Ingress, Input, ModelInfo, ModelRef, Outcome, Progress, Route,
-    SamplingRequest, SequenceIdMinter, Stages, StopMatch, StopReason, StopStep, StreamMode, Usage,
+    SamplingRequest, SequenceIdMinter, Stages, StopMatch, StopReason, StopStep, StreamMode,
+    TailChannels, Usage,
 };
 use syntropy_core::{
     CancelReason, FinishReason, InstanceId, Nanos, NodeId, PlanEpoch, SequenceControl,
@@ -21,6 +22,8 @@ use syntropy_testkit::sim::{SimClock, SimEntropy};
 
 const NODE: NodeId = NodeId([6; 32]);
 const CONTEXT: u32 = 64;
+/// The fake model's `vocab_limit`: one past the last token of [`VOCAB`].
+const VOCAB_LIMIT: u32 = VOCAB.len() as u32;
 
 /// Token `t`'s text.
 const VOCAB: [&str; 10] = [
@@ -35,6 +38,7 @@ impl Stages for FakeStages {
             "m" => Ok(ModelInfo {
                 name: "m".to_owned(),
                 context_length: CONTEXT,
+                vocab_limit: VOCAB_LIMIT,
             }),
             other => Err(ApiError::ModelNotFound(other.to_owned())),
         }
@@ -53,6 +57,7 @@ impl Stages for FakeStages {
             epoch: PlanEpoch { term: 1, seq: 1 },
             prefill_chunk: 0,
             initial_window: None,
+            tail: TailChannels::default(),
         })
     }
 
@@ -478,6 +483,69 @@ fn tokens_after_a_matched_stop_are_discarded_and_not_counted() {
     assert_eq!(ingress.stray_entries(), 0);
 }
 
+/// With `return_tokens` (PROD-E4-T13), each entry's counted tokens follow its text in one
+/// `Tokens` event, and a matched stop string cuts them where it cuts the count: the tokens in the
+/// events add up to the usage. Off, no `Tokens` event is sent.
+#[test]
+fn returned_tokens_add_up_to_the_usage_even_past_a_stop() {
+    for on in [true, false] {
+        let world = World::new();
+        let handle = world.clock.handle();
+        let ingress = Ingress::new(
+            world.region.daemon(),
+            &world.minter,
+            &FakeStages,
+            &handle,
+            &world.entropy,
+        )
+        .unwrap();
+        let mut runner = FakeRunner::new(
+            world.region.runner(),
+            Script::new().otherwise(Stream::new().tokens([1, 2]).window([3, 4, 5, 6])),
+        )
+        .unwrap();
+        let mut generation = ingress
+            .start(&request(vec![9], &[" world"]), ClientWatch::default())
+            .unwrap();
+        generation.return_tokens(on);
+        let mut sink = Sink::default();
+        runner.run_until_idle(10).unwrap();
+        while generation.poll(&mut sink) == Progress::Pending {
+            runner.step().unwrap();
+        }
+        let returned: Vec<Vec<u32>> = sink
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                GenEvent::Tokens { tokens, .. } => Some(tokens.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            sink.finished().map(|(_, usage)| usage.completion_tokens),
+            Some(4)
+        );
+        if on {
+            assert_eq!(returned, [vec![1], vec![2], vec![3, 4]]);
+            // Each `Tokens` event comes after the text its tokens released.
+            let last_text = sink
+                .events
+                .iter()
+                .rposition(|e| matches!(e, GenEvent::TextDelta { .. }))
+                .unwrap();
+            let last_tokens = sink
+                .events
+                .iter()
+                .rposition(|e| matches!(e, GenEvent::Tokens { .. }))
+                .unwrap();
+            assert!(last_text < last_tokens);
+        } else {
+            assert!(returned.is_empty());
+        }
+        assert_eq!(sink.text(), "Hello");
+    }
+}
+
 /// A stop string that ends in the middle of a token: the token is counted, its text after the
 /// stop is not delivered, and the stop matcher's hold-back keeps a partial match out of the
 /// stream until it fails.
@@ -667,6 +735,89 @@ fn the_open_carries_the_request() {
     assert_eq!(second.sampling.seed, drawn.seed());
     assert_eq!(second.choice_index, None);
     assert_eq!(second.limits.max_tokens, CONTEXT - 1);
+}
+
+/// [`FakeStages`] with the route's tail on other nodes, its channels to the ingress and to the
+/// head with these capabilities.
+struct RemoteTail(TailChannels);
+
+impl Stages for RemoteTail {
+    fn resolve_model(&self, model: &ModelRef) -> Result<ModelInfo, ApiError> {
+        FakeStages.resolve_model(model)
+    }
+
+    fn tokenize(&self, model: &ModelInfo, input: &Input, raw: bool) -> Result<Vec<u32>, ApiError> {
+        FakeStages.tokenize(model, input, raw)
+    }
+
+    fn route(&self, model: &ModelInfo, prompt: &[u32], need: u64) -> Result<Route, ApiError> {
+        Ok(Route {
+            tail: self.0,
+            ..FakeStages.route(model, prompt, need)?
+        })
+    }
+
+    fn admit(&self, route: &Route, prompt_tokens: u32, max_tokens: u32) -> Result<(), ApiError> {
+        FakeStages.admit(route, prompt_tokens, max_tokens)
+    }
+
+    fn detokenizer(&self, model: &ModelInfo) -> Box<dyn Detokenize> {
+        FakeStages.detokenizer(model)
+    }
+
+    fn stop_matcher(&self, stops: &[String]) -> Box<dyn StopMatch> {
+        FakeStages.stop_matcher(stops)
+    }
+}
+
+/// DIST-E8-T18: stage 9 asks the tail for the chosen tokens' logprobs alone (`Some(0)`) only
+/// when the tail's channels to the ingress and to the head both negotiated capability bit 16
+/// `CHOSEN_LOGPROBS`, or do not cross `net`. With the bit missing at the ingress only, or at the
+/// head only, it asks for one alternative (RFC-0050 §3.1). Other requests go as they came.
+#[test]
+fn the_open_asks_for_chosen_logprobs_only_where_both_channels_carry_them() {
+    let bit = syntropy_net::frame::capability::CHOSEN_LOGPROBS;
+    let remote = |to_ingress, to_head| TailChannels {
+        to_ingress: Some(to_ingress),
+        to_head: Some(to_head),
+    };
+    let cases = [
+        ("in process", TailChannels::default(), Some(0), Some(0)),
+        ("both channels", remote(bit, bit), Some(0), Some(0)),
+        (
+            "missing at the ingress",
+            remote(!bit, bit),
+            Some(0),
+            Some(1),
+        ),
+        ("missing at the head", remote(bit, !bit), Some(0), Some(1)),
+        ("alternatives", remote(0, 0), Some(3), Some(3)),
+        ("no logprobs", remote(0, 0), None, None),
+    ];
+    for (name, tail, requested, asked) in cases {
+        let world = World::new();
+        let handle = world.clock.handle();
+        let stages = RemoteTail(tail);
+        let ingress = Ingress::new(
+            world.region.daemon(),
+            &world.minter,
+            &stages,
+            &handle,
+            &world.entropy,
+        )
+        .unwrap();
+        let mut runner = FakeRunner::new(world.region.runner(), Script::new()).unwrap();
+        let mut req = request(vec![4], &[]);
+        req.logprobs = requested;
+        let _generation = ingress.start(&req, ClientWatch::default()).unwrap();
+        runner.step().unwrap();
+        match runner.log() {
+            [SequenceControl::Open(open)] => {
+                assert_eq!(open.sampling.logprobs, asked, "{name}");
+            }
+            other => panic!("{name}: {other:?}"),
+        }
+    }
 }
 
 /// `Started` comes first, with the route and the prompt length; `Finished` carries the times on

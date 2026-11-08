@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+#
+# The GPU architectures each build profile compiles kernels for (RFC-0062 §4.3; QUAL-E16-T24).
+# Kernel compile time grows with the number of architectures, so the `pr` profile compiles only
+# what the lab can test. `lint`'s `toolchains` step checks that this file parses. The kernel build
+# scripts are planned to read their architecture lists from it (COMP-E9-T02).
+#
+# Each profile lists:
+# - `cuda_sass`: the CUDA architectures to build SASS for, as `nvcc` names them (`sm_<n>`, with an
+#   `a` or `f` suffix for an architecture-specific or family-specific variant);
+# - `cuda_ptx`: the virtual architectures to embed PTX for (`compute_<n>`), for forward
+#   compatibility.
+
+format = 1
+
+# M0: the M0 rig only, R-ADA (Ada, `sm_89`; RFC-0062 §4.3). No PTX, because a PR build is tested
+# only on the rigs. QUAL-E16-T06 adds R-BW's `sm_120` and its family variants in M1, and the
+# `nightly` and `release` sets.
+[profile.pr]
+cuda_sass = ["sm_89"]
+cuda_ptx = []

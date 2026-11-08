@@ -1,78 +1,26 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! The error the [`KernelProvider`](crate::KernelProvider) methods return.
+//! The error the [`KernelProvider`](crate::KernelProvider) methods return: `core`'s
+//! [`Error`], RFC-0001 §5.12's one error type for every fallible interface (COMP-E13-T15).
 //!
-//! RFC-0001 §5.12 defines one `Error` struct in `core` for every fallible interface, with an
-//! `ErrorCode` of `(Domain, u16)`. `core` has [`ErrorClass`] but not that struct yet, so this
-//! module holds the smallest stand-in the trait needs: a class, a code in the `Kernels`
-//! domain, and a message. It gives way to `core`'s `Error` when that type is built; no task
-//! builds it yet, and issue #1525 (item 2) asks for one. Raising each code of RFC-0040 §13 is
+//! A provider's own failures carry codes of the `Kernels` domain, RFC-0040 §13's codes 1–17,
+//! which [`codes`] lists. An `Error` may also carry a code of another domain, such as an
+//! `Exec` or `Net` code; nothing here narrows it. Raising each code of RFC-0040 §13 is
 //! COMP-E1-T08's work.
 
-use std::fmt;
-
-use serde::{Deserialize, Serialize};
 use syntropy_core::ErrorClass;
-
-/// A code in the `Kernels` domain: the `n` of RFC-0040 §13's `(Domain::Kernels, n)`. Codes
-/// are never reused (RFC-0001 §10.4).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct ErrorCode(pub u16);
-
-impl ErrorCode {
-    /// `OpUnsupported` (RFC-0040 §13 code 1): what [`unsupported`] carries.
-    pub const OP_UNSUPPORTED: Self = Self(1);
-    /// `DeviceSticky` (RFC-0040 §13 code 8): a sticky device error. The runner exits, and the
-    /// supervisor restarts it.
-    pub const DEVICE_STICKY: Self = Self(8);
-    /// `AllocFailed` (RFC-0040 §13 code 9): `alloc`, `map_segment` or `import` failed.
-    pub const ALLOC_FAILED: Self = Self(9);
-    /// `ProviderPanicked` (RFC-0040 §13 code 16): a provider-library thunk caught a panic
-    /// (§10.4). The provider then reports `Sticky`, and the runner exits and restarts.
-    pub const PROVIDER_PANICKED: Self = Self(16);
-    /// `AmxDenied` (RFC-0040 §13 code 13): the OS refused AMX tile permission to a process
-    /// opening a device whose class is `X86V4Amx` (RFC-0040 §7.3; ADR-0405 decision 3).
-    pub const AMX_DENIED: Self = Self(13);
-    /// `WorkspaceExceeded` (RFC-0040 §13 code 14): a prepared op asks for more workspace than
-    /// `query` declared ([`PreparedOp::check_workspace`](crate::PreparedOp::check_workspace)).
-    pub const WORKSPACE_EXCEEDED: Self = Self(14);
-}
-
-/// A failure of a provider call (RFC-0001 §5.12; codes in RFC-0040 §13).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Error {
-    /// What kind of failure it is; RFC-0001 §10 says what each class triggers.
-    pub class: ErrorClass,
-    /// Stable, machine-readable code in the `Kernels` domain.
-    pub code: ErrorCode,
-    /// For people; never parsed.
-    pub message: String,
-}
-
-/// Shows the message, then the class and the code, e.g.
-/// `not supported by this provider (Unsupported, Kernels 1)`.
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{} ({:?}, Kernels {})",
-            self.message, self.class, self.code.0
-        )
-    }
-}
-
-impl std::error::Error for Error {}
+pub use syntropy_core::error::codes::kernels as codes;
+pub use syntropy_core::{Error, ErrorCode};
 
 /// The error a default method body returns when the provider does not implement it:
 /// class `Unsupported`, code `(Kernels, 1)` (RFC-0040 §2.1).
 #[must_use]
 pub fn unsupported() -> Error {
-    Error {
-        class: ErrorClass::Unsupported,
-        code: ErrorCode::OP_UNSUPPORTED,
-        message: String::from("not supported by this provider"),
-    }
+    Error::new(
+        ErrorClass::Unsupported,
+        codes::OP_UNSUPPORTED,
+        "not supported by this provider",
+    )
 }
 
 #[cfg(test)]
@@ -83,9 +31,27 @@ mod tests {
     fn display_shows_message_class_and_code() {
         assert_eq!(
             unsupported().to_string(),
-            "not supported by this provider (Unsupported, Kernels 1)"
+            "not supported by this provider (Unsupported, Kernels 0x0001)"
         );
         let boxed: Box<dyn std::error::Error> = Box::new(unsupported());
         assert!(boxed.source().is_none());
+    }
+
+    /// `kernels`' `Error` and `ErrorCode` are `core`'s, not types of their own: a value of
+    /// either crate's name passes where the other's is expected (COMP-E13-T15). A compile-time
+    /// check; the assertion only uses the values.
+    #[test]
+    fn the_error_is_cores() {
+        fn to_core(
+            e: crate::Error,
+            c: crate::ErrorCode,
+        ) -> (syntropy_core::Error, syntropy_core::ErrorCode) {
+            (e, c)
+        }
+        fn from_core(e: syntropy_core::Error) -> crate::Error {
+            e
+        }
+        let (e, c) = to_core(unsupported(), codes::OP_UNSUPPORTED);
+        assert_eq!(from_core(e).code, c);
     }
 }

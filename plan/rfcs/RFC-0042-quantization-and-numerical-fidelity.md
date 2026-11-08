@@ -118,6 +118,12 @@ GGUF types are defined by ggml's own reference dequantisation for the pinned ggm
 
 `Q8_1` and `Q8_K` are activation-only types in ggml; Syntropy uses their layouts for activation blocks (§4.3) and never as weight schemes.
 
+*Note 2026-10-31 (COMP-E13-T02, as built):* `kernels::reference::dequant` reimplements ggml's dequantisation of `F16`, `BF16`, `Q8_0`, `Q4_0` and `Q4_K` in ggml's operation order; the other types are COMP-E13-T10's.
+- **The bit-for-bit check** is a test in `kernels-ggml`, the one crate that links ggml. `kernels` is layer 1 and cannot depend on it. The test compares the F32 bit patterns, so NaN payloads and signed zeros count, against the core's ggml build (contraction off, baseline ISA). It covers every F16 and BF16 value, the edge scales (zero, subnormal, largest, infinite, quiet and signalling NaN) with every code value and every `Q4_K` pairing of `d` and `dmin`, and random blocks.
+- **The geometry check** is in two parts. The byte counts of the decoded layouts are `const` assertions, so a mismatch with this table fails the build of `kernels`. `kernels-ggml`'s test checks this table for every type (it lives in `manifest`, `gguf::block_geometry`) against ggml's `ggml_blck_size` and `ggml_type_size`.
+- **Providers.** Of §6.4's providers for standalone dequantisation, only the ggml CPU core build exists yet. The CPU, CUDA, HIP, Metal and Vulkan providers' bit-exact runs are COMP-E13-T13's per-provider list.
+- **NaN scales.** ggml widens an F16 NaN to a quiet F32 NaN with its payload kept, and the reference does the same, so a NaN scale gives quiet NaNs. The exhaustive F16 test shows this on arm64. On x86-64, ggml's software conversion quiets the NaN when it multiplies by its exponent scale; that is read from the source and checked by the same test on the x86-64 Linux CI runner.
+
 #### 2.2 FP4: MXFP4 and NVFP4
 
 - **E2M1 element values:** ±{0, 0.5, 1, 1.5, 2, 3, 4, 6}. Every one is exact in FP16, BF16 and F32. Doubled, they are the integers ±{0, 1, 2, 3, 4, 6, 8, 12}, exact in INT8.

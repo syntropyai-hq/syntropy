@@ -4,7 +4,8 @@
 //! DIST-E1-T03 built the first set; DIST-E1-T15 appended `Drain`, `Shutdown`, `MemoryPressure`
 //! and `SequenceEnded`, whose field types it put in `core` (protocol 1.1). COMP-E10-T11
 //! appended `FetchShard` and `PackCommitted`, with `ShardSpec` and `PackKey` in `core`
-//! (protocol 5.0).
+//! (protocol 5.0). DIST-E1-T17 appended `ProbeResult`, with `CapabilityProfile` in `core`
+//! (protocol 6.0).
 //!
 //! The tasks that own the other messages' field types add those messages (RFC-0001 §3.5, note of
 //! 2026-10-23). Postcard writes a variant as its index and a struct's fields in order, with no
@@ -16,6 +17,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 use syntropy_core::ledger::LedgerGrant;
+use syntropy_core::resource::CapabilityProfile;
 use syntropy_core::runner::{Deadline, DrainReason};
 use syntropy_core::sequence::SequenceOutcome;
 use syntropy_core::{
@@ -158,6 +160,14 @@ pub enum RunnerMsg {
         key: PackKey,
         /// BLAKE3 of the sidecar file's bytes.
         sidecar: Blake3,
+    },
+    /// A probe's measurements (RFC-0001 §3.5). A probe-mode process sends it once, after
+    /// `Hello`, and exits (DIST-E1-T17). The probe leaves `profile.node` and `profile.version`
+    /// for the daemon to stamp: only the daemon knows its node and its profile's version. Added
+    /// with protocol 6.0.
+    ProbeResult {
+        /// What the probe measured.
+        profile: CapabilityProfile,
     },
 }
 

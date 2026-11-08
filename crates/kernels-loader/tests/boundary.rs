@@ -98,7 +98,7 @@ fn the_module_states_its_identity() {
     assert_eq!(p.build().version, 1);
     assert_eq!(
         p.build().toolchain.as_slice(),
-        [("rustc", "test".to_owned())]
+        [("rustc".into(), "test".to_owned())]
     );
     let ops: Vec<_> = p.ops().iter().cloned().collect();
     assert_eq!(ops.len(), 2);
@@ -156,7 +156,7 @@ fn a_long_error_message_is_fetched_whole_and_keeps_its_class_and_code() {
         .expect_err("the provider fails");
     common::clear("long_error");
     assert_eq!(error.class, ErrorClass::Capacity);
-    assert_eq!(error.code, ErrorCode::ALLOC_FAILED);
+    assert_eq!(error.code, syntropy_kernels::error::codes::ALLOC_FAILED);
     assert_eq!(error.message, "x".repeat(3000));
 }
 
@@ -446,7 +446,11 @@ fn a_missing_or_relative_path_is_module_missing() {
     ] {
         let error = Module::load(Path::new(path)).expect_err("cannot open").0;
         assert_eq!(error.class, ErrorClass::Unsupported);
-        assert_eq!(error.code, ErrorCode(2), "{error}");
+        assert_eq!(
+            error.code,
+            ErrorCode::new(syntropy_core::Domain::Kernels, 2),
+            "{error}"
+        );
     }
 }
 
@@ -475,7 +479,11 @@ fn a_library_without_the_entry_symbol_is_module_abi() {
     assert!(status.success(), "rustc failed to build the empty library");
     let error = Module::load(&lib).expect_err("no entry symbol").0;
     assert_eq!(error.class, ErrorClass::Unsupported);
-    assert_eq!(error.code, ErrorCode(4), "{error}");
+    assert_eq!(
+        error.code,
+        ErrorCode::new(syntropy_core::Domain::Kernels, 4),
+        "{error}"
+    );
     assert!(
         error.message.contains("syntropy_provider_entry_v1"),
         "{error}"

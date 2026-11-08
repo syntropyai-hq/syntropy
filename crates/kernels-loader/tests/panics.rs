@@ -27,7 +27,7 @@ use syntropy_kernels::{
 };
 use syntropy_kernels_loader::{Module, ModuleProvider};
 
-const PANICKED: ErrorCode = ErrorCode::PROVIDER_PANICKED;
+const PANICKED: ErrorCode = syntropy_kernels::error::codes::PROVIDER_PANICKED;
 
 fn options() -> OpenOptions {
     OpenOptions {
@@ -83,8 +83,9 @@ struct Fixture {
 
 /// How a method reports the panic.
 enum Reported {
-    /// An `Err` the call returned.
-    Error(Error),
+    /// An `Err` the call returned. Boxed, as `core::Error` is RFC-0001 §5.12's struct with its
+    /// fields inline.
+    Error(Box<Error>),
     /// Nothing the call returned; the provider's `fault` has it.
     Fault,
 }
@@ -140,7 +141,7 @@ fn inject(name: &str, call: impl FnOnce(&Fixture) -> Option<Result<(), Error>>) 
     let outcome = call(&fx);
     common::clear("panic_in");
     let reported = match outcome {
-        Some(Err(error)) => Reported::Error(error),
+        Some(Err(error)) => Reported::Error(Box::new(error)),
         Some(Ok(())) => panic!("{name}: the call succeeded after an injected panic"),
         None => Reported::Fault,
     };
@@ -157,7 +158,11 @@ fn inject(name: &str, call: impl FnOnce(&Fixture) -> Option<Result<(), Error>>) 
         fx.p.event(&fx.witness)
             .expect_err("a sticky provider refuses calls");
     assert_eq!(later.class, ErrorClass::Device, "{name}: {later}");
-    assert_eq!(later.code, ErrorCode::DEVICE_STICKY, "{name}: {later}");
+    assert_eq!(
+        later.code,
+        syntropy_kernels::error::codes::DEVICE_STICKY,
+        "{name}: {later}"
+    );
 }
 
 macro_rules! cases {
@@ -362,5 +367,5 @@ fn dropping_a_registrar_whose_destructor_panics_makes_the_provider_sticky() {
     let later = p
         .event(&witness)
         .expect_err("a sticky provider refuses calls");
-    assert_eq!(later.code, ErrorCode::DEVICE_STICKY);
+    assert_eq!(later.code, syntropy_kernels::error::codes::DEVICE_STICKY);
 }

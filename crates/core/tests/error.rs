@@ -73,6 +73,7 @@ fn code() -> impl Strategy<Value = ErrorCode> {
         Domain::Security,
         Domain::Kernels,
         Domain::Exec,
+        Domain::Tier,
     ];
     prop_oneof![
         (0..published.len()).prop_map(move |i| published[i]),

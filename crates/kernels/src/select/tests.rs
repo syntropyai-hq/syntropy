@@ -42,9 +42,14 @@ fn caps(op: &OpKind) -> OpCaps {
     }
 }
 
-fn cand(provider: &'static str, backend: Backend, domain: MemoryDomain, caps: OpCaps) -> Candidate {
+fn cand(
+    provider: impl Into<std::borrow::Cow<'static, str>>,
+    backend: Backend,
+    domain: MemoryDomain,
+    caps: OpCaps,
+) -> Candidate {
     Candidate {
-        provider: ProviderId(provider),
+        provider: ProviderId(provider.into()),
         backend,
         domain,
         variant: 0,
@@ -206,10 +211,6 @@ fn vendor(name: &str) -> Vendor {
     }
 }
 
-fn leak(s: &str) -> &'static str {
-    Box::leak(s.to_owned().into_boxed_str())
-}
-
 fn table_slot(op: &TableOp) -> OpSlot {
     let kind = op_kind(&op.op);
     let offers = op
@@ -226,7 +227,12 @@ fn table_slot(op: &TableOp) -> OpSlot {
                 Some(other) => panic!("table numerics {other} is not mapped"),
             }
             Offer {
-                candidate: cand(leak(&o.provider), backend(&o.backend), domain(&o.domain), c),
+                candidate: cand(
+                    o.provider.clone(),
+                    backend(&o.backend),
+                    domain(&o.domain),
+                    c,
+                ),
                 measurement: o.ns.map(|ns| Measurement {
                     measured: Nanos(ns),
                     breaks: o.breaks,
@@ -319,7 +325,7 @@ fn a_wrong_expectation_in_a_table_fails_the_replay() {
 #[test]
 fn a_challenger_2_9_percent_faster_loses() {
     let got = decide(&native_vs_ggml(100_000, 97_100)).unwrap();
-    assert_eq!(got.provider, ProviderId("cuda"));
+    assert_eq!(got.provider, ProviderId::new("cuda"));
     assert_eq!(got.basis, Basis::Incumbent(Incumbent::Native));
     assert_eq!(got.cost, Some(Nanos(100_000)));
 }
@@ -327,11 +333,11 @@ fn a_challenger_2_9_percent_faster_loses() {
 #[test]
 fn a_challenger_3_1_percent_faster_wins() {
     let got = decide(&native_vs_ggml(100_000, 96_900)).unwrap();
-    assert_eq!(got.provider, ProviderId("ggml-cuda"));
+    assert_eq!(got.provider, ProviderId::new("ggml-cuda"));
     assert_eq!(
         got.basis,
         Basis::Challenger {
-            replaced: (ProviderId("cuda"), 0)
+            replaced: (ProviderId::new("cuda"), 0)
         }
     );
     assert_eq!(got.cost, Some(Nanos(96_900)));
@@ -341,13 +347,13 @@ fn a_challenger_3_1_percent_faster_wins() {
 fn a_challenger_exactly_3_percent_faster_loses() {
     // RFC-0040 §6.4: the challenger must cost strictly less than 0.97 of the incumbent.
     let got = decide(&native_vs_ggml(100_000, 97_000)).unwrap();
-    assert_eq!(got.provider, ProviderId("cuda"));
+    assert_eq!(got.provider, ProviderId::new("cuda"));
 }
 
 #[test]
 fn equal_costs_go_to_native() {
     let got = decide(&native_vs_ggml(1000, 1000)).unwrap();
-    assert_eq!(got.provider, ProviderId("cuda"));
+    assert_eq!(got.provider, ProviderId::new("cuda"));
     assert!(got.native);
 }
 
@@ -370,7 +376,7 @@ fn two_ggml(a_ns: u64, b_ns: u64, cached: Option<&'static str>) -> OpSlot {
         measurement: measured(ns),
     };
     OpSlot {
-        cached: cached.map(|p| (ProviderId(p), 0)),
+        cached: cached.map(|p| (ProviderId::new(p), 0)),
         ..slot(OpKind::Gemv, vec![g("ggml-a", a_ns), g("ggml-b", b_ns)])
     }
 }
@@ -380,20 +386,20 @@ fn with_no_native_the_cached_choice_is_the_incumbent() {
     let terms = CostTerms::default();
     let d = MemoryDomain::Vulkan;
     let kept = decide_op(&two_ggml(980, 1000, Some("ggml-b")), 0, d, false, &terms).unwrap();
-    assert_eq!(kept.provider, ProviderId("ggml-b"));
+    assert_eq!(kept.provider, ProviderId::new("ggml-b"));
     assert_eq!(kept.basis, Basis::Incumbent(Incumbent::Cached));
     let replaced = decide_op(&two_ggml(960, 1000, Some("ggml-b")), 0, d, false, &terms).unwrap();
-    assert_eq!(replaced.provider, ProviderId("ggml-a"));
+    assert_eq!(replaced.provider, ProviderId::new("ggml-a"));
     // A cached choice that is no longer offered is ignored.
     let cheapest = decide_op(&two_ggml(990, 1000, Some("gone")), 0, d, false, &terms).unwrap();
-    assert_eq!(cheapest.provider, ProviderId("ggml-a"));
+    assert_eq!(cheapest.provider, ProviderId::new("ggml-a"));
     assert_eq!(cheapest.basis, Basis::Incumbent(Incumbent::Cheapest));
 }
 
 #[test]
 fn a_cached_choice_does_not_override_native() {
     let mut op = native_vs_ggml(1000, 980);
-    op.cached = Some((ProviderId("ggml-cuda"), 0));
+    op.cached = Some((ProviderId::new("ggml-cuda"), 0));
     let got = decide(&op).unwrap();
     assert_eq!(got.basis, Basis::Incumbent(Incumbent::Native));
 }
@@ -432,7 +438,7 @@ fn a_forced_break_can_cost_native_its_place() {
     op.offers[0].candidate.caps.as_mut().unwrap().capture_safe = false;
     op.offers[0].measurement.as_mut().unwrap().breaks = 1;
     let got = decide_op(&op, 0, MemoryDomain::Cuda, false, &terms).unwrap();
-    assert_eq!(got.provider, ProviderId("ggml-cuda"));
+    assert_eq!(got.provider, ProviderId::new("ggml-cuda"));
     assert_eq!(got.cost, Some(Nanos(12_000)));
 }
 
@@ -458,14 +464,17 @@ fn the_filter_applies_each_condition() {
 
     let other = Candidate {
         domain: MemoryDomain::Vulkan,
-        ..good
+        ..good.clone()
     };
     assert_eq!(
         admit(&k, &r, &ActContext::default(), &other),
         Err(Rejection::OtherDomain(MemoryDomain::Vulkan))
     );
 
-    let none = Candidate { caps: None, ..good };
+    let none = Candidate {
+        caps: None,
+        ..good.clone()
+    };
     assert_eq!(
         admit(&k, &r, &ActContext::default(), &none),
         Err(Rejection::NoQuery)
@@ -475,7 +484,7 @@ fn the_filter_applies_each_condition() {
     bad.numerics.out = DType::F16;
     let bad = Candidate {
         caps: Some(bad),
-        ..good
+        ..good.clone()
     };
     assert_eq!(
         admit(&k, &r, &ActContext::default(), &bad),
@@ -486,7 +495,7 @@ fn the_filter_applies_each_condition() {
     repacked.layout = LayoutVersion(7);
     let repacked = Candidate {
         caps: Some(repacked),
-        ..good
+        ..good.clone()
     };
     assert_eq!(
         admit(&k, &r, &ActContext::default(), &repacked),
@@ -502,7 +511,7 @@ fn the_filter_applies_each_condition() {
     nondet.deterministic = false;
     let nondet = Candidate {
         caps: Some(nondet),
-        ..good
+        ..good.clone()
     };
     assert_eq!(
         admit(&k, &r, &ActContext::default(), &nondet),
@@ -612,7 +621,7 @@ fn an_uncertified_undeclared_fp8_kernel_is_never_selected() {
     assert_eq!(
         decide(&alone).unwrap_err().rejections,
         vec![(
-            ProviderId("cuda"),
+            ProviderId::new("cuda"),
             1,
             Rejection::Activation(ActViolation::Uncertified(dynamic))
         )]
@@ -653,7 +662,7 @@ fn a_kernel_that_skips_declared_quantisation_is_never_selected() {
     assert_eq!(
         decide(&w8a16).unwrap_err().rejections,
         vec![(
-            ProviderId("cuda"),
+            ProviderId::new("cuda"),
             2,
             Rejection::Activation(ActViolation::NotDeclared {
                 declared: dynamic,
@@ -691,14 +700,14 @@ fn an_op_with_no_candidate_is_unsupported() {
     assert_eq!(
         err.rejections,
         vec![
-            (ProviderId("alpha"), 0, Rejection::NoQuery),
-            (ProviderId("zeta"), 0, Rejection::NotDeterministic),
+            (ProviderId::new("alpha"), 0, Rejection::NoQuery),
+            (ProviderId::new("zeta"), 0, Rejection::NotDeterministic),
         ]
     );
     let msg = err.to_string();
     assert!(msg.contains("alpha#0: query returned None"), "{msg}");
     let e = Error::from(err);
-    assert_eq!(e.code, ErrorCode::OP_UNSUPPORTED);
+    assert_eq!(e.code, crate::error::codes::OP_UNSUPPORTED);
     assert_eq!(e.class, ErrorClass::Unsupported);
 
     let empty = slot(OpKind::Gemv, Vec::new());
@@ -742,14 +751,14 @@ fn without_a_full_benchmark_the_estimates_decide() {
     op.offers[0].candidate.caps.as_mut().unwrap().est = Some(Nanos(900));
     op.offers[1].candidate.caps.as_mut().unwrap().est = Some(Nanos(800));
     let got = decide(&op).unwrap();
-    assert_eq!(got.provider, ProviderId("ggml-cuda"));
+    assert_eq!(got.provider, ProviderId::new("ggml-cuda"));
     assert_eq!((got.basis, got.cost), (Basis::Estimate, None));
 
     // A missing estimate sorts last; equal estimates go to native.
     op.offers[1].candidate.caps.as_mut().unwrap().est = None;
-    assert_eq!(decide(&op).unwrap().provider, ProviderId("cuda"));
+    assert_eq!(decide(&op).unwrap().provider, ProviderId::new("cuda"));
     op.offers[1].candidate.caps.as_mut().unwrap().est = Some(Nanos(900));
-    assert_eq!(decide(&op).unwrap().provider, ProviderId("cuda"));
+    assert_eq!(decide(&op).unwrap().provider, ProviderId::new("cuda"));
 }
 
 /// A program of `n` Gemv slots in `domain`, each offered by one native provider: the first
@@ -1053,11 +1062,11 @@ proptest! {
         let mut seen = std::collections::BTreeSet::new();
         let offers: Vec<_> = offers
             .into_iter()
-            .filter(|o| seen.insert((o.candidate.provider, o.candidate.variant)))
+            .filter(|o| seen.insert((o.candidate.provider.clone(), o.candidate.variant)))
             .collect();
         let terms = CostTerms { t_submit: Nanos(300), t_fence: Nanos(70) };
         let op = OpSlot {
-            cached: cached.map(|(p, v)| (ProviderId(PROVIDERS[p].0), v)),
+            cached: cached.map(|(p, v)| (ProviderId::new(PROVIDERS[p].0), v)),
             ..slot(OpKind::Gemv, offers)
         };
         let first = decide_op(&op, 0, MemoryDomain::Cuda, deterministic, &terms);
@@ -1084,8 +1093,8 @@ proptest! {
                 .expect("chosen from the offers");
             let req = Requirements { domain: MemoryDomain::Cuda, layout: op.layout, deterministic };
             prop_assert!(admit(&op.key, &req, &op.act, &offer.candidate).is_ok());
-            if let Basis::Challenger { replaced } = choice.basis {
-                let inc = op.offers.iter().find(|o| (o.candidate.provider, o.candidate.variant) == replaced).unwrap();
+            if let Basis::Challenger { replaced } = &choice.basis {
+                let inc = op.offers.iter().find(|o| (o.candidate.provider.clone(), o.candidate.variant) == *replaced).unwrap();
                 let inc_cost = inc.measurement.unwrap().cost(inc.candidate.caps.unwrap().capture_safe, &terms);
                 prop_assert!(u128::from(choice.cost.unwrap().0) * 100 < u128::from(inc_cost.0) * 97);
             }

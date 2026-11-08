@@ -50,6 +50,7 @@ mod run;
 mod runner_build_id;
 mod sim_presets;
 mod toolchain;
+mod toolchains;
 mod workflows;
 
 use std::ffi::OsString;

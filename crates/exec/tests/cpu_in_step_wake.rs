@@ -14,6 +14,11 @@
 //! predicted 100 ms out, far past the real 10 ms, so a park that a wake did not end would show
 //! as a timed-out park of about 100 ms. Every park must instead end with the wake.
 
+#![allow(
+    clippy::result_large_err,
+    reason = "core::Error is RFC-0001 §5.12's struct, 344 B inline [measured: size_of, debug, x86-64 Linux, ce2044ae] (COMP-E13-T15)"
+)]
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread;
@@ -28,14 +33,14 @@ use syntropy_kernels::{
     CapturedGraph, DeviceCtx, Error, HostFlag, HostWaker, KernelProvider, OpArgs, OpKey, OpKind,
     OpenOptions, PowerHint, ShapeClass, ShapeSig, Stream, StreamPlan, StreamPriority,
 };
-use syntropy_kernels_cpu::{CpuProvider, CpuWaker, Doorbells, KillSwitches, Parked, Run};
+use syntropy_kernels_cpu::{CpuProvider, CpuWaker, Doorbells, KillSwitches, Launch, Parked, Run};
 use syntropy_spsc::{Arm, Consumer, PopError, Producer};
 
 const LAYERS: u32 = 3;
 const STEPS: u32 = 3;
 
 /// The CPU segment of one MoE layer: 10 ms of the calling thread.
-fn moe_cpu_segment(_: &OpArgs<'_>) -> Result<(), Error> {
+fn moe_cpu_segment(_: &Launch<'_>) -> Result<(), Error> {
     thread::sleep(Duration::from_millis(10));
     Ok(())
 }
@@ -206,7 +211,9 @@ fn a_10ms_cpu_segment_per_layer_wakes_the_parked_dispatcher_every_time() {
         },
         doorbell_slots: 8,
         capture: true,
-        deterministic: true,
+        // Stand-in kernels declare no capabilities, which a device opened deterministic
+        // refuses (RFC-0040 §3.3).
+        deterministic: false,
         power: PowerHint::Mains,
     };
     let dev = DeviceId {

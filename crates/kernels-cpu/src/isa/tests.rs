@@ -609,8 +609,8 @@ fn open_under_x86v4amx_fails_with_amx_denied_when_refused() {
     // The serving runner is refused: `open` fails and installs no table.
     let at_open = select(&spr(AmxPermission::Denied { errno: EPERM }), &NONE).unwrap();
     let err = table_for_class(at_enumerate.isa, &at_open).unwrap_err();
-    assert_eq!(err.code, ErrorCode::AMX_DENIED);
-    assert_eq!(err.code, ErrorCode(13));
+    assert_eq!(err.code, syntropy_kernels::error::codes::AMX_DENIED);
+    assert_eq!(err.code, ErrorCode::new(syntropy_core::Domain::Kernels, 13));
     assert_eq!(err.class, ErrorClass::Unsupported);
     // The message names the mismatch: the class, what detection gives, and the errno.
     for part in ["X86V4Amx", "X86V4;", "errno 1", "re-probe"] {
@@ -627,7 +627,10 @@ fn open_fails_on_any_other_mismatch() {
     let err = table_for_class(amx_class, &killed).unwrap_err();
     assert_eq!(
         (err.class, err.code),
-        (ErrorClass::Unsupported, ErrorCode::OP_UNSUPPORTED)
+        (
+            ErrorClass::Unsupported,
+            syntropy_kernels::error::codes::OP_UNSUPPORTED
+        )
     );
     assert!(err.message.contains("X86V4Amx") && err.message.contains("X86V4;"));
 
@@ -635,7 +638,7 @@ fn open_fails_on_any_other_mismatch() {
     let v3 = select(&spr(AmxPermission::Granted), &NO_AVX512).unwrap();
     assert_eq!(
         table_for_class(CpuIsa::X86V4, &v3).unwrap_err().code,
-        ErrorCode::OP_UNSUPPORTED
+        syntropy_kernels::error::codes::OP_UNSUPPORTED
     );
     // A class of the other architecture.
     let m4 = select(&mac(Some(1), Some(1), Some(1), Some(1), Some(1)), &NONE).unwrap();

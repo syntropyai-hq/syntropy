@@ -14,7 +14,7 @@
 # `cargo xtask ci lint` fails any lab job without a `timeout-minutes` of at most 60.
 #
 # The same rules as `pr.yml` hold: read-only permissions, actions pinned by SHA, hosted runners
-# only, no `pull_request_target`.
+# or the build host behind its gate (ADR-0625) only, no `pull_request_target`.
 
 name: weekly
 
@@ -39,7 +39,7 @@ defaults:
 
 jobs:
   placeholder:
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (vars.SYNTROPY_BUILD_HOST == 'on' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository)) && 'syntropy-build' || 'ubuntu-24.04' }}
     timeout-minutes: 5
     steps:
       - name: Weekly suites

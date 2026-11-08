@@ -5,6 +5,7 @@
 //! opens a device with, the per-device context, and the health it reports.
 
 use std::any::Any;
+use std::borrow::Cow;
 use std::fmt;
 use std::marker::PhantomData;
 
@@ -23,29 +24,47 @@ pub use syntropy_core::resource::{CpuIsa, DeviceClass, DeviceFeatures};
 /// A provider's name: `"cuda"`, `"metal"`, `"cpu"`, `"hip"`, `"vulkan"`, `"ggml-cuda"`, ...
 /// (RFC-0040 §2.2).
 ///
-/// The name is a `&'static str`, as RFC-0040 §2.2 writes it. Decoding therefore borrows from
-/// input that lives for the whole program (`'de: 'static`), and fails when the format had to
-/// escape the name (in JSON, a quote, backslash or control character). Loading the on-disk
-/// selection cache (RFC-0040 §6.5) would then have to leak its buffer; issue #1525 (item 3)
-/// proposes an owned or `Cow<'static, str>` name instead.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+/// The name is a `Cow<'static, str>` (RFC-0040 §2.2, note of 2026-10-23): a provider built into
+/// the binary names itself with a literal and allocates nothing ([`ProviderId::new`]), and a
+/// decode or a loaded provider library owns its name. Decoding needs no input that lives for
+/// the whole program, and an escaped name decodes like any other.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
-pub struct ProviderId(pub &'static str);
+pub struct ProviderId(pub Cow<'static, str>);
+
+impl ProviderId {
+    /// The provider named by the literal `name`, with no allocation.
+    #[must_use]
+    pub const fn new(name: &'static str) -> Self {
+        Self(Cow::Borrowed(name))
+    }
+
+    /// The name.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for ProviderId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
 
 /// A provider's build identity (RFC-0040 §2.1 `build`). Part of every selection-cache key
 /// (RFC-0040 §6.5).
 ///
-/// Like [`ProviderId`], the toolchain names are `&'static str`, so decoding borrows them from
-/// input that lives for the whole program, with the same limit on escaped names.
+/// Like [`ProviderId`], the toolchain names are `Cow<'static, str>`: a literal for a built-in
+/// provider, owned when decoded or read from a provider library.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(bound(deserialize = "'de: 'static"))]
 pub struct ProviderBuild {
     /// The provider's version.
     pub version: u32,
     /// BLAKE3 of the kernel module, for providers loaded from a provider library.
     pub module: Option<Blake3>,
     /// Compiler and toolchain versions, by tool name.
-    pub toolchain: SmallVec<[(&'static str, String); 3]>,
+    pub toolchain: SmallVec<[(Cow<'static, str>, String); 3]>,
     /// The driver or runtime version seen at load.
     pub driver: Option<String>,
 }

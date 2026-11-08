@@ -1,0 +1,75 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+#
+# The vendored ggml tensor library (RFC-0062 §4.2's ggml row, §11.3; ADR-0002; COMP-E7-T01).
+#
+# `third_party/ggml/` holds part of ggml's tree at the commit below: the files `paths` lists,
+# copied byte for byte, then `third_party/ggml.patch` applied. The core builds them into its
+# static copy (`crates/kernels-ggml/build.rs`; RFC-0040 §8.1). The GPU backends join with the
+# tasks that build their modules. QUAL-E17-T02's `cargo xtask vendor ggml <commit>` will write
+# this file and check the tree against it; until then it is kept by hand.
+#
+# A tree hash is the BLAKE3 of the tree's manifest. The manifest has one line per file, in
+# byte order of the path: the file's BLAKE3 in lowercase hex, two spaces, `./` and the path
+# relative to the tree's root, then a newline. That is what
+#
+#   cd <tree> && find . -type f | LC_ALL=C sort | xargs b3sum | b3sum --no-names
+#
+# prints, with b3sum 1.8.2.
+
+[upstream]
+repository = "https://github.com/ggml-org/ggml"
+# The release tag v0.27.0, an annotated tag (957b4b0833541465c18b115d532995269ec78f78) of this
+# commit, 2026-10-15.
+tag = "v0.27.0"
+commit = "a05c9922613c6a2230dbb1d0de679519ecafb4f0"
+
+[tree]
+# What is copied from the commit: ggml's licence, its public headers, ggml-base's sources and
+# the CPU backend for x86-64 and AArch64. An entry ending in `/` is a directory, copied whole; an
+# entry with `*` takes the matching files of one directory, not its subdirectories. An optional
+# CPU sub-backend and the CPU backend's other architectures are left out.
+paths = [
+    "LICENSE",
+    "include/",
+    "src/ggml-alloc.c",
+    "src/ggml-backend-dl.cpp",
+    "src/ggml-backend-dl.h",
+    "src/ggml-backend-impl.h",
+    "src/ggml-backend-meta.cpp",
+    "src/ggml-backend-reg.cpp",
+    "src/ggml-backend.cpp",
+    "src/ggml-common.h",
+    "src/ggml-feats.h",
+    "src/ggml-impl.h",
+    "src/ggml-opt.cpp",
+    "src/ggml-quants.c",
+    "src/ggml-quants.h",
+    "src/ggml-threading.cpp",
+    "src/ggml-threading.h",
+    "src/ggml-version.h.in",
+    "src/ggml.c",
+    "src/ggml.cpp",
+    "src/gguf.cpp",
+    "src/ggml-cpu/*.c",
+    "src/ggml-cpu/*.cpp",
+    "src/ggml-cpu/*.h",
+    "src/ggml-cpu/amx/",
+    "src/ggml-cpu/tiled/",
+    "src/ggml-cpu/arch/arm/",
+    "src/ggml-cpu/arch/x86/",
+]
+# The tree hash of those 80 files as the commit holds them, before the patch.
+upstream_blake3 = "e1f0c590966d69857a8b8973f0d07f0526e88385f34d6bd1344210be9f78f994"
+# The tree hash of `third_party/ggml/` as checked in: the same files after the patch.
+blake3 = "cc7ede3ea141d514e7b24a4e65a13b3d6f0f0cc10daef342ee2f0a3aabdf7f52"
+
+[patch]
+# Syntropy's changes, as ed scripts per file (the file's header says how to apply them).
+file = "third_party/ggml.patch"
+blake3 = "cad0190bad95f173c06ab5dbdd87e24f9989a52a8acad353847b0cbb1f9deed1"
+
+[bindings]
+# `crates/kernels-ggml/src/bindings.rs`, generated from `crates/kernels-ggml/wrapper.h` over
+# this tree's `include/`. The file's header holds the exact command.
+generator = "bindgen-cli 0.72.1"
+libclang = "18"

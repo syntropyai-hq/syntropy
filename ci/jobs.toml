@@ -18,6 +18,8 @@ workspace = [
     "Cargo.lock",
     "rust-toolchain.toml",
     ".cargo/**",
+    # The Linux linker driver `.cargo/config.toml` sets: every Linux link runs it (COMP-E9-T19).
+    "ci/link/**",
     "xtask/**",
     ".github/workflows/pr.yml",
     ".github/actions/**",
@@ -63,15 +65,31 @@ status_creators = []
 runner = "hosted"
 when = "always"
 
-# `build-<os>`: the PR build on each Tier 1 OS.
+# `build-<os>`: the PR build on each Tier 1 OS. `build` is `build-linux`, and
+# `build-macos-windows` holds the other two legs.
 [job.build]
 runner = "hosted"
 when = "closure"
 
-# `hosted-test-<os>`: L1 and L2, the unit, property and simulator tests.
+# Paused during M0a (ADR-0626, revision 2026-10-31): `changes` evaluates the rule and reports it,
+# but never lists the job, so it does not run and `ci-gate` does not wait for it. At M0b's start,
+# unless a revision of ADR-0626 extends it, the marks below go, and the jobs rejoin `ci-gate`'s
+# `needs` in `pr.yml`.
+[job.build-macos-windows]
+runner = "hosted"
+when = "closure"
+paused = "ADR-0626"
+
+# `hosted-test-<os>`: L1 and L2, the unit, property and simulator tests. `hosted-test` is
+# `hosted-test-linux`, and `hosted-test-macos-windows` holds the other two legs.
 [job.hosted-test]
 runner = "hosted"
 when = "closure"
+
+[job.hosted-test-macos-windows]
+runner = "hosted"
+when = "closure"
+paused = "ADR-0626"
 
 # L3: the loom models now (QUAL-E3-T09), and Miri and the sanitizer builds with QUAL-E3-T10
 # (RFC-0060 §3.4). RFC-0062 §2.3's five crates, and `spsc`, whose ring the loom models cover, and
@@ -87,6 +105,41 @@ crates = ["ipc", "tier", "exec", "io", "net", "spsc", "kernels-cpu"]
 runner = "hosted"
 when = "closure"
 planned = "QUAL-E5-T06"
+
+# The Linux build image rebuilds byte for byte from its pins, and carries the pinned nvcc, CMake
+# and C++ compiler (RFC-0062 §4.1 and §4.2; QUAL-E16-T24). Only the files that define the image,
+# its pins or the step that builds it start it: a Docker build is too slow to run on every change.
+[job.toolchains-linux]
+runner = "hosted"
+when = "direct"
+paths = [
+    "ci/images/**",
+    "ci/toolchains.toml",
+    "xtask/src/toolchains.rs",
+]
+
+# The hosted Windows and macOS runners carry the pinned toolchains, and print them (RFC-0062 §4.1
+# and §4.2; QUAL-E16-T30). Only the pins and the steps that check them start these jobs. Both
+# are paused during M0a, as `build-macos-windows` is.
+[job.toolchains-windows]
+runner = "hosted"
+when = "direct"
+paused = "ADR-0626"
+paths = [
+    "ci/toolchains.toml",
+    "xtask/src/toolchains.rs",
+    "xtask/src/toolchains/**",
+]
+
+[job.toolchains-macos]
+runner = "hosted"
+when = "direct"
+paused = "ADR-0626"
+paths = [
+    "ci/toolchains.toml",
+    "xtask/src/toolchains.rs",
+    "xtask/src/toolchains/**",
+]
 
 # Op conformance, parity smoke and the `pr-quick` bench on R-ADA (RFC-0062 §2.3). The paths are
 # RFC-0062 §2.2's, from ADR-0019 §9 and ADR-0020, and the tolerance tables (note 2026-10-23).
@@ -124,8 +177,9 @@ paths = [
     "ci/images/cuda*/**",
     "rust-toolchain.toml",
 ]
-# The CUDA bindings crate, once it exists: a `Cargo.lock` change to it also requires the job.
-# COMP-E4-T01, which adds it, names it here. ggml's bindings are generated inside `kernels-ggml`
-# (COMP-E7-T01), whose paths the rule already covers, so they need no entry.
-lock_deps = []
+# The CUDA bindings crate (COMP-E4-T01): a `Cargo.lock` change to it also requires the job, so a
+# bump of the binding runs on the rig (RFC-0062 §2.2, note 2026-10-23). ggml's bindings are
+# generated inside `kernels-ggml` (COMP-E7-T01), whose paths the rule already covers, so they need
+# no entry.
+lock_deps = ["cudarc"]
 planned = "QUAL-E2-T02"

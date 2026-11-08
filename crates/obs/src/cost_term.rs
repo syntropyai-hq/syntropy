@@ -7,6 +7,7 @@
 //! terms by it, so the solver's prediction and a runner's measurement compare term by term.
 
 use serde::{Deserialize, Serialize};
+use syntropy_core::plan::StageTerm;
 
 /// One term of a stage step's time: the key space for prediction (RFC-0011 `PredictedCost`) and
 /// measurement (RFC-0053 `StepRecord`).
@@ -130,6 +131,48 @@ impl CostTerm {
     }
 }
 
+impl CostTerm {
+    /// The term in `core`'s mirror, which plans carry in `StageCost` (RFC-0011 §2, PLC-E4-T01):
+    /// the variant of the same name and discriminant. The match is exhaustive, so a variant added
+    /// here fails to compile until the mirror has it too.
+    #[must_use]
+    pub const fn stage_term(self) -> StageTerm {
+        match self {
+            CostTerm::DenseVram => StageTerm::DenseVram,
+            CostTerm::DenseUnified => StageTerm::DenseUnified,
+            CostTerm::DenseHostCpu => StageTerm::DenseHostCpu,
+            CostTerm::ExpertHitGpu => StageTerm::ExpertHitGpu,
+            CostTerm::ExpertHitCpu => StageTerm::ExpertHitCpu,
+            CostTerm::ExpertMissCopied => StageTerm::ExpertMissCopied,
+            CostTerm::NvmeDemandWait => StageTerm::NvmeDemandWait,
+            CostTerm::KvRead => StageTerm::KvRead,
+            CostTerm::RowLookup => StageTerm::RowLookup,
+            CostTerm::Switch => StageTerm::Switch,
+            CostTerm::Collective => StageTerm::Collective,
+            CostTerm::HopSend => StageTerm::HopSend,
+            CostTerm::HopWait => StageTerm::HopWait,
+            CostTerm::CreditStall => StageTerm::CreditStall,
+            CostTerm::Fixed => StageTerm::Fixed,
+            CostTerm::Sampler => StageTerm::Sampler,
+            CostTerm::ConstraintMask => StageTerm::ConstraintMask,
+            CostTerm::Draft => StageTerm::Draft,
+        }
+    }
+
+    /// The term a plan's [`StageTerm`] names: the one with its discriminant, or `None` for a
+    /// mirror variant this build does not know.
+    #[must_use]
+    pub fn from_stage_term(term: StageTerm) -> Option<CostTerm> {
+        CostTerm::from_u8(term.code())
+    }
+}
+
+impl From<CostTerm> for StageTerm {
+    fn from(term: CostTerm) -> Self {
+        term.stage_term()
+    }
+}
+
 // Compile-time checks (PROD-E8-T12): the enum is one byte and has exactly 18 variants, and `ALL`
 // lists them in discriminant order 0..18. With the exhaustive match in `index`, a 19th variant
 // cannot be added without one of these failing.
@@ -188,6 +231,25 @@ mod tests {
             assert_eq!(json, format!("\"{name}\""));
             let back: CostTerm = serde_json::from_str(&json).unwrap();
             assert_eq!(back, *term);
+        }
+    }
+
+    /// Every `CostTerm` maps to exactly one `StageTerm`, of the same name and discriminant, and
+    /// back; the mirror has no variant the key space lacks (RFC-0011 §2, PLC-E4-T01).
+    #[test]
+    fn every_term_maps_to_exactly_one_stage_term() {
+        use syntropy_core::plan::StageTerm;
+        assert_eq!(StageTerm::ALL.len(), CostTerm::COUNT);
+        let mut seen = std::collections::BTreeSet::new();
+        for term in CostTerm::ALL {
+            let mirror = term.stage_term();
+            assert_eq!(mirror.code(), term.as_u8());
+            assert_eq!(format!("{mirror:?}"), format!("{term:?}"));
+            assert_eq!(CostTerm::from_stage_term(mirror), Some(term));
+            assert!(seen.insert(mirror), "{term:?} shares its mirror");
+        }
+        for mirror in StageTerm::ALL {
+            assert!(seen.contains(&mirror), "{mirror:?} has no CostTerm");
         }
     }
 

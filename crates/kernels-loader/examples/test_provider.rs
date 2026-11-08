@@ -16,6 +16,10 @@
 //! as text, so a test can compare them with what it sent.
 
 #![allow(unsafe_code)]
+#![allow(
+    clippy::result_large_err,
+    reason = "core::Error is RFC-0001 §5.12's struct, 344 B inline [measured: size_of, debug, x86-64 Linux, ce2044ae] (COMP-E13-T15)"
+)]
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -105,11 +109,11 @@ impl TestProvider {
 }
 
 fn echo(what: &str, text: String) -> Error {
-    Error {
-        class: ErrorClass::InvalidRequest,
-        code: ErrorCode(0x0E),
-        message: format!("{what}: {text}"),
-    }
+    Error::new(
+        ErrorClass::InvalidRequest,
+        ErrorCode::new(syntropy_core::Domain::Kernels, 0x0E),
+        format!("{what}: {text}"),
+    )
 }
 
 struct Registrar {
@@ -149,7 +153,7 @@ impl HostRegistrar for Registrar {
 
 impl KernelProvider for TestProvider {
     fn id(&self) -> ProviderId {
-        ProviderId("test-host")
+        ProviderId::new("test-host")
     }
 
     fn backend(&self) -> Backend {
@@ -161,7 +165,7 @@ impl KernelProvider for TestProvider {
         ProviderBuild {
             version: 1,
             module: Some(Blake3(BUILD_ID)),
-            toolchain: smallvec![("rustc", "test".to_owned())],
+            toolchain: smallvec![("rustc".into(), "test".to_owned())],
             driver: None,
         }
     }
@@ -263,18 +267,18 @@ impl KernelProvider for TestProvider {
             .config("fixture.long_error")
             .and_then(|v| v.parse::<usize>().ok())
         {
-            return Err(Error {
-                class: ErrorClass::Capacity,
-                code: ErrorCode::ALLOC_FAILED,
-                message: "x".repeat(len),
-            });
+            return Err(Error::new(
+                ErrorClass::Capacity,
+                syntropy_kernels::error::codes::ALLOC_FAILED,
+                "x".repeat(len),
+            ));
         }
         if req.bytes.0 == 0 {
-            return Err(Error {
-                class: ErrorClass::Capacity,
-                code: ErrorCode::ALLOC_FAILED,
-                message: "alloc of zero bytes".to_owned(),
-            });
+            return Err(Error::new(
+                ErrorClass::Capacity,
+                syntropy_kernels::error::codes::ALLOC_FAILED,
+                "alloc of zero bytes".to_owned(),
+            ));
         }
         let handle = self.handle();
         Ok(DeviceBuffer {

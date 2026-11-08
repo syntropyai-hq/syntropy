@@ -227,6 +227,8 @@ Token IDs reach unsafe device code: the sampler indexes per-sequence count table
 
 A request with an ID outside the range fails with 400 `token_id_out_of_range`, naming the field, the first offending position and `vocab_limit`. Nothing is clamped or dropped silently. The check costs one pass over the IDs and sits inside the pre-`SequenceOpen` budget (Performance). Debug kernels keep bounds assertions as a second line (RFC-0040); they are not the defence.
 
+*Note 2026-10-31 (PROD-E2-T20, as built).* `syntropy_api::pipeline::check_token_ids` is the one validator. It takes a `TokenField`, the field's IDs and `vocab_limit`, and returns `TokenIdOutOfRange { field, position, id, vocab_limit }` for the first ID that is not below the limit. `TokenField` names the native `tokens`, `teacher.tokens`, `logit_bias`, `stop_token_ids`, a legacy completions `prompt`, an embeddings `input`, a grammar's token set (`constraint`), and the rendered prompt. `check_request` runs it after stage 5 and before routing: first on the native `tokens` at the client's positions, then on the `logit_bias` keys in the order listed, then on the rendered prompt, which a tokenizer that disagrees with the manifest would fail. The other fields are checked by their endpoints' tasks with the same function. `ModelInfo::vocab_limit` carries the limit from stage 3, and `vocab_limit()` computes `min(embedding rows, LM-head rows, sampler table size)`. Deriving the three sizes from `ModelManifest` is COMP-E10-T16's: the census does not yet mark which `RowLookup` table is the token embedding. `ApiError::TokenIdOutOfRange` carries the error; its class is `InvalidRequest`, and its code is `token_id_out_of_range`, number 33 in §12's registry.
+
 ### 3. API shapes
 
 Each subsection lists what the front end reads and what the encoder writes. A field not listed is handled by §3.6. Every ignored field is named in a `Syntropy-Warning` response header (`Syntropy-Warning: ignored=user,metadata`), so clients can discover gaps without the request failing.
@@ -257,6 +259,8 @@ The response is the standard `chat.completion` object. Fields with Syntropy-spec
 - `finish_reason`: `stop` for end of turn and stop strings, `length`, `tool_calls`.
 
 *Note 2026-10-23 (OQ-NET-35): `top_logprobs = 0`.* `logprobs: true` without `top_logprobs` asks for the chosen tokens' logprobs alone: `SamplingParams::logprobs = Some(0)` (RFC-0001 §5.8). So does every surface that maps to `Some(0)`, §3.5's legacy `logprobs: 0` included, and the rule here applies to all of them. An instance whose tail runs in the ingress's process carries it as is. RFC-0031 §6.5's `Token` entry has no form for it yet, so on an instance whose tail is on another node, ingress asks the tail for `Some(1)` and drops the alternative before encoding the response. The chosen token's logprob is the same value either way, so the response stays exact. Once DIST-E8-T18 gives the entry its form behind capability bit 16 (RFC-0031 §10), ingress asks for `Some(0)` only when every peer the entry crosses advertises the bit: the tail's channels to the ingress and, for the ring-return copy, which carries the logprobs too, to the head. Otherwise it keeps the rewrite.
+
+*Revision note, 2026-10-31 (DIST-E8-T18): the rule as built.* `syntropy_api::pipeline::TailChannels` holds the negotiated capabilities of the tail's channel to the ingress and of its channel to the head, each `None` where the entry does not cross `net` (a tail in the ingress's process, or a tail that is the head). Stage 9 asks for `Some(0)` when every channel that crosses `net` has bit 16, and `Some(1)` otherwise; other values go as asked. `answer_logprobs` drops the alternative from a rewritten request's block, which PROD-E2-T06 writes into the response.
 
 #### 3.2 OpenAI Responses (`POST /v1/responses`)
 
@@ -947,6 +951,10 @@ Errors become the request shape's own error body:
   - Their codes are raised inside a node, and the node handles them there. Selection, the module loader and the tier manager answer the `Unsupported` and `Capacity` ones by choosing another candidate or domain, or by re-planning. None of these is ever the error of a request, so they are exempt:
   - `Kernels`: 0x0001 `OpUnsupported`, 0x0002 `ModuleMissing`, 0x0004 `ModuleAbi`, 0x0005 `DriverTooOld`, 0x0007 `CaptureFailed`, 0x0009 `AllocFailed`, 0x000A `RegisterFailed`, 0x000C `GgmlImportFailed`, 0x000D `AmxDenied`, 0x000F `NoCertifiedCandidate`;
   - The other codes map through a whole-class row: `ParityFailed` (`Correctness`), `DeviceSticky` (`Device`), `DoorbellTimeout` (`Timeout`), and `WorkspaceExceeded` and `ProviderPanicked` (`Internal`). `ModuleIntegrity` and `ManifestInvalid` follow the rule for `Integrity`. Every `Exec` code maps the same way: `RingClosed`, `StepStalled` and `PoolBarrierMissed` (`Internal`).
+- *Note 2026-10-31 (TIER-E1-T02):* the `Tier` domain (RFC-0020 §15, note of this date) follows the same rules.
+  - The tier manager's `Capacity` and `Unsupported` codes fail the runner's Fetching or Loading state, or turn an arena into a fallback, and the coordinator re-plans or the runner degrades. None of these is ever the error of a request, so they are exempt:
+  - `Tier`: 0x0701 `LedgerExceeded`, 0x0702 `VramShort`, 0x0704 `HostReserve`, 0x0706 `RegisterUnsupported`, 0x0707 `VmmUnsupported`;
+  - The other codes map through a whole-class row: `StaleHandle` (`Internal`), and `VramEcReduced`, `PinDegraded`, `PressureExhausted`, `VramBudgetLost` (`Drift`) and `NumaBind` (`Transient`) follow the rule for `Drift` and `Transient`.
 
 The Anthropic shape uses 529 for overload, as the published API does, because Anthropic SDKs retry it. The OpenAI shape uses 429 and 503, which OpenAI SDKs retry.
 
@@ -1024,6 +1032,17 @@ The native API is HTTP/JSON plus SSE under `/v1/syntropy/` (ADR-0503). Its reque
 Native messages may carry `cache_control` like Anthropic content blocks, marking the prefix up to them as shareable (§9.5). Every token ID in `tokens` and `sampling.logit_bias`, and every stop token ID, is range-checked (§2.3).
 
 The non-streaming response contains `choices[]` (text, reasoning, tool calls, token IDs when asked, logprobs, stop reason), `usage`, and every `SyntropyMeta` field (§10) as first-class fields, plus `trace_id` when the request was traced. A streaming response can be re-attached within the detach grace at `GET /v1/syntropy/generate/{sequence}/events` with `Last-Event-ID` (§5.5, M3).
+
+*Note 2026-10-31 (PROD-E4-T13, as built).* `syntropy_api::native` serves the M0 subset that the benchmark driver needs. PROD-E4-T02 opens the full endpoint in M1. Until then:
+- **Gate.** The route answers only while `debug.bench_api` is on, through §13.6's loopback predicate (`DebugSection::allows`). Otherwise it gives the same 404 `unsupported_endpoint` as a path with no route.
+- **Request.** `model`, `tokens`, `sampling.temperature`, `sampling.seed`, `sampling.max_tokens`, `stream` and `return_tokens`, with `?format=ndjson`.
+- **Refusals.** `messages`, `prompt`, `stream: false` and SSE get 400 `unsupported_feature`. Any other field gets 400 `invalid_request`. A body over `api.max_body`'s default of 32 MiB gets 413 `request_too_large`.
+- **Range check.** `tokens` passes §2.3's check in `Ingress::start`, before routing.
+- **Stream.** The events are `started`, `text`, `done` and `error`, each with `id: "<sequence>:<n>"`.
+- **Sequence ID text.** A sequence ID is written `<ingress short ID as 16 hex digits>-<boot>-<n>`, a form this RFC had not fixed.
+- **Token IDs.** With `return_tokens`, each `text` event carries the `tokens` that released its text, so the IDs across a stream add up to `done.usage.completion_tokens`.
+- **Pipeline changes.** For this, §2.1's `GenEvent` gains `Tokens { choice, tokens }`, which the pipeline sends after each entry's text when `Generation::return_tokens` is on, and `StreamMode` gains `Ndjson`.
+- **Driver.** `native::drive` runs on the thread that owns the runner's `Ingress`. It starts queued requests and polls every live generation without sleeping while one is live, so a token reaches its stream as soon as it reaches `local_tokens`.
 
 #### 13.2 Models
 

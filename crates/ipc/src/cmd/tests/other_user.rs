@@ -223,15 +223,23 @@ struct PeerResult {
 
 /// Runs this test's copy `exe` as `user`, connecting to `socket`, and reads what it saw.
 fn run_as(user: &OsStr, exe: &Path, socket: &Path) -> PeerResult {
-    let output = Command::new("sudo")
-        .args(["-n", "-u"])
-        .arg(user)
-        .args(["--", "/usr/bin/env"])
-        .arg(format!("{CONNECT}={}", socket.display()))
-        .arg(exe)
-        .args(["--exact", TEST, "--nocapture", "--test-threads=1"])
-        .output()
-        .expect("run sudo");
+    let child = {
+        // No test is creating a socket whose liveness it asserts while this one spawns.
+        let _guard = super::unix::fork_guard();
+        Command::new("sudo")
+            .args(["-n", "-u"])
+            .arg(user)
+            .args(["--", "/usr/bin/env"])
+            .arg(format!("{CONNECT}={}", socket.display()))
+            .arg(exe)
+            .args(["--exact", TEST, "--nocapture", "--test-threads=1"])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("run sudo")
+    };
+    let output = child.wait_with_output().expect("wait for sudo");
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         output.status.success(),

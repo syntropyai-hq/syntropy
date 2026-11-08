@@ -13,19 +13,33 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use syntropy_core::ErrorClass;
+use syntropy_kernels::Error;
 use syntropy_kernels::abi::{
-    ABI_MAJOR, ENTRY_SYMBOL, EntryFn, MAGIC, SynModule, SynProviderVtbl, types::SynHeader,
+    ABI_MAJOR, ENTRY_SYMBOL, EntryFn, MAGIC, SynHealth, SynModule, SynProviderVtbl,
+    types::SynHeader,
 };
-use syntropy_kernels::{Error, ErrorCode};
+use syntropy_kernels::error::codes::{MODULE_ABI, MODULE_MISSING};
 
 use crate::host::HostServices;
 use crate::provider::ModuleProvider;
 use crate::sys::RawLibrary;
 
-/// `ModuleMissing` (RFC-0040 §13 code 2): the library cannot be opened.
-const MODULE_MISSING: ErrorCode = ErrorCode(2);
-/// `ModuleAbi` (RFC-0040 §13 code 4): the library is not a provider library of this ABI.
-const MODULE_ABI: ErrorCode = ErrorCode(4);
+/// Refuses a provider table whose `health` writes a [`SynHealth`] of another size than this
+/// core's: a library built before `SynHealth` carried the code's domain wrote 8 bytes, not 12
+/// (RFC-0040 §10.4, note of 2026-10-30). Such a library's table is also 8 bytes shorter, so
+/// the size check before this one refuses it first.
+fn check_health_size(health_size: u32, path: &Path) -> Result<(), ModuleError> {
+    if health_size as usize == size_of::<SynHealth>() {
+        Ok(())
+    } else {
+        Err(abi_error(format!(
+            "{}: a provider writes a {}-byte health record, not the {} this core reads",
+            path.display(),
+            health_size,
+            size_of::<SynHealth>()
+        )))
+    }
+}
 
 /// Why a module did not load.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,11 +60,7 @@ impl From<ModuleError> for Error {
 }
 
 fn abi_error(message: String) -> ModuleError {
-    ModuleError(Error {
-        class: ErrorClass::Unsupported,
-        code: MODULE_ABI,
-        message,
-    })
+    ModuleError(Error::new(ErrorClass::Unsupported, MODULE_ABI, message))
 }
 
 /// A loaded provider library.
@@ -83,14 +93,14 @@ impl Module {
     /// not one this build can read.
     pub fn load(path: &Path) -> Result<Self, ModuleError> {
         let lib = RawLibrary::open(path).map_err(|reason| {
-            ModuleError(Error {
-                class: ErrorClass::Unsupported,
-                code: MODULE_MISSING,
-                message: format!(
+            ModuleError(Error::new(
+                ErrorClass::Unsupported,
+                MODULE_MISSING,
+                format!(
                     "cannot open the provider library {}: {reason}",
                     path.display()
                 ),
-            })
+            ))
         })?;
         let lib = Arc::new(lib);
         let entry = lib.symbol(ENTRY_SYMBOL).map_err(|reason| {
@@ -171,6 +181,15 @@ fn read_providers(
     path: &Path,
     lib: &Arc<RawLibrary>,
 ) -> Result<Vec<ModuleProvider>, ModuleError> {
+    provider_tables(module, path)?
+        .into_iter()
+        .map(|vtbl| ModuleProvider::new(vtbl, Arc::clone(lib)))
+        .collect()
+}
+
+/// The module's provider tables, after the size checks: every table at least as large as this
+/// core's `SynProviderVtbl`, all of one size, and each writing this core's `SynHealth`.
+fn provider_tables(module: &SynModule, path: &Path) -> Result<Vec<SynProviderVtbl>, ModuleError> {
     let count = module.n_providers as usize;
     if count == 0 {
         return Ok(Vec::new());
@@ -208,7 +227,63 @@ fn read_providers(
             // SAFETY: the table is at least `size_of::<SynProviderVtbl>()` bytes (checked
             // above), and a table is plain data, so a bitwise copy of our prefix is valid.
             let vtbl = unsafe { std::ptr::read_unaligned(at.cast::<SynProviderVtbl>()) };
-            ModuleProvider::new(vtbl, Arc::clone(lib))
+            check_health_size(vtbl.health_size, path)?;
+            Ok(vtbl)
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use syntropy_kernels::abi::SynStatus;
+    use syntropy_kernels::abi::types::SynHeader;
+
+    use super::*;
+
+    extern "C" fn no_shutdown() -> SynStatus {
+        SynStatus::OK
+    }
+
+    /// The bytes of one provider table of `size` bytes, starting with `struct_size` = `size`,
+    /// as a library of another build lays it out; the rest is zero.
+    fn table_bytes(size: usize) -> Vec<u64> {
+        let mut words = vec![0_u64; size.div_ceil(8)];
+        words[0] = size as u64;
+        words
+    }
+
+    fn module_of(tables: &[u64]) -> SynModule {
+        SynModule {
+            h: SynHeader::new([0; 32], size_of::<SynModule>()),
+            n_providers: 1,
+            providers: tables.as_ptr().cast::<SynProviderVtbl>(),
+            shutdown: no_shutdown,
+        }
+    }
+
+    /// A library built when `SynHealth` was 8 bytes has a provider table 8 bytes shorter, with
+    /// no `health_size`: the size check refuses it before reading any pointer.
+    #[test]
+    fn a_table_of_the_eight_byte_health_layout_is_refused() {
+        let old = size_of::<SynProviderVtbl>() - 8;
+        let bytes = table_bytes(old);
+        let error = provider_tables(&module_of(&bytes), Path::new("old.so"))
+            .err()
+            .expect("an older table")
+            .0;
+        assert_eq!(error.code, syntropy_kernels::error::codes::MODULE_ABI);
+        assert!(error.message.contains("smaller than"), "{error}");
+    }
+
+    /// A table of this core's size whose `health` writes another `SynHealth` size is refused.
+    #[test]
+    fn a_table_with_another_health_size_is_refused() {
+        assert_eq!(size_of::<SynHealth>(), 12);
+        let error = check_health_size(8, Path::new("odd.so"))
+            .expect_err("8 bytes")
+            .0;
+        assert_eq!(error.code, syntropy_kernels::error::codes::MODULE_ABI);
+        assert!(error.message.contains("8-byte health record"), "{error}");
+        assert!(check_health_size(12, Path::new("ok.so")).is_ok());
+    }
 }

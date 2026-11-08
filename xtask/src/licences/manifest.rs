@@ -18,8 +18,8 @@
 //! entry of its own; when an entry names a directory, a missing file or a path outside those
 //! trees; when a key is missing, empty or unknown; when an entry's licence is not met by the
 //! allow list in `deny.toml`; and when its notice file is missing. The manifest itself and the
-//! lock files beside it in `third_party/` (such as `ggml.lock`, RFC-0062 §11.3) are Syntropy's
-//! own files and need no entry.
+//! lock and patch files beside it in `third_party/` (such as `ggml.lock` and `ggml.patch`,
+//! RFC-0062 §11.3) are Syntropy's own files and need no entry.
 
 use std::collections::BTreeMap;
 use std::io::{self, Write};
@@ -101,12 +101,12 @@ pub fn load(root: &Path) -> Result<Vec<Entry>, Vec<String>> {
 }
 
 /// Whether the root-relative `rel` is one of Syntropy's own files in `third_party/`: the
-/// manifest, and the lock files directly beside it.
+/// manifest, and the lock and patch files directly beside it.
 fn own_file(rel: &str) -> bool {
     rel == PATH
-        || rel
-            .strip_prefix("third_party/")
-            .is_some_and(|name| !name.contains('/') && name.ends_with(".lock"))
+        || rel.strip_prefix("third_party/").is_some_and(|name| {
+            !name.contains('/') && (name.ends_with(".lock") || name.ends_with(".patch"))
+        })
 }
 
 /// Every vendored file under `root` that needs an entry, root-relative and sorted.
@@ -297,10 +297,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn own_files_are_the_manifest_and_top_level_locks() {
+    fn own_files_are_the_manifest_and_top_level_locks_and_patches() {
         assert!(own_file("third_party/licences.toml"));
         assert!(own_file("third_party/ggml.lock"));
+        assert!(own_file("third_party/ggml.patch"));
         assert!(!own_file("third_party/ggml/ggml.lock"));
+        assert!(!own_file("third_party/ggml/src/x.patch"));
         assert!(!own_file("third_party/ggml/src/ggml.c"));
         assert!(!own_file("crates/kernels-cuda/vendor/x.lock"));
     }

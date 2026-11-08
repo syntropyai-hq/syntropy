@@ -660,6 +660,7 @@ Tokens travel tail → head (ring return, all of the step's sequences) and tail 
 
 - *Note 2026-10-23 (DIST-E1-T14, as built; review-1493's N2 on #1780):* `core`'s `TokenEntry::rng_counter` has no serde default, though the item below calls it an addition with a default. A missing counter defaulting to 0 would restart a resumed sequence's random stream (RFC-0032 §3.7), so a later step's tokens would differ from the reference, which breaks exact mode (D3). The binary entry always carries it at offset 40, and `core`'s type is new, so no older encoding exists to need a default. A serde encoding without it is refused rather than read as 0. `draft`, `draft_tree` and `tap` keep their defaults.
 - *Note 2026-10-23:* `logprob_k = 0` means no logprobs, so the entry has no form for the chosen tokens' logprobs without alternatives. OQ-NET-35 tracks it, with `logprob_k = 0x80` recommended behind capability bit 16 `CHOSEN_LOGPROBS` (§10): a new value of an existing field is not additive, so it is sent only on channels whose two ends advertise the bit, and ingress asks for it only when both of the tail's channels the entry travels, to the ingress and to the head, have it (RFC-0050 §3.1's note). DIST-E8-T18 settles it.
+- *Revision note, 2026-10-31 (DIST-E8-T18; OQ-NET-35 settled):* option (a), as the DIST-E8-T18 task row records it. `logprob_k` is 0 for no logprobs, 1 to 127 for that many alternatives per token, and 0x80 for the chosen tokens' logprobs alone: per token one chosen f32 and no pairs. Any other value with bit 7 set is refused as a bad field, an `Integrity` refusal, never `Internal`. No existing frame or golden changes. 0x80 is a new value of an existing field, so the encoder writes an entry carrying it only on a channel whose negotiated capabilities hold bit 16 `CHOSEN_LOGPROBS`, and refuses the copy otherwise; a copy that leaves such an entry out, such as another ingress's, is written as before. `net` maps 0x80 to and from `core`'s `LogprobBlock { k: 0 }`, and refuses a `core` block with `k` above 127, which `logprob_k` cannot carry. Ingress asks for `Some(0)` by RFC-0050 §3.1's rule.
 - `TokenEntry::draft`, `rng_counter` and `tap` are additions to RFC-0001's `TokenEntry`, made under the extension rules as fields with defaults. `tap` is RFC-0060 amendment A4's `TokenEntry::tap: Option<LogitTap>`.
 - The draft travels only on the ring-return frame. The ingress copy omits it (`n_draft = 0`).
 - The tap block travels only on the ingress copy, which goes to the parity driver.
@@ -1305,6 +1306,78 @@ The plan charges these to the `HostPinned` network sub-arena (RFC-0001 §9.1). T
    - **the stream receive window** is reachable per connection, with no per-stream setter;
    - **GSO** is on by default where noq-udp finds it, on Linux and Windows. On macOS it is absent: iroh never enables Apple's batched-send path, and no upstream issue tracks it.
 6. **CRC and AEAD throughput on Raspberry Pi 5-class CPUs** (Tier 2). *Answered (OQ-NET-20).* Arm uses the hardware CRC32C instructions with 3-way interleaving, as x86 does. The Pi 5's Cortex-A76 has the Armv8 CRC32 extension; its CPU flags are checked in `/proc/cpuinfo` at R-PI5's bring-up. DIST-E7-T17 stays as a measurement of the resulting `Z` share, not a decision.
+
+
+**Note, 2026-10-31 (DIST-E7-T16, preliminary run): α on a Wi-Fi link, and draft answers to questions 2, 3 and 5.** This is not the task's run on the scenario (c) rig.
+- **What was run.**
+  - **Harness.** `crates/net/examples/alpha_spike.rs`, a spike harness. `serve` runs on one host and `probe` on the other.
+  - **Channel α.** α as the channel core takes it (§7.1): half the round trip from a frame to the credit that echoes it, less the echo delay. One `Activations` frame is sent every 10 ms, each after the last one's sample.
+  - **Kernel UDP echo.** It is run plain, and with a 64-byte datagram sent before each echo, standing in for a credit (question 3).
+  - **QUIC stream against datagram echo** on one connection (OQ-NET-29).
+- **The rig: a dev pair, not scenario (c).**
+  - Scenario (c) is RFC-0061 §4's S2 cluster: R-ADA, R-MBP and R-HALO on a 2.5 GbE switch, and on a Wi-Fi 6/6E access point.
+  - This pair was a MacBook Pro (M4 Pro, macOS 26.6.2) on Wi-Fi: 802.11ac, 5 GHz channel 149 at 80 MHz, MCS 4, a 520 Mb/s link rate, −63 dBm.
+  - Its peer was a desktop (i7-12700F, Ubuntu 26.04, Linux 7.0) on 1 GbE to the same home router.
+  - No wired-to-wired pair was available, so **α on a wired LAN was not measured**.
+- **Wi-Fi figures** [measured]:
+  - Commit `d3008da8`, release build, 2026-10-31.
+  - The probe ran on the Linux host in a container with host networking; the server ran on the Mac.
+  - 500 samples a series, one every 10 ms, one complete run.
+  - Each figure is one-way, half a round trip, in µs.
+
+  | Series | p50 | p99 | Lost |
+  |---|---|---|---|
+  | channel, QUIC, 64 B | 1,671 | 3,062 | 1 of 500 |
+  | channel, TCP, 64 B | 1,501 | 2,788 | 0 |
+  | channel, QUIC, 16 KiB | — | — | 500 of 500: faulted, see below |
+  | channel, TCP, 16 KiB | — | — | 500 of 500: faulted, see below |
+  | UDP, 64 B | 1,686 | 3,177 | 0 |
+  | UDP, 64 B, with a credit-sized datagram first | 1,755 | 4,195 | 0 |
+  | UDP, 1 KiB | 1,719 | 3,649 | 0 |
+  | UDP, 1 KiB, with a credit-sized datagram first | 1,764 | 3,526 | 0 |
+  | QUIC stream, 64 B | 1,729 | 2,889 | 0 |
+  | QUIC datagram, 64 B | 1,905 | 4,587 | 0 |
+  | QUIC stream, 1 KiB | 2,045 | 4,352 | 0 |
+  | QUIC datagram, 1 KiB | 2,057 | 4,853 | 0 |
+
+  An earlier run at `e9372aac` gave the same picture for the series it measured validly. QUIC 64 B was 1,587 / 2,890; TCP 64 B 1,569 / 3,075; UDP 64 B 1,692 / 3,388; QUIC stream 64 B 1,692 / 3,046; QUIC datagram 64 B 1,791 / 3,377. Its credit series at 64 B mistook the stand-in for the echo, and was fixed before the run above.
+- **The 16 KiB channels faulted on Wi-Fi, on both transports.**
+  - Each failed its sends with `SendError::Link` after sending data frames again: 18 times on QUIC, 36 on TCP.
+  - No α sample was ever taken. Read from the code (unconfirmed static analysis), this is a loop:
+    - Before any sample, α is the 1 ms stand-in, so the ack timeout is 4 ms. That is below this link's round trip for a 16 KiB frame.
+    - Each frame is sent again before its credit arrives.
+    - A frame sent twice gives no α sample (§7.3's note of 2026-10-23), so α never rises to the link's real value.
+    - Three timeouts in a row then fault the channel.
+  - This is #2005's fault on a real link, not only under CPU load.
+  - On TCP, the buffer sizing that #2007 fixes may add to it. On QUIC it cannot.
+- **Loopback figures, for scale** [measured]: commit `e9372aac`, the MacBook Pro above, release build, 1,000 samples a series. Channel α p50 / p99 in µs:
+  - QUIC 64 B: 56 / 158
+  - TCP 64 B: 42 / 86
+  - QUIC 16 KiB: 84 / 173
+  - TCP 16 KiB: 39 / 70
+  - QUIC stream 64 B: 71 / 177
+  - QUIC datagram 64 B: 64 / 134
+
+  On loopback the receiving thread's wake-up dominates. Those figures bound the software path. They are not a LAN.
+- **Bearing on #2005.**
+  - On this Wi-Fi link, α's p50 is about 1.5–1.7 ms and its p99 about 2.8–3.1 ms. Both are above the 1 ms stand-in (`INITIAL_ALPHA_P99`, `TcpConfig::alpha_p99`), so the first ack timeout, 4 ms, is shorter than a 16 KiB frame's round trip.
+  - On loopback, α's p99 of 70–180 µs gives an ack timeout of 280–700 µs, above the 200 µs floor.
+  - The fault loop above holds for any link whose round trip is longer than four times the stand-in. Either of #2005's options A or C would end it on this link. A stand-in α taken from the plan's link profile, as `CoreConfig::alpha_p99` intends, would too.
+- **Draft answers, a proposal for the maintainers.** Nothing here moves a question to Settled or changes ADR-0011.
+  - **Question 2 (QUIC against TCP α on the LAN).**
+    - On Wi-Fi, QUIC's channel α at p50 was behind TCP's by 18 µs in one run and by 170 µs in the other. The single-run p50s of each transport moved by up to 84 µs between runs, so this link cannot settle a 50 µs trigger.
+    - On loopback, QUIC was 14 µs worse at 64 B and 45 µs worse at 16 KiB, both under ADR-0011's 50 µs trigger.
+    - Proposed: keep QUIC ahead of TCP for now. Decide on the wired LAN runs (R-PAIR10, the S2 cluster), which these data cannot replace.
+  - **Question 3 (a credit per frame on Wi-Fi).**
+    - A credit-sized datagram before each echo added 69 µs at p50 at 64 B, and 45 µs at 1 KiB (30 µs in the earlier run). That is 2–4 % of this link's one-way time.
+    - Its p99 effect went both ways.
+    - Proposed: keep a credit per frame until RFC-0061's Wi-Fi runs show a cost above that spread. The stand-in measures the extra packet's airtime, not the channel's own work.
+  - **Question 5 (what the iroh knobs gain).** Not measured: the initial-window and GSO comparison is still to run. macOS has no GSO path (§4.3's note), so it needs a Linux sender, on wired rigs.
+  - **OQ-NET-29 (stream against datagram).**
+    - On Wi-Fi, stream delivery was no worse than datagrams at p50, and better at p99: by 1,698 µs at 64 B and 501 µs at 1 KiB.
+    - On loopback, streams were 43 µs (64 B) and 36 µs (1 KiB) worse at p99, under the 50 µs trigger.
+    - Proposed: keep streams.
+- **Still open.** The run on the scenario (c) rig and the wired LAN, the iroh-knob comparison, and the decisions themselves.
 
 ## Proposed amendments to RFC-0001
 

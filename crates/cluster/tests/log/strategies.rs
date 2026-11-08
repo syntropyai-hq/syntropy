@@ -131,6 +131,7 @@ pub fn plan(epoch: PlanEpoch, instance: InstanceId, model: ModelId) -> Placement
         batching: BatchingLimits::default(),
         predicted: PredictedCost::default(),
         assumptions: Vec::new(),
+        ext: syntropy_core::plan::PlacementPlanExt::default(),
     }
 }
 

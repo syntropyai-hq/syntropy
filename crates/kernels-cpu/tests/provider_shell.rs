@@ -1,8 +1,13 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! COMP-E3-T02's first criterion: the CPU provider's shell holds to RFC-0040 §2's contract over
-//! real host buffers. No CPU kernel exists yet, so the launches run stand-in kernels that
-//! [`CpuProvider::with_kernel`] adds.
+//! real host buffers. The launches run stand-in kernels that [`CpuProvider::with_kernel`] adds;
+//! `tests/gemv_provider.rs` and `tests/launch_binding.rs` launch with real operands.
+
+#![allow(
+    clippy::result_large_err,
+    reason = "core::Error is RFC-0001 §5.12's struct, 344 B inline [measured: size_of, debug, x86-64 Linux, ce2044ae] (COMP-E13-T15)"
+)]
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -13,11 +18,12 @@ use smallvec::smallvec;
 use syntropy_core::{Bytes, DType, DeviceId, ErrorClass, HostRegion, NodeId, QuantScheme};
 use syntropy_kernels::{
     AllocRequest, BufferSlice, DeviceClass, DeviceCtx, DeviceFeatures, DeviceHealth, Error,
-    ErrorCode, KernelProvider, LayoutVersion, MemKind, MemoryDomain, OpArgs, OpKey, OpKind,
-    OpenOptions, PowerHint, ShapeClass, ShapeSig, Stream, StreamPlan, StreamPriority, WaitCmp,
-    unsupported,
+    KernelProvider, LayoutVersion, MemKind, MemoryDomain, OpArgs, OpKey, OpKind, OpenOptions,
+    PowerHint, ShapeClass, ShapeSig, Stream, StreamPlan, StreamPriority, WaitCmp, unsupported,
 };
-use syntropy_kernels_cpu::{CpuProvider, CpuWaker, KillSwitches, Parked, Run, STREAM_CAPACITY};
+use syntropy_kernels_cpu::{
+    CpuProvider, CpuWaker, KillSwitches, Launch, Parked, Run, STREAM_CAPACITY,
+};
 
 fn options(doorbells: u32) -> OpenOptions {
     OpenOptions {
@@ -29,7 +35,9 @@ fn options(doorbells: u32) -> OpenOptions {
         },
         doorbell_slots: doorbells,
         capture: true,
-        deterministic: true,
+        // Stand-in kernels declare no capabilities, which a device opened deterministic
+        // refuses (RFC-0040 §3.3).
+        deterministic: false,
         power: PowerHint::Mains,
     }
 }
@@ -149,7 +157,10 @@ fn host_memory_is_allocated_registered_and_imported_as_it_is() {
     let error = provider.alloc(&ctx, empty).unwrap_err();
     assert_eq!(
         (error.class, error.code),
-        (ErrorClass::Capacity, ErrorCode::ALLOC_FAILED)
+        (
+            ErrorClass::Capacity,
+            syntropy_kernels::error::codes::ALLOC_FAILED
+        )
     );
 
     let mut owned = vec![7u8; 128];
@@ -465,17 +476,17 @@ fn capture_records_an_op_list_that_replays_afresh() {
 
 static STAND_IN_RUNS: AtomicU32 = AtomicU32::new(0);
 
-fn stand_in(_: &OpArgs<'_>) -> Result<(), Error> {
+fn stand_in(_: &Launch<'_>) -> Result<(), Error> {
     STAND_IN_RUNS.fetch_add(1, Ordering::Relaxed);
     Ok(())
 }
 
-fn failing(_: &OpArgs<'_>) -> Result<(), Error> {
-    Err(Error {
-        class: ErrorClass::Device,
-        code: ErrorCode::DEVICE_STICKY,
-        message: "the stand-in failed".to_owned(),
-    })
+fn failing(_: &Launch<'_>) -> Result<(), Error> {
+    Err(Error::new(
+        ErrorClass::Device,
+        syntropy_kernels::error::codes::DEVICE_STICKY,
+        "the stand-in failed".to_owned(),
+    ))
 }
 
 #[test]
@@ -519,7 +530,7 @@ fn a_failed_kernel_makes_the_device_sticky() {
     assert_eq!(
         provider.health(&ctx),
         DeviceHealth::Sticky {
-            code: ErrorCode::DEVICE_STICKY
+            code: syntropy_kernels::error::codes::DEVICE_STICKY
         }
     );
     let later = provider.signal_host(&ctx, &s, syntropy_kernels::HostFlag { page: 0, slot: 0 }, 1);

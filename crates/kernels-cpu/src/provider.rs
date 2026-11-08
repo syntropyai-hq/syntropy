@@ -17,11 +17,13 @@
 //!   registered, after the stores before it (RFC-0040 §4.2, the CPU row).
 //! - **Capture.** It records the op list that a stream's calls would push, and `replay` pushes
 //!   it again (RFC-0040 §4.4, the CPU row). A replay allocates nothing.
-//! - **Kernels.** `prepare` looks the op's kernel up in the ISA level's dispatch table
-//!   (COMP-E3-T01), and `launch` queues it. The table is empty until the kernel tasks fill it, so
-//!   every op is `Unsupported` today, except stand-ins a test adds with
-//!   [`CpuProvider::with_kernel`]. `OpArgs` is a placeholder until COMP-E1-T05, so a kernel runs
-//!   with [`OpArgs::none`](syntropy_kernels::OpArgs::none).
+//! - **Kernels.** `query` returns the capabilities the op's kernel declares. `prepare` looks
+//!   the kernel up in the ISA level's dispatch table (COMP-E3-T01) and asks it for a
+//!   [`Plan`](crate::launch::Plan), whose workspace the prepared op asks for. `launch` checks the
+//!   operands against the plan, copies them into a fixed-size form and queues the kernel; the
+//!   push resolves every buffer to its host address, at once or at each replay of a capture
+//!   ([`launch`](crate::launch)). Ops with no kernel at the level are `Unsupported`, apart from
+//!   stand-ins a test adds with [`CpuProvider::with_kernel`].
 //!
 //! The calls the dispatcher makes inside a step allocate nothing, take no lock and make no
 //! system call: `replay`, `launch`, `record`, `wait`, `poll`, `signal_host`, `wait_host`,
@@ -43,9 +45,9 @@ use syntropy_kernels::{
 };
 
 use crate::device::{CpuDevice, HostBuf, internal};
-use crate::dispatch::KernelFn;
 use crate::doorbell::Doorbells;
 use crate::isa::{self, KillSwitches};
+use crate::launch::{Kernel, KernelFn, Unresolved};
 use crate::stream::{Item, Run, StreamRunner, sticky};
 use crate::wake::CpuWaker;
 
@@ -65,7 +67,7 @@ const MIN_ALIGN: u64 = 64;
 pub struct CpuProvider {
     kill: KillSwitches,
     /// Stand-in kernels added to every opened device's table, for tests.
-    extra: Vec<(OpKind, KernelFn)>,
+    extra: Vec<(OpKind, Kernel)>,
     registry: OpRegistry,
 }
 
@@ -80,11 +82,11 @@ impl CpuProvider {
         }
     }
 
-    /// The same provider with `kernel` as the kernel for `kind` on every device it opens: a
-    /// stand-in, for tests, until the kernel tasks fill the dispatch tables.
+    /// The same provider with `kernel` as a stand-in kernel for `kind` on every device it opens
+    /// ([`Kernel::stand_in`]), for tests. It replaces the level's own kernel for `kind`.
     #[must_use]
     pub fn with_kernel(mut self, kind: OpKind, kernel: KernelFn) -> CpuProvider {
-        self.extra.push((kind, kernel));
+        self.extra.push((kind, Kernel::stand_in(kernel)));
         self
     }
 
@@ -198,10 +200,12 @@ impl CpuProvider {
 
     /// The NUMA nodes of the cores this process may run on, in order.
     fn nodes() -> Result<Vec<u16>, Error> {
-        let cores = syntropy_io::os::cpu_topology().map_err(|error| Error {
-            class: ErrorClass::Unsupported,
-            code: ErrorCode::OP_UNSUPPORTED,
-            message: format!("the cores this process may run on: {error}"),
+        let cores = syntropy_io::os::cpu_topology().map_err(|error| {
+            Error::new(
+                ErrorClass::Unsupported,
+                syntropy_kernels::error::codes::OP_UNSUPPORTED,
+                format!("the cores this process may run on: {error}"),
+            )
         })?;
         let nodes: BTreeSet<u16> = cores.iter().map(|core| core.numa_node).collect();
         Ok(nodes.into_iter().collect())
@@ -210,7 +214,7 @@ impl CpuProvider {
 
 impl KernelProvider for CpuProvider {
     fn id(&self) -> ProviderId {
-        ProviderId("cpu")
+        ProviderId::new("cpu")
     }
 
     fn backend(&self) -> Backend {
@@ -265,21 +269,30 @@ impl KernelProvider for CpuProvider {
     /// level's dispatch table, allocates the doorbell pages and creates the planned streams.
     fn open(&self, dev: DeviceId, opts: &OpenOptions) -> Result<DeviceCtx, Error> {
         let nodes = Self::nodes()?;
-        let node = *nodes.get(usize::from(dev.ordinal)).ok_or_else(|| Error {
-            class: ErrorClass::Unsupported,
-            code: ErrorCode::OP_UNSUPPORTED,
-            message: format!("no CPU device {} on this host", dev.ordinal),
+        let node = *nodes.get(usize::from(dev.ordinal)).ok_or_else(|| {
+            Error::new(
+                ErrorClass::Unsupported,
+                syntropy_kernels::error::codes::OP_UNSUPPORTED,
+                format!("no CPU device {} on this host", dev.ordinal),
+            )
         })?;
-        let detection = isa::detect(&self.kill).ok_or_else(|| Error {
-            class: ErrorClass::Unsupported,
-            code: ErrorCode::OP_UNSUPPORTED,
-            message: "this CPU is below X86V2, the provider's lowest level".to_owned(),
+        let detection = isa::detect(&self.kill).ok_or_else(|| {
+            Error::new(
+                ErrorClass::Unsupported,
+                syntropy_kernels::error::codes::OP_UNSUPPORTED,
+                "this CPU is below X86V2, the provider's lowest level".to_owned(),
+            )
         })?;
         let mut table = isa::table_for_class(detection.isa, &detection)?;
         for (kind, kernel) in &self.extra {
             table.insert(*kind, *kernel);
         }
-        let device = CpuDevice::new(node, table, Doorbells::new(opts.doorbell_slots));
+        let device = CpuDevice::new(
+            node,
+            table,
+            opts.deterministic,
+            Doorbells::new(opts.doorbell_slots),
+        );
         let plan = opts.streams;
         for (count, prio) in [
             (plan.compute, StreamPriority::Compute),
@@ -298,9 +311,10 @@ impl KernelProvider for CpuProvider {
         &self.registry
     }
 
-    /// `None` for every op: each kernel task declares its op's capabilities with its kernel.
-    fn query(&self, _ctx: &DeviceCtx, _op: &OpKey, _shape: &ShapeSig) -> Option<OpCaps> {
-        None
+    /// What the op's kernel at this device's level declares, or `None` when it has none.
+    fn query(&self, ctx: &DeviceCtx, op: &OpKey, shape: &ShapeSig) -> Option<OpCaps> {
+        let device = self.device(ctx).ok()?;
+        (device.table.get(&op.op)?.caps)(op, shape)
     }
 
     fn alloc(&self, ctx: &DeviceCtx, req: AllocRequest) -> Result<DeviceBuffer, Error> {
@@ -566,32 +580,64 @@ impl KernelProvider for CpuProvider {
         device.push(s.handle, Item::CopyRef { src, dst })
     }
 
-    fn prepare(&self, ctx: &DeviceCtx, op: &OpKey, _shape: &ShapeSig) -> Result<PreparedOp, Error> {
+    /// Finds the op's kernel at this device's level and plans it. On a device opened
+    /// deterministic, a kernel whose capabilities at `op` and `shape` are absent or not
+    /// `deterministic` is refused with `OpUnsupported`, class `Unsupported`.
+    fn prepare(&self, ctx: &DeviceCtx, op: &OpKey, shape: &ShapeSig) -> Result<PreparedOp, Error> {
         let device = self.live(ctx)?;
         let kernel = device.table.get(&op.op).ok_or_else(unsupported)?;
+        let plan = (kernel.plan)(op, shape).ok_or_else(unsupported)?;
+        // A device opened deterministic takes only a kernel that declares a fixed reduction
+        // order at this key and shape. A kernel that declares nothing is refused: it fails
+        // closed rather than run a variant nobody vouched for (RFC-0040 §3.3; ADR-0019
+        // decision 8).
+        if device.deterministic && !(kernel.caps)(op, shape).is_some_and(|c| c.deterministic) {
+            return Err(Error::new(
+                ErrorClass::Unsupported,
+                syntropy_kernels::error::codes::OP_UNSUPPORTED,
+                format!(
+                    "{:?} has no deterministic variant at this shape, and the device was opened \
+                     deterministic",
+                    op.op
+                ),
+            ));
+        }
         let mut prepared = device.prepared.borrow_mut();
-        prepared.push(kernel);
+        prepared.push((kernel, plan));
         Ok(PreparedOp::with_handle(
-            Bytes(0),
+            plan.workspace,
             (prepared.len() - 1) as u64,
         ))
     }
 
-    /// Queues the prepared kernel. `args` is the placeholder of COMP-E1-T05, so the kernel runs
-    /// with [`OpArgs::none`].
+    /// Checks `args` against the prepared op's plan and queues the kernel with them. The push
+    /// resolves every buffer to its host address; in a capture, each replay does.
+    /// Allocation-free.
     fn launch(
         &self,
         ctx: &DeviceCtx,
         s: &Stream,
         op: &PreparedOp,
-        _args: &OpArgs<'_>,
+        args: &OpArgs<'_>,
     ) -> Result<(), Error> {
         let device = self.live(ctx)?;
-        let kernel = usize::try_from(op.handle)
+        let (kernel, plan) = usize::try_from(op.handle)
             .ok()
             .and_then(|i| device.prepared.borrow().get(i).copied())
             .ok_or_else(|| internal(format!("no prepared op {} on this device", op.handle)))?;
-        device.push(s.handle, Item::Launch(kernel))
+        if plan.workspace.0 > 0 && args.workspace.is_none_or(|w| w.bytes < plan.workspace) {
+            return Err(internal(format!(
+                "the prepared op needs a workspace of {} bytes",
+                plan.workspace.0
+            )));
+        }
+        (kernel.check)(&plan, args)?;
+        let item = Item::LaunchRef {
+            kernel: kernel.run,
+            plan,
+            args: Unresolved::from_args(args)?,
+        };
+        device.push(s.handle, item)
     }
 
     /// Starts recording the items `s`'s calls would push, instead of pushing them.
@@ -652,16 +698,87 @@ impl KernelProvider for CpuProvider {
         match self.device(ctx).ok().and_then(|d| d.health.sticky()) {
             None => DeviceHealth::Ok,
             Some(code) => DeviceHealth::Sticky {
-                code: ErrorCode(code),
+                code: ErrorCode::new(syntropy_core::Domain::Kernels, code),
             },
         }
     }
 }
 
 fn alloc_failed(what: String) -> Error {
-    Error {
-        class: ErrorClass::Capacity,
-        code: ErrorCode::ALLOC_FAILED,
-        message: format!("cannot allocate {what}"),
+    Error::new(
+        ErrorClass::Capacity,
+        syntropy_kernels::error::codes::ALLOC_FAILED,
+        format!("cannot allocate {what}"),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use smallvec::smallvec;
+    use syntropy_core::{DType, NodeId, QuantScheme};
+    use syntropy_kernels::{PowerHint, ShapeClass, StreamPlan};
+
+    use super::*;
+
+    /// The `Gemv` kernel with capabilities that say it is not deterministic.
+    fn not_deterministic() -> Kernel {
+        let gemv = crate::gemv::entry::kernel(syntropy_kernels::CpuIsa::X86V2);
+        Kernel {
+            caps: |key, shape| {
+                let caps =
+                    (crate::gemv::entry::kernel(syntropy_kernels::CpuIsa::X86V2).caps)(key, shape)?;
+                Some(OpCaps {
+                    deterministic: false,
+                    ..caps
+                })
+            },
+            ..gemv
+        }
+    }
+
+    fn open(p: &CpuProvider, deterministic: bool) -> DeviceCtx {
+        p.open(
+            DeviceId {
+                node: NodeId([5; 32]),
+                ordinal: 0,
+            },
+            &OpenOptions {
+                streams: StreamPlan {
+                    compute: 0,
+                    copy_in: 0,
+                    copy_out: 0,
+                    collective: 0,
+                },
+                doorbell_slots: 1,
+                capture: false,
+                deterministic,
+                power: PowerHint::Mains,
+            },
+        )
+        .expect("opens")
+    }
+
+    #[test]
+    fn prepare_refuses_a_declared_non_deterministic_kernel_only_on_a_deterministic_device() {
+        let mut p = CpuProvider::new(KillSwitches::NONE);
+        p.extra.push((OpKind::Gemv, not_deterministic()));
+        let key = OpKey {
+            op: OpKind::Gemv,
+            schemes: smallvec![QuantScheme::Plain(DType::F16)],
+            layout: LayoutVersion::SOURCE,
+            variant: 0,
+        };
+        let shape = ShapeSig {
+            class: ShapeClass::Decode,
+            rows: 1,
+            dims: smallvec![8, 64],
+        };
+        let ctx = open(&p, true);
+        assert!(!p.query(&ctx, &key, &shape).expect("caps").deterministic);
+        let e = p.prepare(&ctx, &key, &shape).unwrap_err();
+        assert_eq!(e.class, ErrorClass::Unsupported);
+        assert_eq!(e.code, syntropy_kernels::error::codes::OP_UNSUPPORTED);
+        let ctx = open(&p, false);
+        p.prepare(&ctx, &key, &shape).expect("prepares");
     }
 }

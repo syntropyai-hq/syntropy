@@ -30,7 +30,7 @@ use crate::safetensors::SafetensorsTensor;
 
 /// Where a tensor's bytes are: a file of the model, and a byte range in it (RFC-0001 §5.3
 /// `SourceExtent`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct SourceExtent {
     /// The file's index among the model's source files: a GGUF split, or a safetensors shard.
     pub file: u16,

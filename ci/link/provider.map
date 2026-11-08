@@ -1,0 +1,10 @@
+/* SPDX-License-Identifier: MIT OR Apache-2.0 */
+/* The ELF version node of provider-library ABI v1 (RFC-0040 §10.4; ADR-0400 decision 4). A
+   provider library exports exactly the entry symbol, under this node; everything else is local.
+   `provider-cc` passes this script in place of rustc's anonymous one. */
+SYNTROPY_PROVIDER_1 {
+  global:
+    syntropy_provider_entry_v1;
+  local:
+    *;
+};

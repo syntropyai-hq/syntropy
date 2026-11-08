@@ -1,0 +1,70 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT OR Apache-2.0
+#
+# The C compiler driver rustc links with on Linux (`.cargo/config.toml`), around `cc`
+# (COMP-E9-T19; RFC-0040 §10.4; ADR-0400 decision 4).
+#
+# rustc gives every `cdylib` link an anonymous version script listing its exported symbols, and
+# GNU ld and lld both refuse to combine an anonymous version tag with a named one. So a provider
+# library, which `kernels::abi::export!` builds, would export `syntropy_provider_entry_v1` with no
+# version. When rustc's script exports that symbol and nothing else, this wrapper passes
+# `provider.map` in its place, which exports the same one symbol under the node
+# `SYNTROPY_PROVIDER_1`. A script that exports anything more is passed through unchanged, so the
+# exports test of `kernels-loader` sees the extra symbol instead of it being hidden here. Every
+# other link (binaries, build scripts, proc macros, other libraries) reaches the driver unchanged.
+#
+# The driver is `cc`, rustc's default on these targets, or `$SYNTROPY_LINK_CC` (a cross build's
+# target-prefixed compiler, for one). The wrapper uses only shell built-ins, so the build needs
+# nothing beyond the pinned toolchain and the system's compiler driver and linker.
+#
+# Known limits, each of which leaves the entry unversioned and fails the exports test rather than
+# breaking the link: rustc moves the arguments into an `@file` when the command line is too long
+# for the OS, and this wrapper does not read it; a `CARGO_TARGET_<triple>_LINKER` or `-C linker`
+# override bypasses it. A workspace path with a comma breaks `-Wl,`, which splits on commas, and
+# the link then fails.
+
+map="${0%/*}/provider.map"
+entry=syntropy_provider_entry_v1
+driver="${SYNTROPY_LINK_CC:-cc}"
+
+# Whether rustc's version script `$1` exports exactly the provider entry symbol: its `global:`
+# list is that one name.
+exports_only_entry() {
+    [ -r "$1" ] || return 1
+    section= globals= count=0
+    while IFS= read -r line || [ -n "$line" ]; do
+        # Trim surrounding blanks with parameter expansion; no external tool.
+        line="${line#"${line%%[![:space:]]*}"}"
+        line="${line%"${line##*[![:space:]]}"}"
+        case $line in
+            global:) section=global ;;
+            local:*) section=local ;;
+            '' | '{' | '};') ;;
+            *)
+                if [ "$section" = global ]; then
+                    globals="$line"
+                    count=$((count + 1))
+                fi
+                ;;
+        esac
+    done < "$1"
+    [ "$count" -eq 1 ] && [ "$globals" = "$entry;" ]
+}
+
+for arg do
+    shift
+    case $arg in
+        -Wl,--version-script=*)
+            if exports_only_entry "${arg#-Wl,--version-script=}"; then
+                arg="-Wl,--version-script=$map"
+            fi
+            ;;
+    esac
+    set -- "$@" "$arg"
+done
+
+if ! command -v "$driver" > /dev/null 2>&1; then
+    echo "provider-cc: the C compiler driver \`$driver\` was not found; install it, or set SYNTROPY_LINK_CC" >&2
+    exit 127
+fi
+exec "$driver" "$@"

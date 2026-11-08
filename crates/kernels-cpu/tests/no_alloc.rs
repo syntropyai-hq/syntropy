@@ -14,6 +14,11 @@
 //! Then the dispatcher polls the event and checks the device's health. The device's thread and
 //! a runner on it both count their own allocations.
 
+#![allow(
+    clippy::result_large_err,
+    reason = "core::Error is RFC-0001 §5.12's struct, 344 B inline [measured: size_of, debug, x86-64 Linux, ce2044ae] (COMP-E13-T15)"
+)]
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
@@ -23,7 +28,7 @@ use syntropy_kernels::{
     BufferSlice, DeviceHealth, Error, KernelProvider, LayoutVersion, OpArgs, OpKey, OpKind,
     OpenOptions, PowerHint, ShapeClass, ShapeSig, StreamPlan, StreamPriority, WaitCmp,
 };
-use syntropy_kernels_cpu::{CpuProvider, CpuWaker, KillSwitches, Run};
+use syntropy_kernels_cpu::{CpuProvider, CpuWaker, KillSwitches, Launch, Run};
 use syntropy_testkit::guards::{CountingAlloc, alloc_count_this_thread};
 
 #[global_allocator]
@@ -31,7 +36,7 @@ static ALLOCATOR: CountingAlloc = CountingAlloc;
 
 static KERNEL_RUNS: AtomicU64 = AtomicU64::new(0);
 
-fn stand_in(_: &OpArgs<'_>) -> Result<(), Error> {
+fn stand_in(_: &Launch<'_>) -> Result<(), Error> {
     KERNEL_RUNS.fetch_add(1, Ordering::Relaxed);
     Ok(())
 }
@@ -58,7 +63,9 @@ fn ten_thousand_steady_state_steps_allocate_nothing() {
         },
         doorbell_slots: 4,
         capture: true,
-        deterministic: true,
+        // Stand-in kernels declare no capabilities, which a device opened deterministic
+        // refuses (RFC-0040 §3.3).
+        deterministic: false,
         power: PowerHint::Mains,
     };
     let dev = DeviceId {
@@ -165,7 +172,9 @@ fn a_runner_on_its_own_thread_allocates_nothing() {
         },
         doorbell_slots: 4,
         capture: true,
-        deterministic: true,
+        // Stand-in kernels declare no capabilities, which a device opened deterministic
+        // refuses (RFC-0040 §3.3).
+        deterministic: false,
         power: PowerHint::Mains,
     };
     let dev = DeviceId {

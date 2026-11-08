@@ -19,7 +19,7 @@
 /// What it emits, and the rules the thunks keep:
 ///
 /// - Every thunk runs its body under `catch_unwind` ([`guest::call`](crate::abi::guest::call)).
-///   A caught panic returns `Internal` ([`ErrorCode::PROVIDER_PANICKED`](crate::ErrorCode)) and
+///   A caught panic returns `Internal` ([`crate::error::codes::PROVIDER_PANICKED`](crate::ErrorCode)) and
 ///   makes the provider report `DeviceHealth::Sticky`.
 /// - Only plain `#[repr(C)]` records, pointers with lengths and `u64` handles cross. The module
 ///   allocates nothing the core frees: results go into buffers the core supplies.
@@ -457,6 +457,7 @@ macro_rules! __abi_export {
                     health: health::<P>,
                     last_error: last_error::<P>,
                     slf: ::std::ptr::from_ref(inst).cast_mut().cast::<c_void>(),
+                    health_size: ::std::mem::size_of::<SynHealth>() as u32,
                 })
             }
 
