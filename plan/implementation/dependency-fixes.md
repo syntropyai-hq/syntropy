@@ -380,6 +380,14 @@ COMP-E4-T05 builds CUDA graph capture before any kernel exists, so its decode st
 | The one-submission count on a real decode step moves to PLC-E7-T03, which already owns one replay submission per device per decode step | COMP-E4-T05, PLC-E7-T03 | R9 | a real step needs the kernels and the step loop. PLC-E7-T03 already depends on COMP-E4-T05, so the graph stays acyclic and within M0a |
 | The report at `Warming` and `Ready { degraded }` after `CaptureFailed` move to PLC-E7-T04, which owns the capture policy and the degraded report | COMP-E4-T05, PLC-E7-T04 | R9 | the runner states are the executor's. PLC-E7-T04 already depends on COMP-E4-T05 |
 
+## COMP-E11-T02: the real exFAT volume moves to a hosted CI step (2026-11-08)
+
+COMP-E11-T02 (M1a) asked that "an exFAT test volume" switch to chunk-file mode. #1965 met it through the probe's real code on volumes simulated through `SparseOps` doubles that behave as exFAT does on each OS, and left the real volume: making one needs root for a loop device or an exFAT FUSE driver, which no task gives it. GitHub's hosted Linux runner has passwordless `sudo`. So the real-volume run moves to a job of its own on GitHub's hosted `ubuntu-24.04` runner, outside ADR-0625's build-host gate, as `toolchains-linux` is, and not to a lab rig: the kernel's exFAT driver is the file system a USB stick presents, the probe tests file-system behaviour and not the device, and no rig is held for it. The maintainers accepted this split on 2026-11-08, from the proposal in #2026 §3, in the pattern of COMP-E11-T24.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| COMP-E11-T02's exFAT criterion names what #1965 met, a volume simulated through `SparseOps` doubles that behaves as exFAT does on each OS; new COMP-E11-T25 (M1a) runs the store on a real exFAT image in hosted CI. COMP-E11-T25 → COMP-E11-T02, QUAL-E1-T06, QUAL-E1-T07 | COMP-E11-T02, COMP-E11-T25 | R9 | the real volume needs a privileged CI job that no task COMP-E11-T02 reaches builds. QUAL-E1-T06 and QUAL-E1-T07 are M0a and COMP-E11-T02 is M1a, and none of them reaches COMP-E11-T25, so the edges add no cycle |
+
 ## COMP-E17-T03: RFC-0060 corpus leg moves to the corpus import (2026-10-31)
 
 COMP-E17-T03 (M0a) asked for token-exact GGUF conversions "on the tokenizer corpus", which is RFC-0060's corpus. QUAL-E5-T22 publishes that corpus and its token streams, and it depends on COMP-E17-T03, so an edge from COMP-E17-T03 would make a cycle. COMP-E17-T03 keeps the check on a project-written corpus in its own crate, run on the publisher's GGUF files of both M0 nightly checkpoints. The rerun on the published corpus goes with the import. The `llama` family's M0 checkpoint is Qwen3-0.6B (RFC-0060 §12.2), and Llama-3.2-1B is lab-only, so the criterion's "M0 families" needs no gated file. Review of #2054.
@@ -395,6 +403,33 @@ COMP-E17-T04 resolves a `ChatFormat` marker to `Marker::Special(id)` when its te
 | Change | Tasks | Rule | Reason |
 |---|---|---|---|
 | COMP-E17-T13's criterion and fuzz target widen from "every special token" to every added token, special or not | COMP-E17-T13 | R9 | the markers its injection cases cover are COMP-E17-T04's, which T13 already depends on; both are M0a, so the graph does not change. Proposed, for the maintainers to confirm |
+
+## DIST-E1-T06: the laptop-sleep rig test moves to DIST-E1-T18 (2026-11-08)
+
+DIST-E1-T06 (M1a) asked that "a laptop sleep of 60 s causes no runner kill on wake (macOS and Windows rig test)". #1937 built the supervisor, its simulated suspend case and the rig test `a_laptop_sleep_of_60_s_kills_no_runner`, which is ignored by default. Running it needs the macOS and Windows rigs, which DIST-E1-T06 does not depend on and which are M1b (QUAL-E15-T22). The maintainers accepted this split on 2026-11-08, from the proposal in #2026 §3, in the pattern of COMP-E11-T24.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| The laptop-sleep criterion moves to new DIST-E1-T18 (M1b), on R-MBP and a Windows 11 rig. DIST-E1-T18 → DIST-E1-T06, QUAL-E15-T05, QUAL-E15-T22 | DIST-E1-T06, DIST-E1-T18 | R9 | R-MBP and R-WIN are M1b (QUAL-E15-T22), later than DIST-E1-T06. QUAL-E15-T05 and QUAL-E15-T22 are M1a and M1b, and nothing reaches DIST-E1-T18, so the edges add no cycle |
+
+## DIST-E4-T15: the run on two lab machines moves to DIST-E4-T17 (2026-11-08)
+
+DIST-E4-T15 (M1a) asked that "on two lab machines the binary produces a report that passes its schema test". #1767 builds the probe and runs the real binary on one host; the two-machine run needs two lab rigs, which DIST-E4-T15 does not depend on. The maintainers accepted this split on 2026-11-08, in the pattern of COMP-E11-T24; the decision is recorded at https://github.com/syntropyai-hq/syntropy/pull/2080#issuecomment-6717696090. DIST-E4-T16, the alpha field run, gains an edge to DIST-E4-T17, so the binary still runs between two lab machines before it reaches testers, as it did while the leg sat in DIST-E4-T15.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| The two-machine criterion moves to new DIST-E4-T17 (M1a). DIST-E4-T17 → DIST-E4-T15, QUAL-E15-T02, QUAL-E15-T17 | DIST-E4-T15, DIST-E4-T17 | R9 | the criterion uses two lab rigs. R-ADA and R-BW are M0a, and the only task that reaches DIST-E4-T17 is DIST-E4-T16, which none of DIST-E4-T17's prerequisites depends on, so the edges add no cycle |
+| DIST-E4-T16 → DIST-E4-T17 | DIST-E4-T16 | R9 | the field run waited on the two-machine run while it sat in DIST-E4-T15, and keeps that gate. Both are M1a, and DIST-E4-T17 reaches only DIST-E4-T15 and two M0a rigs, so the edge adds no cycle |
+
+## DIST-E6-T01: the classification tests on rigs move to DIST-E6-T09 (2026-11-08)
+
+DIST-E6-T01 (M2) asked that "Ethernet, Wi-Fi, Thunderbolt IP and a tailnet interface are each classified correctly on every Tier 1 OS" on rigs. #1707 and #1719 built the records, the enumeration and the classifier, with the rig test `rig_interfaces_are_classified`, which is ignored by default. DIST-E6-T01 depends on no rig task. The maintainers accepted this split on 2026-11-08, from the proposal in #2026 §3, in the pattern of COMP-E11-T24.
+
+| Change | Tasks | Rule | Reason |
+|---|---|---|---|
+| The rig criterion moves to new DIST-E6-T09 (M2). DIST-E6-T09 → DIST-E6-T01, QUAL-E15-T06, QUAL-E15-T19, QUAL-E15-T22 | DIST-E6-T01, DIST-E6-T09 | R9 | the criterion uses the lab's Wi-Fi access point (QUAL-E15-T06, M2), a Thunderbolt pair (QUAL-E15-T19, M1b) and the macOS and Windows rigs (QUAL-E15-T22, M1b), none later than M2, and nothing reaches DIST-E6-T09, so the edges add no cycle |
+
+Open for the maintainers: no QUAL-E15 rig lists a Thunderbolt or USB4 pair on Linux or on Windows, so DIST-E6-T09's Thunderbolt IP check has a home on macOS only. Either a Linux or Windows rig, such as R-LAPX or R-HALO, gets such a pair, or the Thunderbolt IP check is narrowed to macOS.
 
 ## PLC-E1-T02 split (2026-10-21)
 
