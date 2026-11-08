@@ -382,11 +382,11 @@ COMP-E4-T05 builds CUDA graph capture before any kernel exists, so its decode st
 
 ## COMP-E11-T02: the real exFAT volume moves to a hosted CI step (2026-11-08)
 
-COMP-E11-T02 (M1a) asked that "an exFAT test volume" switch to chunk-file mode. #1965 met it through the probe's real code on volumes that behave as exFAT does on each OS, and left the real volume: making one needs root for a loop device or an exFAT FUSE driver, which no task gives it. A hosted Linux runner has passwordless `sudo`, and `pr.yml`'s `hosted-test-linux` already uses it to add an OS account. So the real-volume run moves to a hosted step, not to a lab rig: the kernel's exFAT driver is the file system a USB stick presents, the probe tests file-system behaviour and not the device, and no rig is held for it. The maintainers accepted this split on 2026-11-08, from the proposal in #2026 §3, in the pattern of COMP-E11-T24.
+COMP-E11-T02 (M1a) asked that "an exFAT test volume" switch to chunk-file mode. #1965 met it through the probe's real code on volumes simulated through `SparseOps` doubles that behave as exFAT does on each OS, and left the real volume: making one needs root for a loop device or an exFAT FUSE driver, which no task gives it. GitHub's hosted Linux runner has passwordless `sudo`. So the real-volume run moves to a job of its own on GitHub's hosted `ubuntu-24.04` runner, outside ADR-0625's build-host gate, as `toolchains-linux` is, and not to a lab rig: the kernel's exFAT driver is the file system a USB stick presents, the probe tests file-system behaviour and not the device, and no rig is held for it. The maintainers accepted this split on 2026-11-08, from the proposal in #2026 §3, in the pattern of COMP-E11-T24.
 
 | Change | Tasks | Rule | Reason |
 |---|---|---|---|
-| COMP-E11-T02's exFAT criterion names what #1965 met, a volume that behaves as exFAT does on each OS; new COMP-E11-T25 (M1a) runs the store on a real exFAT image in hosted CI. COMP-E11-T25 → COMP-E11-T02, QUAL-E1-T06, QUAL-E1-T07 | COMP-E11-T02, COMP-E11-T25 | R9 | the real volume needs a privileged CI step that no task COMP-E11-T02 reaches builds. QUAL-E1-T06 and QUAL-E1-T07 are M0a and COMP-E11-T02 is M1a, and none of them reaches COMP-E11-T25, so the edges add no cycle |
+| COMP-E11-T02's exFAT criterion names what #1965 met, a volume simulated through `SparseOps` doubles that behaves as exFAT does on each OS; new COMP-E11-T25 (M1a) runs the store on a real exFAT image in hosted CI. COMP-E11-T25 → COMP-E11-T02, QUAL-E1-T06, QUAL-E1-T07 | COMP-E11-T02, COMP-E11-T25 | R9 | the real volume needs a privileged CI job that no task COMP-E11-T02 reaches builds. QUAL-E1-T06 and QUAL-E1-T07 are M0a and COMP-E11-T02 is M1a, and none of them reaches COMP-E11-T25, so the edges add no cycle |
 
 ## COMP-E17-T03: RFC-0060 corpus leg moves to the corpus import (2026-10-31)
 
@@ -410,15 +410,16 @@ DIST-E1-T06 (M1a) asked that "a laptop sleep of 60 s causes no runner kill on wa
 
 | Change | Tasks | Rule | Reason |
 |---|---|---|---|
-| The laptop-sleep criterion moves to new DIST-E1-T18 (M1b), on R-MBP and a Windows 11 rig. DIST-E1-T18 → DIST-E1-T06, QUAL-E15-T05, QUAL-E15-T22 | DIST-E1-T06, DIST-E1-T18 | R9 | the rigs are M1b, later than DIST-E1-T06. QUAL-E15-T05 and QUAL-E15-T22 are M1a and M1b, and nothing reaches DIST-E1-T18, so the edges add no cycle |
+| The laptop-sleep criterion moves to new DIST-E1-T18 (M1b), on R-MBP and a Windows 11 rig. DIST-E1-T18 → DIST-E1-T06, QUAL-E15-T05, QUAL-E15-T22 | DIST-E1-T06, DIST-E1-T18 | R9 | R-MBP and R-WIN are M1b (QUAL-E15-T22), later than DIST-E1-T06. QUAL-E15-T05 and QUAL-E15-T22 are M1a and M1b, and nothing reaches DIST-E1-T18, so the edges add no cycle |
 
 ## DIST-E4-T15: the run on two lab machines moves to DIST-E4-T17 (2026-11-08)
 
-DIST-E4-T15 (M1a) asked that "on two lab machines the binary produces a report that passes its schema test". #1767 builds the probe and runs the real binary on one host; the two-machine run needs two lab rigs, which DIST-E4-T15 does not depend on. The maintainers accepted this split on 2026-11-08, from the proposal in #2026 §3, in the pattern of COMP-E11-T24.
+DIST-E4-T15 (M1a) asked that "on two lab machines the binary produces a report that passes its schema test". #1767 builds the probe and runs the real binary on one host; the two-machine run needs two lab rigs, which DIST-E4-T15 does not depend on. The maintainers accepted this split on 2026-11-08, in the pattern of COMP-E11-T24; the decision is recorded at https://github.com/syntropyai-hq/syntropy/pull/2080#issuecomment-6717696090. DIST-E4-T16, the alpha field run, gains an edge to DIST-E4-T17, so the binary still runs between two lab machines before it reaches testers, as it did while the leg sat in DIST-E4-T15.
 
 | Change | Tasks | Rule | Reason |
 |---|---|---|---|
-| The two-machine criterion moves to new DIST-E4-T17 (M1a). DIST-E4-T17 → DIST-E4-T15, QUAL-E15-T02, QUAL-E15-T17 | DIST-E4-T15, DIST-E4-T17 | R9 | the criterion uses two lab rigs. R-ADA and R-BW are M0a, and nothing reaches DIST-E4-T17, so the edges add no cycle |
+| The two-machine criterion moves to new DIST-E4-T17 (M1a). DIST-E4-T17 → DIST-E4-T15, QUAL-E15-T02, QUAL-E15-T17 | DIST-E4-T15, DIST-E4-T17 | R9 | the criterion uses two lab rigs. R-ADA and R-BW are M0a, and the only task that reaches DIST-E4-T17 is DIST-E4-T16, which none of DIST-E4-T17's prerequisites depends on, so the edges add no cycle |
+| DIST-E4-T16 → DIST-E4-T17 | DIST-E4-T16 | R9 | the field run waited on the two-machine run while it sat in DIST-E4-T15, and keeps that gate. Both are M1a, and DIST-E4-T17 reaches only DIST-E4-T15 and two M0a rigs, so the edge adds no cycle |
 
 ## DIST-E6-T01: the classification tests on rigs move to DIST-E6-T09 (2026-11-08)
 
