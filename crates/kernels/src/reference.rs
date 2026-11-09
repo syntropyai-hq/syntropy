@@ -12,12 +12,14 @@
 //! - [`reduce`] holds the one implementation of the `F32Fixed` reduction order, which every op
 //!   here and `graph::reference` use, and the `F64` mode's compensated sum.
 //! - [`math`] holds the software transcendental functions the reference uses instead of a
-//!   platform library: `exp` and SiLU so far.
+//!   platform library: `exp`, SiLU and `ln` so far.
 //! - [`linear`] holds `Gemv`, `Gemm`, `GateUpAct` and `Logits`; [`norm`] holds `RmsNorm`;
 //!   [`elementwise`] holds `Add` and `Mul`; [`convert`](mod@convert) holds `RowGather` and
 //!   `Convert`. [`shape`] holds the [`Matrix`] they take and the [`OpError`] they refuse with.
-//!   These are COMP-E1-T03's ops. Attention, RoPE and `Act` follow in COMP-E1-T17, and the
-//!   sampling, tap and MoE ops in COMP-E1-T18.
+//!   These are COMP-E1-T03's ops. Attention, RoPE and `Act` follow in COMP-E1-T17.
+//! - [`sample`] holds `LogitsProcess`, `TopKTopP`, `SampleSeeded`, `Argmax` and `VerifyAccept`;
+//!   [`tap`] holds `TapGather`; [`moe`] holds `MoeRoute` (softmax top-k), `MoeGrouped` and
+//!   `MoeCombine`. These are COMP-E1-T18's ops.
 //!
 //! These types live here, under the F32 reference semantics of RFC-0001 §4.1, because both
 //! `graph::reference` (the interpreter) and the GPU reference in `kernels-cuda` (COMP-E14-T23)
@@ -40,15 +42,24 @@ pub mod elementwise;
 pub mod embed_inject;
 pub mod linear;
 pub mod math;
+pub mod moe;
 pub mod norm;
 pub mod reduce;
+pub mod sample;
 pub mod shape;
+pub mod tap;
 
 pub use convert::{convert, row_gather};
 pub use elementwise::{Operand, add, mul};
 pub use linear::{gate_up_act, gemm, gemv, logits};
+pub use moe::{Expert, moe_combine, moe_grouped, moe_route};
 pub use norm::{Norm, rms_norm};
+pub use sample::{
+    Acceptance, EMPTY_ROW, Filter, NAN_ROW, Penalties, Process, Verdict, argmax, logits_process,
+    sample_seeded, top_k_top_p, verify_accept,
+};
 pub use shape::{Matrix, OpError};
+pub use tap::{TapRow, tap_gather};
 
 /// The reference's numeric mode (RFC-0060 §4.1).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
