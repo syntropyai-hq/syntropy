@@ -22,6 +22,7 @@ use super::*;
 use crate::classify::{ClassRule, ClassSel, DimOrder, Matcher, RuleTable, ShapeDim};
 use crate::families::{Family, FamilyError, Key, MetaView, Registration, Registry};
 use crate::ir::OpSet;
+use crate::tokenize::tests::{Kv, encode_kvs};
 
 use ShapeDim::{Hp, Mul};
 
@@ -436,7 +437,12 @@ fn st_census(tensors: &[(String, Vec<u64>)], config: &str) -> Result<ModelManife
 }
 
 /// A GGUF v3 file of the given metadata and F32 tensors, laid out with alignment 32.
-fn gguf_file(kvs: &[(&str, u32)], arch: &str, tensors: &[(String, Vec<u64>)]) -> Vec<u8> {
+fn gguf_file(
+    kvs: &[(&str, u32)],
+    extra: &[(String, Kv)],
+    arch: &str,
+    tensors: &[(String, Vec<u64>)],
+) -> Vec<u8> {
     fn s(out: &mut Vec<u8>, v: &str) {
         out.extend_from_slice(&(v.len() as u64).to_le_bytes());
         out.extend_from_slice(v.as_bytes());
@@ -445,7 +451,7 @@ fn gguf_file(kvs: &[(&str, u32)], arch: &str, tensors: &[(String, Vec<u64>)]) ->
     let mut out = b"GGUF".to_vec();
     out.extend_from_slice(&3u32.to_le_bytes());
     out.extend_from_slice(&(tensors.len() as u64).to_le_bytes());
-    out.extend_from_slice(&(kvs.len() as u64 + 1).to_le_bytes());
+    out.extend_from_slice(&((kvs.len() + extra.len()) as u64 + 1).to_le_bytes());
     s(&mut out, "general.architecture");
     out.extend_from_slice(&8u32.to_le_bytes());
     s(&mut out, arch);
@@ -454,6 +460,7 @@ fn gguf_file(kvs: &[(&str, u32)], arch: &str, tensors: &[(String, Vec<u64>)]) ->
         out.extend_from_slice(&4u32.to_le_bytes());
         out.extend_from_slice(&v.to_le_bytes());
     }
+    out.extend_from_slice(&encode_kvs(extra));
     let mut at = 0u64;
     for (name, ne) in tensors {
         s(&mut out, name);
@@ -515,6 +522,14 @@ fn gguf_tensors() -> Vec<(String, Vec<u64>)> {
 }
 
 fn gguf_census(tensors: &[(String, Vec<u64>)]) -> Result<ModelManifest, CensusError> {
+    gguf_census_with(tensors, &[])
+}
+
+/// [`gguf_census`] with more key-value pairs, such as a tokenizer's.
+fn gguf_census_with(
+    tensors: &[(String, Vec<u64>)],
+    extra: &[(String, Kv)],
+) -> Result<ModelManifest, CensusError> {
     let kvs = [
         ("testmoe.block_count", LAYERS as u32),
         ("testmoe.embedding_length", HIDDEN as u32),
@@ -526,7 +541,7 @@ fn gguf_census(tensors: &[(String, Vec<u64>)]) -> Result<ModelManifest, CensusEr
         ("testmoe.expert_count", EXPERTS as u32),
         ("testmoe.expert_used_count", TOP as u32),
     ];
-    let file = Bytes(gguf_file(&kvs, "testmoe", tensors));
+    let file = Bytes(gguf_file(&kvs, extra, "testmoe", tensors));
     let header = GgufHeader::read(&file, &Limits::default()).expect("a valid synthetic GGUF");
     let files = files();
     build_in(
@@ -874,4 +889,45 @@ fn an_unusable_top_k_fails_closed() {
     let error = st_census(&st_tensors(), &config).unwrap_err();
     assert_eq!(error.code(), Some(6), "{error}");
     assert!(error.to_string().contains("top_k"), "{error}");
+}
+
+// ---- GGUF tokenizer -------------------------------------------------------------------------------
+
+fn gguf_tokenizer(pre: &str) -> Vec<(String, Kv)> {
+    let strs = |v: &[&str]| Kv::Strs(v.iter().map(|s| (*s).to_owned()).collect());
+    vec![
+        (tokenize::MODEL.into(), Kv::Str("gpt2".into())),
+        (tokenize::PRE.into(), Kv::Str(pre.into())),
+        (tokenize::TOKENS.into(), strs(&["a", "b", "ab", "<s>"])),
+        (tokenize::TOKEN_TYPE.into(), Kv::I32s(vec![1, 1, 1, 3])),
+        (tokenize::MERGES.into(), strs(&["a b"])),
+    ]
+}
+
+/// A GGUF source without side files has its tokenizer converted from its metadata; without
+/// tokenizer metadata it has none.
+#[test]
+fn a_gguf_census_converts_the_files_tokenizer() {
+    assert!(gguf_census(&gguf_tensors()).unwrap().tokenizer.is_none());
+    let m = gguf_census_with(&gguf_tensors(), &gguf_tokenizer("qwen2")).unwrap();
+    let spec = m.tokenizer.expect("the tokenizer is converted");
+    let model: serde_json::Value = serde_json::from_slice(spec.model()).unwrap();
+    assert_eq!(model["model"]["merges"], serde_json::json!([["a", "b"]]));
+    assert_eq!(model["added_tokens"][0]["content"], "<s>");
+}
+
+#[test]
+fn an_unknown_gguf_pre_tokenizer_refuses_the_census() {
+    let e = gguf_census_with(&gguf_tensors(), &gguf_tokenizer("unknown-pre")).unwrap_err();
+    assert_eq!(e.code(), Some(6));
+    assert_eq!(e.class(), ErrorClass::Unsupported);
+    assert!(
+        e.to_string().contains("TokenizerUnsupported (Graph 6)"),
+        "{e}"
+    );
+    let mut bad = gguf_tokenizer("qwen2");
+    bad.push((tokenize::MERGES.into(), Kv::Strs(vec!["a c".into()])));
+    bad.remove(4);
+    let e = gguf_census_with(&gguf_tensors(), &bad).unwrap_err();
+    assert_eq!((e.code(), e.class()), (None, ErrorClass::Integrity));
 }
