@@ -16,8 +16,11 @@
 //! - [`linear`] holds `Gemv`, `Gemm`, `GateUpAct` and `Logits`; [`norm`] holds `RmsNorm`;
 //!   [`elementwise`] holds `Add` and `Mul`; [`convert`](mod@convert) holds `RowGather` and
 //!   `Convert`. [`shape`] holds the [`Matrix`] they take and the [`OpError`] they refuse with.
-//!   These are COMP-E1-T03's ops. Attention, RoPE and `Act` follow in COMP-E1-T17, and the
-//!   sampling, tap and MoE ops in COMP-E1-T18.
+//!   These are COMP-E1-T03's ops.
+//! - [`rope`](mod@rope) holds `Rope` and the RoPE tables `KvWrite` and the attention ops
+//!   apply; [`trig`] holds the software `sin` and `cos` they use; [`act`](mod@act) holds `Act`;
+//!   [`attention`] holds `KvWrite(Gqa)`, `AttnDecode(Gqa)` and `AttnPrefill(Gqa)` over paged KV.
+//!   These are COMP-E1-T17's ops. The sampling, tap and MoE ops follow in COMP-E1-T18.
 //!
 //! These types live here, under the F32 reference semantics of RFC-0001 §4.1, because both
 //! `graph::reference` (the interpreter) and the GPU reference in `kernels-cuda` (COMP-E14-T23)
@@ -33,7 +36,9 @@
 //! [`embed_inject`] holds the reserved `EmbedInject` op's semantics (RFC-0043 §2.4), defined so
 //! that its meaning is fixed before any provider or family uses it.
 
+pub mod act;
 pub mod act_quant;
+pub mod attention;
 pub mod convert;
 pub mod dequant;
 pub mod elementwise;
@@ -42,12 +47,17 @@ pub mod linear;
 pub mod math;
 pub mod norm;
 pub mod reduce;
+pub mod rope;
 pub mod shape;
+pub mod trig;
 
+pub use act::act;
+pub use attention::{Gqa, KvLayout, attn_decode, attn_prefill, kv_write};
 pub use convert::{convert, row_gather};
 pub use elementwise::{Operand, add, mul};
 pub use linear::{gate_up_act, gemm, gemv, logits};
 pub use norm::{Norm, rms_norm};
+pub use rope::{Rope, RopePairs, RopeScaling, RopeTable, rope};
 pub use shape::{Matrix, OpError};
 
 /// The reference's numeric mode (RFC-0060 §4.1).
