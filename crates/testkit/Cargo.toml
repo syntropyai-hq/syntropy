@@ -19,6 +19,11 @@ syntropy-graph = { path = "../graph" }
 # The fixture generator (QUAL-E7-T01) reads its files back through the GGUF and safetensors
 # readers and builds their census, and takes `RopeKind` from the family's spec.
 syntropy-kernels = { path = "../kernels" }
+# `FakeKernelProvider` in `Numeric` mode (QUAL-E3-T12) runs every op on the CPU provider's
+# deterministic kernels, over its streams, buffers and capture (RFC-0060 §8.4). Not optional: the
+# simulator and the crates that test against the fake need it. `kernels-cpu`'s own dev-dependency
+# on `testkit` makes a dev-only cycle, which cargo allows.
+syntropy-kernels-cpu = { path = "../kernels-cpu" }
 syntropy-manifest = { path = "../manifest" }
 # The fake runner (QUAL-E3-T18) serves a real region's `local_sequences` and `local_tokens` rings,
 # in `ipc`'s record encoding, and holds their `spsc` ends. Not optional: its tests must run in the

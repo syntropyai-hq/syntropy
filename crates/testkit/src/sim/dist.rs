@@ -87,7 +87,7 @@ pub(crate) fn unit(entropy: &dyn Entropy) -> f64 {
 }
 
 /// A standard normal draw, by the Marsaglia polar method, which needs only `ln` and a square root.
-fn standard_normal(entropy: &dyn Entropy) -> f64 {
+pub(crate) fn standard_normal(entropy: &dyn Entropy) -> f64 {
     loop {
         let u = 2.0 * unit(entropy) - 1.0;
         let v = 2.0 * unit(entropy) - 1.0;
