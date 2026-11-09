@@ -151,6 +151,28 @@ const SAFETENSORS: &[ClassRule] = &[
         ClassSel::Head,
         &[Hp("vocab"), Hp("hidden")],
     ),
+    // Extra lookup tables, for the token-embedding tests: none of them is in `st_tensors`.
+    rule(
+        "model.ngram_embed.weight",
+        BlockSel::Prologue,
+        TensorRole::NgramTable,
+        ClassSel::RowLookup,
+        &[ShapeDim::Any, Hp("hidden")],
+    ),
+    rule(
+        "model.per_layer_embed.weight",
+        BlockSel::Prologue,
+        TensorRole::PerLayerTable,
+        ClassSel::RowLookup,
+        &[ShapeDim::Any, ShapeDim::Any],
+    ),
+    rule(
+        "model.embed_tokens_copy.weight",
+        BlockSel::Prologue,
+        TensorRole::Embed,
+        ClassSel::RowLookup,
+        &[Hp("vocab"), Hp("hidden")],
+    ),
     rule(
         "visual.blocks.{N}.attn.qkv.weight",
         BlockSel::Encoder,
@@ -874,4 +896,89 @@ fn an_unusable_top_k_fails_closed() {
     let error = st_census(&st_tensors(), &config).unwrap_err();
     assert_eq!(error.code(), Some(6), "{error}");
     assert!(error.to_string().contains("top_k"), "{error}");
+}
+
+// ---- The token embedding and vocab_limit (COMP-E10-T16) -------------------------------------------
+
+/// The safetensors census marks the token embedding and the untied LM head, and the limit is
+/// the vocabulary: rows are the outermost dimension, `shape[0]`.
+#[test]
+fn an_untied_safetensors_census_marks_embedding_and_head() {
+    let m = st_census(&st_tensors(), CONFIG).unwrap();
+    let name = |id: TensorId| m.census.tensors[id.0 as usize].name.clone();
+    assert_eq!(
+        m.census.token_embedding.map(name).as_deref(),
+        Some("model.embed_tokens.weight")
+    );
+    assert_eq!(
+        m.census.lm_head.map(name).as_deref(),
+        Some("lm_head.weight")
+    );
+    assert_eq!(m.vocab_limit(), Ok(VOCAB as u32));
+    // It survives the stored form.
+    let back = ModelManifest::decode(&m.encode().unwrap()).unwrap();
+    assert_eq!(back.census.token_embedding, m.census.token_embedding);
+    assert_eq!(back.vocab_limit(), Ok(VOCAB as u32));
+}
+
+/// The GGUF census has no `output.weight`: no head record, the embedding serves as the head,
+/// and its rows are the last entry of ggml's `ne`.
+#[test]
+fn a_tied_gguf_census_has_no_head_record() {
+    let m = gguf_census(&gguf_tensors()).unwrap();
+    let embed = m.census.token_embedding.expect("marked");
+    assert_eq!(m.census.tensors[embed.0 as usize].name, "token_embd.weight");
+    assert_eq!(m.census.tensors[embed.0 as usize].shape, [HIDDEN, VOCAB]);
+    assert_eq!(m.census.lm_head, None);
+    assert_eq!(m.vocab_limit(), Ok(VOCAB as u32));
+}
+
+/// An n-gram table with more rows than the vocabulary and a per-layer table with fewer are
+/// lookup tables too, and neither is taken for the token embedding.
+#[test]
+fn extra_lookup_tables_are_not_the_token_embedding() {
+    let mut tensors = st_tensors();
+    tensors.insert(
+        1,
+        ("model.ngram_embed.weight".to_owned(), vec![4096, HIDDEN]),
+    );
+    tensors.insert(2, ("model.per_layer_embed.weight".to_owned(), vec![8, 64]));
+    let m = st_census(&tensors, CONFIG).unwrap();
+    let lookups = m
+        .census
+        .tensors
+        .iter()
+        .filter(|t| t.class == TensorClass::RowLookup)
+        .count();
+    assert_eq!(lookups, 3);
+    let embed = m.census.token_embedding.expect("marked");
+    assert_eq!(
+        m.census.tensors[embed.0 as usize].name,
+        "model.embed_tokens.weight"
+    );
+    assert_eq!(m.vocab_limit(), Ok(VOCAB as u32));
+}
+
+/// Two tables in the token-embedding role: which one maps token IDs cannot be told, so the
+/// census fails closed and gives no limit.
+#[test]
+fn an_ambiguous_token_embedding_fails_closed() {
+    let mut tensors = st_tensors();
+    tensors.insert(
+        1,
+        (
+            "model.embed_tokens_copy.weight".to_owned(),
+            vec![VOCAB, HIDDEN],
+        ),
+    );
+    let e = st_census(&tensors, CONFIG).unwrap_err();
+    assert_eq!(e.code(), Some(6), "{e}");
+    assert!(
+        e.to_string().contains("token embedding is ambiguous"),
+        "{e}"
+    );
+    assert!(
+        e.to_string().contains("model.embed_tokens_copy.weight"),
+        "{e}"
+    );
 }

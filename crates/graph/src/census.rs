@@ -41,8 +41,15 @@
 //! `bytes × top_k / n_experts` for an expert group (the `top_k` and `n_experts` extra
 //! hyperparameters), until RFC-0023's statistics replace the prior.
 //!
+//! **The token embedding and the LM head** are marked in the census (COMP-E10-T16): the token
+//! embedding is the one `RowLookup` record the family gives `TensorRole::Embed` in the
+//! prologue, so an n-gram or per-layer table (`NgramTable`, `PerLayerTable`) is never taken for
+//! it; the LM head is the one `Head` record with `TensorRole::Head` in the epilogue, or none
+//! when the embedding is tied. `ModelManifest::vocab_limit` reads both.
+//!
 //! **Checks before the manifest is returned** (`HeaderInvalid`, 6): every decoder layer has a
-//! classified tensor, the model has a token embedding, every expert of a MoE layer has every
+//! classified tensor, the model has exactly one token embedding and at most one LM head, every
+//! expert of a MoE layer has every
 //! tensor its siblings have, and the records' bytes plus the ignored tensors' bytes equal the
 //! source's tensor bytes (RFC-0060 §7.2 check 1).
 
@@ -292,6 +299,7 @@ pub fn build_in(registry: &Registry, sources: &Sources<'_>) -> Result<ModelManif
     }
 
     check_complete(&hp, &placed)?;
+    let (token_embedding, lm_head) = marks(&records, &placed)?;
     let groups = group(&hp, &records, &placed)?;
 
     // RFC-0060 §7.2 check 1: every tensor byte is in a record or an ignored tensor, once.
@@ -300,6 +308,8 @@ pub fn build_in(registry: &Registry, sources: &Sources<'_>) -> Result<ModelManif
         totals: ClassTotals::of(&groups),
         tensors: records,
         groups,
+        token_embedding: Some(token_embedding),
+        lm_head,
     };
     if census.record_bytes() + ignored_bytes != source_bytes {
         return Err(CensusError::Incomplete {
@@ -502,7 +512,7 @@ fn group(
             (TensorClass::RowLookup, _) => {
                 let n = p.id.0;
                 lookup_rows.insert(n, p.rows);
-                if p.role == TensorRole::Embed && embedding.is_none() {
+                if is_token_embedding(p) && embedding.is_none() {
                     embedding = Some((n, p.id));
                 }
                 Key::Lookup(n)
@@ -633,6 +643,72 @@ fn block_code(block: BlockSel) -> (u8, u8) {
     }
 }
 
+/// Whether `p` is the token embedding (module docs).
+fn is_token_embedding(p: &Placed) -> bool {
+    p.class == TensorClass::RowLookup
+        && p.role == TensorRole::Embed
+        && p.block == BlockSel::Prologue
+}
+
+/// Whether `p` is the LM head (module docs).
+fn is_lm_head(p: &Placed) -> bool {
+    p.class == TensorClass::Head && p.role == TensorRole::Head && p.block == BlockSel::Epilogue
+}
+
+/// The token embedding and the LM head (module docs): exactly one embedding, at most one head.
+fn marks(
+    records: &[TensorRecord],
+    placed: &[Placed],
+) -> Result<(TensorId, Option<TensorId>), CensusError> {
+    let names = |ids: &[TensorId]| -> String {
+        ids.iter()
+            .map(|id| format!("`{}`", records[id.0 as usize].name))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let embeddings: Vec<TensorId> = placed
+        .iter()
+        .filter(|p| is_token_embedding(p))
+        .map(|p| p.id)
+        .collect();
+    let embedding = match embeddings[..] {
+        [one] => one,
+        [] => {
+            return Err(CensusError::Incomplete {
+                reason: "the model has no token embedding".into(),
+            });
+        }
+        _ => {
+            return Err(CensusError::Incomplete {
+                reason: format!(
+                    "the token embedding is ambiguous: the prologue has {} tables in that role, {}",
+                    embeddings.len(),
+                    names(&embeddings)
+                ),
+            });
+        }
+    };
+    let heads: Vec<TensorId> = placed
+        .iter()
+        .filter(|p| is_lm_head(p))
+        .map(|p| p.id)
+        .collect();
+    let head = match heads[..] {
+        [] => None,
+        [one] => Some(one),
+        _ => {
+            return Err(CensusError::Incomplete {
+                reason: format!(
+                    "the LM head is ambiguous: the epilogue has {} heads, {}",
+                    heads.len(),
+                    names(&heads)
+                ),
+            });
+        }
+    };
+    Ok((embedding, head))
+}
+
 /// The checks of the module docs that need only the classified tensors.
 fn check_complete(hp: &HyperParams, placed: &[Placed]) -> Result<(), CensusError> {
     let incomplete = |reason: String| Err(CensusError::Incomplete { reason });
@@ -640,12 +716,6 @@ fn check_complete(hp: &HyperParams, placed: &[Placed]) -> Result<(), CensusError
         if !placed.iter().any(|p| p.layer == Some(LayerIx(layer))) {
             return incomplete(format!("decoder layer {layer} has no tensor"));
         }
-    }
-    if !placed
-        .iter()
-        .any(|p| p.class == TensorClass::RowLookup && p.role == TensorRole::Embed)
-    {
-        return incomplete("the model has no token embedding".into());
     }
     // Every expert of a layer has the same roles, and the layer every expert up to `n_experts`.
     let mut experts: BTreeMap<u16, BTreeMap<ExpertIx, Vec<TensorRole>>> = BTreeMap::new();

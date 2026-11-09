@@ -129,6 +129,8 @@ pub fn census(groups: Vec<(TensorClass, Option<u16>, u64)>) -> TensorCensus {
         tensors: Vec::new(),
         totals: ClassTotals::of(&groups),
         groups,
+        token_embedding: None,
+        lm_head: None,
     }
 }
 

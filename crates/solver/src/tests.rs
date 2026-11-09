@@ -55,6 +55,8 @@ fn manifest() -> ModelManifest {
             tensors: vec![],
             totals: ClassTotals::of(&groups),
             groups,
+            token_embedding: None,
+            lm_head: None,
         },
         kv: KvFormula::new(
             vec![LayerKv::PerToken {

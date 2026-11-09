@@ -229,6 +229,16 @@ A request with an ID outside the range fails with 400 `token_id_out_of_range`, n
 
 *Note 2026-10-31 (PROD-E2-T20, as built).* `syntropy_api::pipeline::check_token_ids` is the one validator. It takes a `TokenField`, the field's IDs and `vocab_limit`, and returns `TokenIdOutOfRange { field, position, id, vocab_limit }` for the first ID that is not below the limit. `TokenField` names the native `tokens`, `teacher.tokens`, `logit_bias`, `stop_token_ids`, a legacy completions `prompt`, an embeddings `input`, a grammar's token set (`constraint`), and the rendered prompt. `check_request` runs it after stage 5 and before routing: first on the native `tokens` at the client's positions, then on the `logit_bias` keys in the order listed, then on the rendered prompt, which a tokenizer that disagrees with the manifest would fail. The other fields are checked by their endpoints' tasks with the same function. `ModelInfo::vocab_limit` carries the limit from stage 3, and `vocab_limit()` computes `min(embedding rows, LM-head rows, sampler table size)`. Deriving the three sizes from `ModelManifest` is COMP-E10-T16's: the census does not yet mark which `RowLookup` table is the token embedding. `ApiError::TokenIdOutOfRange` carries the error; its class is `InvalidRequest`, and its code is `token_id_out_of_range`, number 33 in §12's registry.
 
+*Note 2026-11-07 (COMP-E10-T16, as built).*
+- **The method.** `syntropy_manifest::census::ModelManifest::vocab_limit` derives the limit from the census and `HyperParams`: `min(token-embedding rows, LM-head rows, hparams.vocab)`.
+- **Rows.** A table's rows are its outermost dimension: the first of a safetensors shape, the last of GGUF's `ne`.
+- **The sampler.** Its table size is `hparams.vocab` (RFC-0012 §8.1).
+- **The marks.** The census marks the tables in `TensorCensus::token_embedding` and `TensorCensus::lm_head`.
+  - The token embedding is the one `RowLookup` record a family gives `TensorRole::Embed` in the prologue. An n-gram or per-layer table has its own role (`NgramTable`, `PerLayerTable`) and is never taken for it.
+  - A tied model has no head record, so the embedding's rows stand for the head's.
+- **Failing closed.** The census builder fails with `HeaderInvalid` when the token embedding is missing or ambiguous, or when the epilogue has more than one LM head. `vocab_limit` returns `VocabLimitError`, class `Integrity`, rather than a limit when a mark is absent or names the wrong record.
+- **Still to do.** Filling `ModelInfo::vocab_limit` from the manifest is the API's.
+
 ### 3. API shapes
 
 Each subsection lists what the front end reads and what the encoder writes. A field not listed is handled by §3.6. Every ignored field is named in a `Syntropy-Warning` response header (`Syntropy-Warning: ignored=user,metadata`), so clients can discover gaps without the request failing.
