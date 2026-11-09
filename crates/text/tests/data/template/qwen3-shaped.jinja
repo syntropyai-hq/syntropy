@@ -1,0 +1,44 @@
+{#- Written for Syntropy's tests (MIT OR Apache-2.0): a template laid out like the ChatML
+    templates the M0 families ship, using the same constructs: a namespace, a reversed loop,
+    string methods, reasoning sections and the generation prompt. -#}
+{%- if messages | length == 0 %}
+    {{- raise_exception('no messages') }}
+{%- endif %}
+{%- if messages[0].role == 'system' %}
+    {{- '<|im_start|>system\n' + messages[0].content + '<|im_end|>\n' }}
+{%- endif %}
+{%- set ns = namespace(last_user=messages|length - 1) %}
+{%- for message in messages[::-1] %}
+    {%- set index = (messages|length - 1) - loop.index0 %}
+    {%- if message.role == "user" and not (message.content.startswith('<tool_response>') and message.content.endswith('</tool_response>')) and ns.last_user == messages|length - 1 %}
+        {%- set ns.last_user = index %}
+    {%- endif %}
+{%- endfor %}
+{%- for message in messages %}
+    {%- set content = message.content if message.content is string else '' %}
+    {%- if message.role == "user" or (message.role == "system" and not loop.first) %}
+        {{- '<|im_start|>' + message.role + '\n' + content + '<|im_end|>\n' }}
+    {%- elif message.role == "assistant" %}
+        {%- set reasoning = '' %}
+        {%- if message.reasoning_content is string %}
+            {%- set reasoning = message.reasoning_content %}
+        {%- elif '</think>' in content %}
+            {%- set reasoning = content.split('</think>')[0].rstrip('\n').split('<think>')[-1].lstrip('\n') %}
+            {%- set content = content.split('</think>')[-1].lstrip('\n') %}
+        {%- endif %}
+        {%- if loop.index0 > ns.last_user and (loop.last or reasoning) %}
+            {{- '<|im_start|>assistant\n<think>\n' + reasoning.strip('\n') + '\n</think>\n\n' + content.lstrip('\n') }}
+        {%- else %}
+            {{- '<|im_start|>assistant\n' + content }}
+        {%- endif %}
+        {{- '<|im_end|>\n' }}
+    {%- elif message.role != "system" %}
+        {{- raise_exception('unexpected role ' + message.role) }}
+    {%- endif %}
+{%- endfor %}
+{%- if add_generation_prompt %}
+    {{- '<|im_start|>assistant\n' }}
+    {%- if enable_thinking is defined and enable_thinking is false %}
+        {{- '<think>\n\n</think>\n\n' }}
+    {%- endif %}
+{%- endif %}

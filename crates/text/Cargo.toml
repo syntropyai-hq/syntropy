@@ -8,6 +8,8 @@ publish.workspace = true
 [dependencies]
 blake3.workspace = true
 llguidance.workspace = true
+# Chat-template rendering (RFC-0050 §6.1, ADR-0431).
+minijinja.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 syntropy-core = { path = "../core" }
@@ -16,5 +18,7 @@ tokenizers.workspace = true
 [dev-dependencies]
 proptest.workspace = true
 regex.workspace = true
+# `TokenizerSpec`, for the chat-template test on the M0 families' recorded files.
+syntropy-manifest = { path = "../manifest" }
 # The fuzz harness of RFC-0060 §10.2, for the literal-tokenization fuzz target.
 syntropy-testkit = { path = "../testkit" }
