@@ -171,6 +171,12 @@ impl Kind {
 pub struct Args(Vec<(&'static str, String)>);
 
 impl Args {
+    /// Values given directly, for a step's test.
+    #[cfg(test)]
+    pub fn from_pairs(pairs: &[(&'static str, &str)]) -> Args {
+        Args(pairs.iter().map(|(k, v)| (*k, (*v).to_owned())).collect())
+    }
+
     /// The value given for `name`, such as `--commits`.
     pub fn get(&self, name: &str) -> Option<&str> {
         self.0

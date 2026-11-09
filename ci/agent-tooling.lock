@@ -1,0 +1,31 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+#
+# The agent runtime, plug-ins and tool servers, pinned by version and digest, the way Actions are
+# pinned by SHA (ADR-0624 decision 5; RFC-0062 §12.5). `cargo xtask ci agent-tooling` checks this
+# file, and with `--observed <file>` refuses a run whose tooling differs from it. A bump is a
+# reviewed PR, and this file is listed in `ci/agent-instructions.toml`, so a maintainer approves
+# it (RFC-0062 §12.3).
+#
+# A tool is pinned (`version` and `digest = "sha256:<64 hex digits>"`) or planned (`planned` names
+# the task that pins it). No digest is written here that nobody has verified: a maintainer reads
+# it from the artefact the agent runner installs and pins the tool in a PR. Until then a run
+# that has the tool is refused, because it differs from the lock. Tooling versions are recorded
+# in each run's provenance, never in commit messages.
+
+[[tool]]
+name = "agent-runtime"
+kind = "runtime"
+about = "the agent runtime that executes a task's session"
+planned = "QUAL-E1-T24"
+
+[[tool]]
+name = "agent-plugins"
+kind = "plugin"
+about = "the plug-ins and skills the runtime loads"
+planned = "QUAL-E1-T24"
+
+[[tool]]
+name = "agent-tool-servers"
+kind = "toolserver"
+about = "the tool servers the runtime connects to"
+planned = "QUAL-E1-T24"
