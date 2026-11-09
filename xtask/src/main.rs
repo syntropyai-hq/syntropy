@@ -33,6 +33,7 @@ mod ci_gate;
 mod cli;
 mod codeowners;
 mod contrib;
+mod delegations;
 mod dep_diff;
 mod determinism;
 mod fixtures;
@@ -40,6 +41,7 @@ mod hot_threads;
 mod instructions;
 mod licences;
 mod loom;
+mod maintainer_actions;
 mod orphan_rule;
 mod plan_tools;
 mod properties;
@@ -219,6 +221,17 @@ fn execute(command: Command<'_>) -> io::Result<u8> {
                     Ok(EXIT_FAIL)
                 }
             }
+        }
+        Command::MaintainerActions { root } => {
+            let root = match root {
+                Some(root) => PathBuf::from(root),
+                None => match checkout() {
+                    Ok(root) => root,
+                    Err(code) => return Ok(code),
+                },
+            };
+            let pass = maintainer_actions::command(&root, &mut io::stdout().lock())?;
+            Ok(if pass { EXIT_PASS } else { EXIT_FAIL })
         }
         Command::Spdx { root } => {
             let checkout = match checkout() {

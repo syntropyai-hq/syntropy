@@ -1,0 +1,18 @@
+# The delegation registry (ADR-0021 decision 4, RFC-0062 §12.3): which maintainer may act for
+# which scope. The checks that accept "a maintainer" for an action (`/hw run`, the gate labels,
+# `rc:start`, `promote`) read it, and so does the key-custody and organisation audit.
+#
+# One table per delegation:
+#
+#   [[delegation]]
+#   delegate = "alice"            # a login in governance/maintainers.toml
+#   scope = "tuf-root-custody"    # see SCOPES in xtask/src/delegations.rs
+#   granted = "2026-11-01"        # YYYY-MM-DD
+#   revoked = "2027-01-01"        # optional: the first day it no longer holds
+#
+# Limits `cargo xtask ci lint` enforces: at most three active `tuf-root-custody` holders and at
+# most two active `org-owner` holders (RFC-0062 §7.2, §12.6).
+#
+# This file holds no delegation yet. Recording the key holders and organisation owners is
+# QUAL-E1-T26, and the security deputy is QUAL-E1-T27: both are Maintainer actions. A change to
+# this file needs a maintainer's approval, because `governance/` is code-owned.

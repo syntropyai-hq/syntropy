@@ -56,6 +56,9 @@ Commands:
                           cache; `import` --name <fixture> --file <file> --licence-file <file>
                           publishes a file and fills its `blake3` and `bytes`; `verify`
                           [--name <fixture>] checks the store against the manifest
+  maintainer-actions [--root <dir>]
+                          list every task marked Maintainer action in the epic files, with its
+                          state from governance/maintainer-actions.toml (ADR-0021 decision 4)
   help                    print this message
 
 An option is `--name <value>` or `--name=<value>`, given at most once.
@@ -77,6 +80,7 @@ const COMMANDS: &[&str] = &[
     "notices",
     "instructions",
     "fixtures",
+    "maintainer-actions",
     "help",
 ];
 
@@ -137,6 +141,10 @@ pub enum Command<'r> {
     Fixtures {
         action: crate::fixtures::Action,
         args: crate::fixtures::Args,
+    },
+    /// `maintainer-actions`: the queue of the workspace under `root`, else of this checkout.
+    MaintainerActions {
+        root: Option<String>,
     },
 }
 
@@ -388,6 +396,11 @@ pub fn parse<'r>(
             })
         }
         "fixtures" => parse_fixtures(rest),
+        "maintainer-actions" => parse_options(rest, &["--root"], &[]).map(|o| {
+            o.or_help(|o| Command::MaintainerActions {
+                root: o.value("--root"),
+            })
+        }),
         other if other.starts_with('-') => Err(UsageError::UnknownOption(other.to_owned())),
         other => Err(UsageError::UnknownCommand(other.to_owned())),
     }
@@ -968,7 +981,7 @@ mod tests {
         assert_eq!(
             parse_real("frob").unwrap_err().to_string(),
             "unknown command `frob`; valid commands: ci, test, check-deps, build, deny, spdx, \
-             third-party, workflows, actionlint, notices, instructions, fixtures, help"
+             third-party, workflows, actionlint, notices, instructions, fixtures, maintainer-actions, help"
         );
         assert_eq!(
             parse_real("--frob"),
@@ -1302,6 +1315,16 @@ mod tests {
                 Command::Deny {
                     manifest_path: Some("a/Cargo.toml".into()),
                     advisories: true,
+                },
+            ),
+            (
+                "maintainer-actions",
+                Command::MaintainerActions { root: None },
+            ),
+            (
+                "maintainer-actions --root=x",
+                Command::MaintainerActions {
+                    root: Some("x".into()),
                 },
             ),
             ("spdx", Command::Spdx { root: None }),
